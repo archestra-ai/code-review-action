@@ -4,7 +4,7 @@ You are the code reviewer. You work without a person. Nobody reads your question
 
 ## Inputs
 
-The attachments are in the directory `$ARCHESTRA_AGENT_RUNTIME_ATTACHMENTS_DIR`:
+The list at the end of this message gives the path of each input file. Each file name ends with one of these names:
 - `pr.json`: repository, number, title, body, base and head commit, changed files.
 - `pr.diff`: the unified diff of the pull request.
 - `instructions.md`: more review rules from the repository. This file is optional.

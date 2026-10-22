@@ -9,7 +9,7 @@ import { InputError, readInputs } from "./inputs";
 import { run } from "./run";
 import { errorMessage } from "./util";
 
-export const LIVE_TASK_STATE = "live-task-id";
+export const LIVE_RUN_STATE = "live-run-id";
 
 async function main(): Promise<void> {
   let inputs: ReturnType<typeof readInputs>;
@@ -26,8 +26,9 @@ async function main(): Promise<void> {
     throw error;
   }
   // Mask the secrets in all log output, also in error messages.
-  core.setSecret(inputs.apiKey);
+  if (inputs.token) core.setSecret(inputs.token);
   if (inputs.fixToken) core.setSecret(inputs.fixToken);
+  if (inputs.cloneToken) core.setSecret(inputs.cloneToken);
 
   const environment = readEnvironment(process.env, (path) => readFileSync(path, "utf8"));
   const log = {
@@ -46,11 +47,11 @@ async function main(): Promise<void> {
     workflowRunUrl: environment.workflowRunUrl,
     gh: createOctokit(inputs.githubToken, { baseUrl: environment.apiUrl }),
     ghFix: inputs.fixToken ? createOctokit(inputs.fixToken, { baseUrl: environment.apiUrl }) : null,
-    archestra: new ArchestraClient({ baseUrl: inputs.archestraUrl, apiKey: inputs.apiKey }),
+    archestra: new ArchestraClient({ gatewayUrl: inputs.gatewayUrl, token: inputs.token }),
     log,
     clock: { now: () => Date.now(), sleep: (ms) => sleep(ms).then(() => undefined) },
     random: Math.random,
-    saveLiveTask: (taskId) => core.saveState(LIVE_TASK_STATE, taskId ?? ""),
+    saveLiveRun: (runId) => core.saveState(LIVE_RUN_STATE, runId ?? ""),
     startedAt: Date.now(),
   };
 

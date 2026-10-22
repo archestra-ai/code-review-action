@@ -12,10 +12,24 @@ export async function run(ctx: ActionContext): Promise<ActionResult> {
     mode: ctx.inputs.mode,
     prNumber: ctx.inputs.prNumber,
   });
+  if (trigger.kind === "skip") {
+    ctx.log.info(`Nothing to do: ${trigger.reason}.`);
+    return makeResult("none", { status: "skipped", summary: `Nothing to do: ${trigger.reason}.` });
+  }
+  if (!ctx.inputs.token) {
+    // Runs act as the person who caused them; without that person's token
+    // there is no one to run as.
+    const message =
+      'No Archestra token for this actor: "archestra-token" is empty and no "fallback-token" is set. The actor creates a platform token in Archestra (Personal Settings) and stores it as their repository or organization secret.';
+    ctx.log.warning(message);
+    return makeResult(trigger.kind, { status: "skipped", summary: message });
+  }
+  if (ctx.inputs.tokenSource === "fallback") {
+    ctx.log.warning(
+      "The actor has no Archestra token. The runs use the fallback token: they act as its owner, and its owner pays for them.",
+    );
+  }
   switch (trigger.kind) {
-    case "skip":
-      ctx.log.info(`Nothing to do: ${trigger.reason}.`);
-      return makeResult("none", { status: "skipped", summary: `Nothing to do: ${trigger.reason}.` });
     case "review":
       return runReview(ctx, trigger.prNumber);
     case "fix":

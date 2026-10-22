@@ -14,7 +14,7 @@ import { collectCiEvidence } from "../github/ci";
 import { verifyCommits } from "../github/commits";
 import type { Sender, TriggerSource } from "../github/event";
 import { type Attachment, errorMessage, fullName, jsonAttachment, shortSha, textAttachment } from "../util";
-import { failureForError, isResult, prepareFix, reply, summarize, updateSticky } from "./common";
+import { failureForError, fatalReason, isResult, prepareFix, reply, summarize, updateSticky } from "./common";
 
 export async function runFixCiMain(
   ctx: ActionContext,
@@ -83,7 +83,7 @@ export async function runFixCiMain(
     random: ctx.random,
   });
   const continueFrom =
-    marker?.run && marker.agent && order.includes(marker.agent) ? { agentId: marker.agent, taskId: marker.run } : null;
+    marker?.run && marker.agent && order.includes(marker.agent) ? { agentId: marker.agent, runId: marker.run } : null;
 
   await updateSticky(ctx, pr, (s) => {
     s.notice = `Preparing a fix PR against ${baseBranch} for ${checks.map((check) => `\`${check.replace(/`/g, "'")}\``).join(", ")} for @${identity.login}. [Workflow run](${ctx.workflowRunUrl})`;
@@ -94,14 +94,13 @@ export async function runFixCiMain(
     continueFrom,
     message,
     attachments,
-    title: `${fullName(repo)} fix CI on ${baseBranch}`,
     contract: CONTRACTS["fix-ci-main"],
     timeoutMs: inputs.fixTimeoutMs,
     credentialToken: inputs.fixToken,
   });
 
   if (!outcome.ok || !outcome.value) {
-    const reason = outcome.fatal ? "The Archestra API rejected the API key." : "No runtime completed the fix.";
+    const reason = outcome.fatal ? fatalReason(outcome.attempts) : "No runtime completed the fix.";
     await updateSticky(ctx, pr, (s) => {
       s.attempts = outcome.attempts;
       s.operation = `fix PR against ${baseBranch}`;
@@ -116,8 +115,8 @@ export async function runFixCiMain(
     });
   }
 
-  const { result, taskId } = outcome.value;
-  const runUrl = ctx.archestra.runUrl(taskId);
+  const { result, runId } = outcome.value;
+  const runUrl = ctx.archestra.runUrl(runId);
   const check = await verifyCommits(ctx.gh, repo, {
     base: baseBranch,
     head: result.branch,
@@ -139,7 +138,7 @@ export async function runFixCiMain(
     );
     return makeResult("fix-ci-main", {
       status: "error",
-      runId: taskId,
+      runId,
       runUrl,
       attempts: outcome.attempts,
       failure: failureForError(ctx, "The fix branch did not pass the commit check."),
@@ -188,7 +187,7 @@ export async function runFixCiMain(
   return makeResult("fix-ci-main", {
     status: "success",
     agentId: outcome.agentId ?? null,
-    runId: taskId,
+    runId,
     runUrl,
     attempts: outcome.attempts,
     pushedCommits: check.verified,

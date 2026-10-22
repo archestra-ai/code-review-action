@@ -15,7 +15,7 @@ import { verifyCommits } from "../github/commits";
 import type { Sender, TriggerSource } from "../github/event";
 import { loadChangedFiles, loadDiff, loadPullRequest, prAttachmentData } from "../github/pr";
 import { errorMessage, fullName, jsonAttachment, shortSha, textAttachment } from "../util";
-import { failureForError, isResult, prepareFix, reply, summarize, updateSticky } from "./common";
+import { failureForError, fatalReason, isResult, prepareFix, reply, summarize, updateSticky } from "./common";
 
 export async function runFixCi(
   ctx: ActionContext,
@@ -78,7 +78,7 @@ export async function runFixCi(
     random: ctx.random,
   });
   const continueFrom =
-    marker?.run && marker.agent && order.includes(marker.agent) ? { agentId: marker.agent, taskId: marker.run } : null;
+    marker?.run && marker.agent && order.includes(marker.agent) ? { agentId: marker.agent, runId: marker.run } : null;
 
   await updateSticky(ctx, pr, (s) => {
     s.notice = `Triaging ${evidence.failures.length} failing check${evidence.failures.length === 1 ? "" : "s"} for @${identity.login}. [Workflow run](${ctx.workflowRunUrl})`;
@@ -89,14 +89,13 @@ export async function runFixCi(
     continueFrom,
     message,
     attachments,
-    title: `${fullName(repo)}#${pr.number} CI triage`,
     contract: CONTRACTS["fix-ci"],
     timeoutMs: inputs.fixTimeoutMs,
     credentialToken: inputs.fixToken,
   });
 
   if (!outcome.ok || !outcome.value) {
-    const reason = outcome.fatal ? "The Archestra API rejected the API key." : "No runtime completed the triage.";
+    const reason = outcome.fatal ? fatalReason(outcome.attempts) : "No runtime completed the triage.";
     await updateSticky(ctx, pr, (s) => {
       s.attempts = outcome.attempts;
       s.operation = "CI triage";
@@ -111,8 +110,8 @@ export async function runFixCi(
     });
   }
 
-  const { result: triage, taskId, sessionId } = outcome.value;
-  const runUrl = ctx.archestra.runUrl(taskId);
+  const { result: triage, runId } = outcome.value;
+  const runUrl = ctx.archestra.runUrl(runId);
   const knownChecks = new Set(evidence.failures.map((failure) => failure.name));
   const rows = triage.failures.filter((row) => knownChecks.has(row.check));
   const reportedCommits = rows.filter((row) => row.class === "pr_caused").flatMap((row) => row.commits);
@@ -147,9 +146,9 @@ export async function runFixCi(
 
   await updateSticky(ctx, pr, (s, stickyMarker) => {
     Object.assign(stickyMarker, {
-      run: taskId,
+      run: runId,
       agent: outcome.agentId ?? stickyMarker.agent,
-      session: sessionId ?? stickyMarker.session,
+      session: runId,
     });
     s.triage = rows.map((row) => ({
       check: row.check,
@@ -194,7 +193,7 @@ export async function runFixCi(
   return makeResult("fix-ci", {
     status: "success",
     agentId: outcome.agentId ?? null,
-    runId: taskId,
+    runId,
     runUrl,
     attempts: outcome.attempts,
     pushedCommits: check.verified,

@@ -25,9 +25,9 @@ const block = (lang: string, text: string) => out.push(`\`\`\`\`${lang}`, text, 
 try {
   // 1. Review: the first runtime fails with a non-retriable reason, the second completes.
   section("Mode review (pull_request opened)");
-  harness.archestra.script(AGENT_A, { end: "TASK_STATE_FAILED", statusReason: "Budget exceeded for this virtual key" });
+  harness.archestra.script(AGENT_A, { end: "failed", statusReason: "Budget exceeded for this virtual key" });
   harness.archestra.script(AGENT_B, {
-    end: "TASK_STATE_COMPLETED",
+    end: "completed",
     files: { "review.json": reviewJson([FINDING_IN_DIFF, FINDING_OUTSIDE]) },
   });
   let result = await run(harness.context("pull_request", prEvent(harness.github)));
@@ -38,7 +38,7 @@ try {
   out.push("Start requests:", "");
   for (const start of harness.archestra.starts) {
     out.push(
-      `- ${start.kind} agent ${start.agentId.slice(0, 8)} runtimeMode=${start.runtimeMode} title=${start.title} attachments=${start.attachmentNames.join(", ")} message=${Buffer.byteLength(start.message)} bytes`,
+      `- ${start.kind} agent ${start.agentId.slice(0, 8)} attachments=${start.attachmentNames.join(", ")} message=${Buffer.byteLength(start.message)} bytes`,
     );
   }
   out.push("", "Review brief (as sent):", "");
@@ -60,7 +60,7 @@ try {
     { sha: commit, authorEmail: "1001+maria@users.noreply.github.com" },
   ]);
   harness.archestra.script(AGENT_B, {
-    end: "TASK_STATE_COMPLETED",
+    end: "completed",
     files: {
       "fix-result.json": {
         applied: [{ finding: state.findings[0]!.id, commit }],
@@ -77,7 +77,7 @@ try {
     `Result: \`${JSON.stringify({ status: result.status, applied: result.applied, pushed: result.pushedCommits })}\``,
     "",
   );
-  out.push(`- ${fixStart.kind} of ${fixStart.previousTaskId} with attachments ${fixStart.attachmentNames.join(", ")}`);
+  out.push(`- ${fixStart.kind} of ${fixStart.previousRunId} with attachments ${fixStart.attachmentNames.join(", ")}`);
   out.push(`- runtime credentials stored: ${JSON.stringify(harness.archestra.credentials)} (value lengths only)`);
   out.push(`- thread mutations: ${JSON.stringify(harness.github.graphqlMutations)}`, "");
   out.push("fix-request.json:", "");
@@ -108,7 +108,7 @@ try {
     },
   ];
   harness.archestra.script(AGENT_B, {
-    end: "TASK_STATE_COMPLETED",
+    end: "completed",
     files: {
       "ci-triage.json": {
         failures: [
@@ -144,7 +144,7 @@ try {
   const mainCommit = "4".repeat(40);
   harness.github.branchCommits.set(branch, [{ sha: mainCommit, authorEmail: "1001+maria@users.noreply.github.com" }]);
   harness.archestra.script(AGENT_B, {
-    end: "TASK_STATE_COMPLETED",
+    end: "completed",
     files: {
       "ci-main-fix.json": {
         branch,
@@ -173,10 +173,28 @@ try {
     harness.github.stickyBody()!.replace(/<!-- archestra-state:[^>]+ -->/, "<!-- archestra-state:… -->"),
   );
 
-  // 5. Secret check: the API key and tokens never appear in the log lines.
+  // 5. The gateway calls, in order, with repeated polls collapsed.
+  section("Gateway calls");
+  const collapsed: string[] = [];
+  for (const call of harness.archestra.calls) {
+    const last = collapsed.at(-1);
+    const match = last?.match(/^(.*?)(?: x(\d+))?$/);
+    if (match && match[1] === call) collapsed[collapsed.length - 1] = `${call} x${Number(match[2] ?? 1) + 1}`;
+    else collapsed.push(call);
+  }
+  block("text", collapsed.join("\n"));
+  out.push(
+    `Requests after initialize without the protocol or session header: ${harness.archestra.missingHeaders.length}.`,
+  );
+
+  // 6. Secret check: the platform token and the GitHub tokens never appear in the log lines.
   section("Secret check");
-  const leaked = harness.log.lines.filter((line) => /arch_test_key|ghs_app_token|ghs_job_token/.test(line));
-  out.push(`Log lines: ${harness.log.lines.length}. Lines with the API key or a token: ${leaked.length}.`);
+  const leaked = harness.log.lines.filter((line) =>
+    [harness.archestra.token, "ghs_app_token", "ghs_job_token"].some((secret) => line.includes(secret)),
+  );
+  out.push(
+    `Log lines: ${harness.log.lines.length}. Lines with the platform token or a GitHub token: ${leaked.length}.`,
+  );
   out.push("", "Action log:", "");
   block("text", harness.log.lines.join("\n"));
 } finally {

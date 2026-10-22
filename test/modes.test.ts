@@ -32,7 +32,7 @@ function setup() {
 
 async function reviewed(harness = setup()) {
   harness.archestra.script(AGENT_A, {
-    end: "TASK_STATE_COMPLETED",
+    end: "completed",
     files: { "review.json": reviewJson([FINDING_IN_DIFF, FINDING_OUTSIDE]) },
   });
   const result = await run(harness.context("pull_request", prEvent(harness.github)));
@@ -84,8 +84,8 @@ describe("review mode", () => {
 
   it("falls back to the next runtime and lists the attempts when one fails", async () => {
     const harness = setup();
-    harness.archestra.script(AGENT_A, { end: "TASK_STATE_FAILED", statusReason: "Budget exceeded" });
-    harness.archestra.script(AGENT_B, { end: "TASK_STATE_COMPLETED", files: { "review.json": reviewJson() } });
+    harness.archestra.script(AGENT_A, { end: "failed", statusReason: "Budget exceeded" });
+    harness.archestra.script(AGENT_B, { end: "completed", files: { "review.json": reviewJson() } });
     const result = await run(harness.context("pull_request", prEvent(harness.github)));
     expect(result.agentId).toBe(AGENT_B);
     expect(result.attempts.map((attempt) => attempt.result)).toEqual(["non_retriable", "completed"]);
@@ -100,6 +100,19 @@ describe("review mode", () => {
     expect(result.failure).toMatch(/unavailable/);
     expect(harness.github.stickyBody()).toContain("Review unavailable");
     expect(harness.archestra.starts).toHaveLength(1);
+  });
+
+  it("stores the clone token as the actor's GITHUB_TOKEN before a review, and nothing without it", async () => {
+    const { harness } = await reviewed();
+    expect(harness.archestra.credentials).toEqual([]);
+    harness.archestra.script(AGENT_A, { end: "completed", files: { "review.json": reviewJson() } });
+    harness.github.pr.head.sha = "d".repeat(40);
+    await run(
+      harness.context("pull_request", prEvent(harness.github, "synchronize"), { "clone-token": "ghs_read_only" }),
+    );
+    expect(harness.archestra.credentials).toEqual([
+      { agentId: AGENT_A, key: "GITHUB_TOKEN", valueLength: "ghs_read_only".length },
+    ]);
   });
 
   it("moves the findings into the summary when GitHub rejects the inline comments", async () => {
@@ -117,15 +130,62 @@ describe("review mode", () => {
     harness.github.resolved.add([...harness.github.reviewComments.keys()][0]!);
     harness.github.pr.head.sha = "d".repeat(40);
     harness.archestra.script(AGENT_A, {
-      end: "TASK_STATE_COMPLETED",
+      end: "completed",
       files: { "review.json": reviewJson([FINDING_IN_DIFF], { previous: [{ id: first.id, status: "regressed" }] }) },
     });
     await run(harness.context("pull_request", prEvent(harness.github, "synchronize")));
     const second = harness.archestra.starts[1]!;
-    expect(second).toMatchObject({ kind: "continue", previousTaskId: result.runId });
+    expect(second).toMatchObject({ kind: "continue", previousRunId: result.runId });
     expect(second.attachmentNames).toContain("previous-findings.json");
     expect(harness.github.graphqlMutations).toEqual([
       { action: "unresolve", threadId: expect.stringMatching(/^thread-/) },
+    ]);
+  });
+});
+
+describe("identity", () => {
+  it("skips with a warning when the actor has no token and there is no fallback", async () => {
+    const harness = setup();
+    const result = await run(harness.context("pull_request", prEvent(harness.github), { "archestra-token": "" }));
+    expect(result).toMatchObject({ status: "skipped", mode: "review" });
+    expect(result.summary).toContain("No Archestra token for this actor");
+    expect(harness.archestra.calls).toEqual([]);
+  });
+
+  it("uses the fallback token and the fallback agents when the actor has no token", async () => {
+    const harness = setup();
+    harness.archestra.script(AGENT_B, { end: "completed", files: { "review.json": reviewJson() } });
+    const result = await run(
+      harness.context("pull_request", prEvent(harness.github), {
+        "archestra-token": "",
+        "fallback-token": harness.archestra.otherToken,
+        "fallback-agents": AGENT_B,
+      }),
+    );
+    expect(result).toMatchObject({ status: "success", agentId: AGENT_B });
+    expect(harness.archestra.starts.map((start) => start.token)).toEqual([harness.archestra.otherToken]);
+    expect(harness.log.lines.some((line) => line.includes("use the fallback token"))).toBe(true);
+  });
+
+  it("starts a fresh run under the requester's token when another person asks for a fix", async () => {
+    const { harness, result: review } = await reviewed();
+    harness.archestra.script(AGENT_A, {
+      end: "completed",
+      files: { "fix-result.json": { applied: [], skipped: [], notes: "" } },
+    });
+    await run(
+      harness.context("issue_comment", issueCommentEvent(harness.github, "/archestra fix"), {
+        "archestra-token": harness.archestra.otherToken,
+      }),
+    );
+    expect(harness.archestra.starts[1]).toMatchObject({
+      kind: "start",
+      agentId: AGENT_A,
+      token: harness.archestra.otherToken,
+    });
+    expect(harness.archestra.starts[1]!.runId).not.toBe(review.runId);
+    expect(harness.archestra.credentials).toEqual([
+      { agentId: AGENT_A, key: "GITHUB_TOKEN", valueLength: "ghs_app_token".length },
     ]);
   });
 });
@@ -152,7 +212,7 @@ describe("fix mode", () => {
       { sha: foreign, authorEmail: "bot@example.com" },
     ]);
     harness.archestra.script(AGENT_A, {
-      end: "TASK_STATE_COMPLETED",
+      end: "completed",
       files: {
         "fix-result.json": {
           applied: [
@@ -169,7 +229,7 @@ describe("fix mode", () => {
     );
 
     const fixStart = harness.archestra.starts[1]!;
-    expect(fixStart).toMatchObject({ kind: "continue", previousTaskId: review.runId });
+    expect(fixStart).toMatchObject({ kind: "continue", previousRunId: review.runId });
     const request = JSON.parse(fixStart.attachments["fix-request.json"]!);
     expect(request).toMatchObject({
       branch: "feature/retry",
@@ -195,7 +255,7 @@ describe("fix mode", () => {
     const { harness, result: review } = await reviewed();
     harness.archestra.busyContinues.set(review.runId!, 2);
     harness.archestra.script(AGENT_A, {
-      end: "TASK_STATE_COMPLETED",
+      end: "completed",
       files: { "fix-result.json": { applied: [], skipped: [], notes: "" } },
     });
     await run(harness.context("issue_comment", issueCommentEvent(harness.github, "/archestra fix")));
@@ -207,7 +267,7 @@ describe("fix mode", () => {
     const { harness, result: review } = await reviewed();
     harness.archestra.expiredWorkspaces.add(review.runId!);
     harness.archestra.script(AGENT_A, {
-      end: "TASK_STATE_COMPLETED",
+      end: "completed",
       files: { "fix-result.json": { applied: [], skipped: [], notes: "" } },
     });
     await run(harness.context("issue_comment", issueCommentEvent(harness.github, "/archestra fix")));
@@ -257,7 +317,7 @@ describe("fix-ci and fix-ci-main modes", () => {
       { sha: fixCommit, authorEmail: "1001+maria@users.noreply.github.com" },
     ]);
     harness.archestra.script(AGENT_A, {
-      end: "TASK_STATE_COMPLETED",
+      end: "completed",
       files: {
         "ci-triage.json": {
           failures: [
@@ -293,7 +353,7 @@ describe("fix-ci and fix-ci-main modes", () => {
     const mainCommit = "4".repeat(40);
     harness.github.branchCommits.set(branch, [{ sha: mainCommit, authorEmail: "1001+maria@users.noreply.github.com" }]);
     harness.archestra.script(AGENT_A, {
-      end: "TASK_STATE_COMPLETED",
+      end: "completed",
       files: {
         "ci-main-fix.json": {
           branch,
@@ -357,10 +417,10 @@ describe("post step", () => {
   it("cancels a live run and leaves a finished one alone", async () => {
     const harness = setup();
     harness.archestra.script(AGENT_A, { end: "never" });
-    const client = new ArchestraClient({ baseUrl: harness.archestra.baseUrl, apiKey: harness.archestra.apiKey });
-    const { taskId } = await client.startRun(AGENT_A, { message: "m", attachments: [], title: "t" });
-    expect(await cancelIfLive(client, taskId, new MemoryLogger())).toBe("canceled");
-    expect(await cancelIfLive(client, taskId, new MemoryLogger())).toBe("not-live");
-    expect(harness.archestra.cancels).toEqual([taskId]);
+    const client = new ArchestraClient({ gatewayUrl: harness.archestra.gatewayUrl, token: harness.archestra.token });
+    const { runId } = await client.startRun(AGENT_A, { message: "m", attachments: [] });
+    expect(await cancelIfLive(client, runId, new MemoryLogger())).toBe("canceled");
+    expect(await cancelIfLive(client, runId, new MemoryLogger())).toBe("not-live");
+    expect(harness.archestra.cancels).toEqual([runId]);
   });
 });

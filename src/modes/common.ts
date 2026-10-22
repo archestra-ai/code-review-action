@@ -163,6 +163,15 @@ export function summarize(title: string, lines: string[], attempts: AttemptRecor
   return [`### ${title}`, "", ...lines, "", attempts.length > 0 ? attemptsTable(attempts) : "", ""].join("\n");
 }
 
+/**
+ * Why a fatal failure stopped all attempts: the gateway refused the token,
+ * the gateway URL is wrong, or the gateway does not give the tools.
+ */
+export function fatalReason(attempts: AttemptRecord[]): string {
+  const reason = attempts.at(-1)?.reason ?? "no reason recorded";
+  return `The Archestra gateway stopped all attempts (${reason}).`;
+}
+
 export function failureForError(ctx: ActionContext, message: string): string | null {
   return ctx.inputs.failOn === "error" ? message : null;
 }

@@ -32,7 +32,7 @@ export function orderAgents(
 
 export interface AttemptRecord {
   agentId: string;
-  taskId: string | null;
+  runId: string | null;
   runUrl: string | null;
   result: "completed" | FailureClass;
   reason: string;

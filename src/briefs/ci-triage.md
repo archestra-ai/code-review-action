@@ -4,7 +4,7 @@ You work without a person. Nobody reads your questions.
 
 ## Inputs
 
-The attachments are in the directory `$ARCHESTRA_AGENT_RUNTIME_ATTACHMENTS_DIR`:
+The list at the end of this message gives the path of each input file. Each file name ends with one of these names:
 - `fix-request.json`: the branch, the current head commit, the base branch and the author identity.
 - `ci-failure.json`: the failing checks of head commit {{headSha}}: job names, workflow files, annotations, the name of each log attachment, and the latest result of the same job on `{{baseBranch}}`.
 - `ci-log-*.log`: the last part of the log of each failing job.

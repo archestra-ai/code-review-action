@@ -8,14 +8,15 @@ import { errorMessage } from "./util";
 // recorded as live, so a canceled workflow does not leave a runtime working.
 
 async function post(): Promise<void> {
-  const taskId = core.getState("live-task-id");
-  if (!taskId) return;
-  const archestraUrl = core.getInput("archestra-url");
-  const apiKey = core.getInput("archestra-api-key");
-  if (!archestraUrl || !apiKey) return;
-  core.setSecret(apiKey);
-  const client = new ArchestraClient({ baseUrl: archestraUrl, apiKey, requestTimeoutMs: 20_000 });
-  await cancelIfLive(client, taskId, {
+  const runId = core.getState("live-run-id");
+  if (!runId) return;
+  const gatewayUrl = core.getInput("archestra-gateway-url");
+  // The same choice as the main step: the actor's token, else the fallback.
+  const token = core.getInput("archestra-token") || core.getInput("fallback-token");
+  if (!gatewayUrl || !token) return;
+  core.setSecret(token);
+  const client = new ArchestraClient({ gatewayUrl, token, requestTimeoutMs: 20_000 });
+  await cancelIfLive(client, runId, {
     info: (message) => core.info(message),
     warning: (message) => core.warning(message),
     error: (message) => core.error(message),

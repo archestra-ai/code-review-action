@@ -1,195 +1,288 @@
 import { z } from "zod";
 import type { Attachment } from "../util";
+import { ArchestraApiError, McpSession } from "./mcp";
 
-export const TASK_STATES = [
-  "TASK_STATE_UNSPECIFIED",
-  "TASK_STATE_SUBMITTED",
-  "TASK_STATE_WORKING",
-  "TASK_STATE_COMPLETED",
-  "TASK_STATE_FAILED",
-  "TASK_STATE_CANCELED",
-  "TASK_STATE_REJECTED",
-  "TASK_STATE_INPUT_REQUIRED",
-  "TASK_STATE_AUTH_REQUIRED",
-] as const;
+export { ArchestraApiError } from "./mcp";
 
-/** States after which the action stops polling. */
-const TERMINAL_STATES = new Set<string>([
-  "TASK_STATE_COMPLETED",
-  "TASK_STATE_FAILED",
-  "TASK_STATE_CANCELED",
-  "TASK_STATE_REJECTED",
-  "TASK_STATE_INPUT_REQUIRED",
-  "TASK_STATE_AUTH_REQUIRED",
-]);
+/**
+ * The run states of the Remote Agents tools. `input-required` and
+ * `auth-required` wait for a person, so the action treats them as the end.
+ */
+const TERMINAL_STATES = new Set(["completed", "failed", "canceled", "rejected", "input-required", "auth-required"]);
 
 export function isTerminalState(state: string): boolean {
   return TERMINAL_STATES.has(state);
 }
 
-/**
- * An HTTP or network failure of the Archestra API. `status` is null for a
- * network failure. The message never contains the API key.
- */
-export class ArchestraApiError extends Error {
-  constructor(
-    readonly operation: string,
-    readonly status: number | null,
-    readonly detail: string,
-  ) {
-    super(status === null ? `${operation}: network error: ${detail}` : `${operation}: HTTP ${status}: ${detail}`);
-    this.name = "ArchestraApiError";
-  }
+/** The tools that the action calls, by their short names. */
+export const RUN_TOOLS = {
+  start: "start_agent_run",
+  get: "get_agent_run",
+  steer: "steer_agent_run",
+  cancel: "cancel_agent_run",
+  read: "read_workspace_file",
+  write: "write_workspace_file",
+  credential: "transfer_credential",
+} as const;
+
+const ARCHESTRA_PREFIX = "archestra__";
+const RUN_TOOL = "run_tool";
+
+const FailureSchema = z.object({ code: z.string(), retriable: z.boolean() });
+
+const RunSummarySchema = z.object({
+  run_id: z.string(),
+  state: z.string(),
+  agent_id: z.string().nullish(),
+  status_reason: z.string().nullish(),
+  failure: FailureSchema.nullish(),
+  created_at: z.string().nullish(),
+  state_changed_at: z.string().nullish(),
+});
+
+const StartResultSchema = z.object({
+  run: RunSummarySchema,
+  run_url: z.string().nullish(),
+});
+
+const GetResultSchema = z.object({
+  run: RunSummarySchema,
+  run_url: z.string().nullish(),
+  workspace: z
+    .object({
+      state: z.string(),
+      retained_until: z.string().nullish(),
+      can_continue: z.boolean(),
+      continuation_error: z.string().nullish(),
+    })
+    .nullish(),
+});
+
+const SteerResultSchema = z.object({ status: z.string(), run_url: z.string().nullish() });
+
+const FileResultSchema = z.object({
+  status: z.string().optional(),
+  content: z.string().optional(),
+  size: z.number().optional(),
+});
+
+export interface RunFailure {
+  code: string;
+  retriable: boolean;
 }
 
-const FailureSchema = z.object({
-  code: z.string(),
-  retriable: z.boolean(),
-  message: z.string(),
-});
+export interface AgentRun {
+  /** Stable across turns: the first turn's id, also the workspace id. */
+  runId: string;
+  state: string;
+  statusReason: string | null;
+  failure: RunFailure | null;
+  /** When the current turn was created. A continuation changes it. */
+  turnCreatedAt: string | null;
+  runUrl: string | null;
+  workspace: {
+    state: string;
+    retainedUntil: string | null;
+    canContinue: boolean;
+    continuationError: string | null;
+  } | null;
+}
 
-const RunSchema = z.object({
-  taskId: z.string(),
-  state: z.string(),
-  statusReason: z.string().nullish(),
-  sessionId: z.string().nullish(),
-  agentId: z.string().nullish(),
-  endedAt: z.string().nullish(),
-  failure: FailureSchema.nullish(),
-  workspace: z.object({ state: z.string(), expiresAt: z.string().nullish() }).nullish(),
-});
-
-export type AgentRun = z.infer<typeof RunSchema>;
-
-const StartSchema = z.object({
-  taskId: z.string(),
-  state: z.string().optional(),
-  sessionId: z.string().nullish(),
-});
-
-export type StartedRun = z.infer<typeof StartSchema>;
-
-const FileSchema = z.object({
-  path: z.string(),
-  size: z.number(),
-  sha256: z.string(),
-  content_base64: z.string().optional(),
-});
+export interface StartedRun {
+  runId: string;
+  state: string;
+  runUrl: string | null;
+  /** For a continuation: the previous turn's creation time, to tell the new turn apart. */
+  previousTurnCreatedAt: string | null;
+}
 
 export interface ArchestraClientOptions {
-  baseUrl: string;
-  apiKey: string;
+  /** `<origin>/v1/mcp/<gateway>`. */
+  gatewayUrl: string;
+  token: string;
   fetch?: typeof fetch;
   requestTimeoutMs?: number;
+  clientVersion?: string;
 }
 
+/**
+ * The Remote Agents tools of one Archestra MCP gateway. Every call acts as
+ * the token's user: the runs, their cost and their credentials are that
+ * person's. Gateways that list the tools directly and gateways that expose
+ * them only through run_tool both work.
+ */
 export class ArchestraClient {
-  readonly baseUrl: string;
-  private readonly apiKey: string;
-  private readonly fetchImpl: typeof fetch;
-  private readonly requestTimeoutMs: number;
+  readonly gatewayUrl: string;
+  readonly origin: string;
+  private readonly session: McpSession;
+  private toolNames: Promise<Map<string, string>> | null = null;
+  private runTool: string | null = null;
+  private readonly runUrls = new Map<string, string>();
 
   constructor(options: ArchestraClientOptions) {
-    this.baseUrl = options.baseUrl.replace(/\/+$/, "");
-    this.apiKey = options.apiKey;
-    this.fetchImpl = options.fetch ?? fetch;
-    this.requestTimeoutMs = options.requestTimeoutMs ?? 120_000;
+    this.gatewayUrl = options.gatewayUrl.replace(/\/+$/, "");
+    this.origin = new URL(this.gatewayUrl).origin;
+    this.session = new McpSession({
+      url: this.gatewayUrl,
+      token: options.token,
+      clientName: "archestra-code-review-action",
+      clientVersion: options.clientVersion ?? "1",
+      fetch: options.fetch,
+      requestTimeoutMs: options.requestTimeoutMs,
+    });
   }
 
   /** The run page in the Archestra UI. */
-  runUrl(taskId: string): string {
-    return `${this.baseUrl}/chat/runs/${taskId}`;
+  runUrl(runId: string): string {
+    return this.runUrls.get(runId) ?? `${this.origin}/chat/runs/${runId}`;
   }
 
-  async startRun(
-    agentId: string,
-    body: { message: string; attachments: Attachment[]; title: string },
-  ): Promise<StartedRun> {
-    const data = await this.request("POST", `/api/agents/${encodeURIComponent(agentId)}/runs`, "start run", {
-      ...body,
-      runtimeMode: "one_shot",
-    });
-    return parse(StartSchema, data, "start run");
+  async startRun(agentId: string, body: { message: string; attachments: Attachment[] }): Promise<StartedRun> {
+    const data = await this.call(
+      RUN_TOOLS.start,
+      {
+        agent_id: agentId,
+        message: body.message,
+        ...(body.attachments.length > 0 ? { attachments: body.attachments } : {}),
+      },
+      "start run",
+    );
+    const result = parse(StartResultSchema, data, "start run");
+    this.remember(result.run.run_id, result.run_url);
+    return {
+      runId: result.run.run_id,
+      state: result.run.state,
+      runUrl: result.run_url ?? null,
+      previousTurnCreatedAt: null,
+    };
   }
 
-  async continueRun(taskId: string, body: { message: string; attachments: Attachment[] }): Promise<StartedRun> {
-    const data = await this.request("POST", `/api/agent-runs/${encodeURIComponent(taskId)}/continue`, "continue run", {
-      ...body,
-      runtimeMode: "one_shot",
-    });
-    return parse(StartSchema, data, "continue run");
+  async getRun(runId: string): Promise<AgentRun> {
+    const data = await this.call(RUN_TOOLS.get, { run_id: runId }, "get run");
+    const result = parse(GetResultSchema, data, "get run");
+    this.remember(runId, result.run_url);
+    const { run, workspace } = result;
+    return {
+      runId,
+      state: run.state,
+      statusReason: run.status_reason ?? null,
+      failure: run.failure ?? null,
+      turnCreatedAt: run.created_at ?? null,
+      runUrl: result.run_url ?? null,
+      workspace: workspace
+        ? {
+            state: workspace.state,
+            retainedUntil: workspace.retained_until ?? null,
+            canContinue: workspace.can_continue,
+            continuationError: workspace.continuation_error ?? null,
+          }
+        : null,
+    };
   }
 
-  async getRun(taskId: string): Promise<AgentRun> {
-    const data = await this.request("GET", `/api/agent-runs/${encodeURIComponent(taskId)}`, "get run");
-    return parse(RunSchema, data, "get run");
+  /**
+   * Sends a message to the run. A finished run with a retained workspace
+   * continues in a new turn ("continued"); a live run gets the message as a
+   * correction ("steered").
+   */
+  async steerRun(runId: string, message: string): Promise<"continued" | "steered"> {
+    const data = await this.call(RUN_TOOLS.steer, { run_id: runId, message }, "continue run");
+    const result = parse(SteerResultSchema, data, "continue run");
+    return result.status === "steered" ? "steered" : "continued";
   }
 
-  async cancelRun(taskId: string): Promise<void> {
-    await this.request("POST", `/api/agent-runs/${encodeURIComponent(taskId)}/cancel`, "cancel run", {});
+  async cancelRun(runId: string): Promise<void> {
+    await this.call(RUN_TOOLS.cancel, { run_id: runId }, "cancel run");
   }
 
-  /** Reads a file from the run's workspace. Returns null when it is absent. */
-  async readWorkspaceFile(taskId: string, path: string): Promise<Buffer | null> {
-    let data: unknown;
+  /** Reads a file of the run's workspace. Returns null when it does not exist. */
+  async readWorkspaceFile(runId: string, path: string): Promise<Buffer | null> {
+    let data: Record<string, unknown>;
     try {
-      data = await this.request(
-        "GET",
-        `/api/agent-runs/${encodeURIComponent(taskId)}/workspace/files?path=${encodeURIComponent(path)}`,
-        "read workspace file",
-      );
+      data = await this.call(RUN_TOOLS.read, { run_id: runId, path, encoding: "base64" }, "read workspace file");
     } catch (error) {
-      if (error instanceof ArchestraApiError && error.status === 404) {
+      if (
+        error instanceof ArchestraApiError &&
+        error.kind === "tool" &&
+        /No such file or directory/i.test(error.detail)
+      ) {
         return null;
       }
       throw error;
     }
-    const file = parse(FileSchema, data, "read workspace file");
-    if (file.content_base64 === undefined) {
-      throw new ArchestraApiError(
-        "read workspace file",
-        200,
-        `${path} has no content in the response (${file.size} bytes)`,
-      );
+    const file = parse(FileResultSchema, data, "read workspace file");
+    if (file.status === "pending" || file.content === undefined) {
+      throw new ArchestraApiError("read workspace file", "response", `${path} is not readable yet`, 503);
     }
-    return Buffer.from(file.content_base64, "base64");
+    return Buffer.from(file.content, "base64");
   }
 
-  async setRuntimeCredential(agentId: string, key: string, value: string): Promise<void> {
-    await this.request(
-      "PUT",
-      `/api/agents/${encodeURIComponent(agentId)}/runtime/credentials/${encodeURIComponent(key)}`,
-      "store runtime credential",
-      { value },
+  /** Writes a file into the run's workspace. The parent directory must exist. */
+  async writeWorkspaceFile(runId: string, path: string, content: Buffer): Promise<void> {
+    await this.call(
+      RUN_TOOLS.write,
+      { run_id: runId, path, content: content.toString("base64"), encoding: "base64", overwrite: true },
+      "write workspace file",
     );
   }
 
-  private async request(method: string, path: string, operation: string, body?: unknown): Promise<unknown> {
-    let response: Response;
-    try {
-      response = await this.fetchImpl(`${this.baseUrl}${path}`, {
-        method,
-        headers: {
-          Authorization: this.apiKey,
-          Accept: "application/json",
-          ...(body === undefined ? {} : { "Content-Type": "application/json" }),
-        },
-        body: body === undefined ? undefined : JSON.stringify(body),
-        signal: AbortSignal.timeout(this.requestTimeoutMs),
-      });
-    } catch (error) {
-      throw new ArchestraApiError(operation, null, error instanceof Error ? error.message : String(error));
+  /**
+   * Stores a personal credential of the token's user on the agent. It
+   * reaches the agent's next turn, so store it before starting or
+   * continuing the run.
+   */
+  async transferCredential(agentId: string, key: string, value: string, label: string): Promise<void> {
+    await this.call(
+      RUN_TOOLS.credential,
+      { agent_id: agentId, environment: [{ key, type: "secret", value }], label },
+      "store runtime credential",
+    );
+  }
+
+  private remember(runId: string, runUrl: string | null | undefined): void {
+    if (runUrl) this.runUrls.set(runId, runUrl);
+  }
+
+  private async call(shortName: string, args: Record<string, unknown>, operation: string) {
+    const names = await this.resolveTools(operation);
+    const direct = names.get(shortName);
+    if (direct) return this.session.callTool(direct, args, operation);
+    if (this.runTool) {
+      return this.session.callTool(
+        this.runTool,
+        { tool_name: `${ARCHESTRA_PREFIX}${shortName}`, tool_args: args },
+        operation,
+      );
     }
-    const text = await response.text();
-    if (!response.ok) {
-      throw new ArchestraApiError(operation, response.status, errorDetail(text, response.statusText));
-    }
-    if (text.trim() === "") return {};
-    try {
-      return JSON.parse(text);
-    } catch {
-      throw new ArchestraApiError(operation, response.status, "the response is not JSON");
-    }
+    throw new ArchestraApiError(
+      operation,
+      "tool",
+      `the gateway does not expose ${shortName}. An administrator adds the Remote Agents tools to the MCP gateway.`,
+      null,
+      true,
+    );
+  }
+
+  private resolveTools(operation: string): Promise<Map<string, string>> {
+    this.toolNames ??= this.session.listToolNames(operation).then(
+      (names) => {
+        const byShortName = new Map<string, string>();
+        for (const shortName of [...Object.values(RUN_TOOLS), RUN_TOOL]) {
+          const match =
+            names.find((name) => name === `${ARCHESTRA_PREFIX}${shortName}`) ??
+            names.find((name) => name === shortName) ??
+            names.find((name) => name.endsWith(`__${shortName}`));
+          if (match) byShortName.set(shortName, match);
+        }
+        this.runTool = byShortName.get(RUN_TOOL) ?? null;
+        return byShortName;
+      },
+      (error: unknown) => {
+        this.toolNames = null;
+        throw error;
+      },
+    );
+    return this.toolNames;
   }
 }
 
@@ -198,30 +291,12 @@ function parse<T>(schema: z.ZodType<T>, data: unknown, operation: string): T {
   if (!result.success) {
     throw new ArchestraApiError(
       operation,
-      200,
-      `unexpected response shape: ${result.error.issues
+      "response",
+      result.error.issues
         .slice(0, 3)
         .map((issue) => `${issue.path.join(".")}: ${issue.message}`)
-        .join("; ")}`,
+        .join("; "),
     );
   }
   return result.data;
-}
-
-/** The platform formats errors as { error: { message, type } }. */
-function errorDetail(text: string, fallback: string): string {
-  try {
-    const parsed = JSON.parse(text) as {
-      error?: { message?: unknown } | string;
-      message?: unknown;
-    };
-    if (typeof parsed.error === "string") return parsed.error.slice(0, 500);
-    if (typeof parsed.error?.message === "string") {
-      return parsed.error.message.slice(0, 500);
-    }
-    if (typeof parsed.message === "string") return parsed.message.slice(0, 500);
-  } catch {
-    // Not JSON: use the raw text.
-  }
-  return (text.trim() || fallback || "no detail").slice(0, 300);
 }

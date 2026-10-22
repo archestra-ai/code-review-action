@@ -78,11 +78,11 @@ export type StoredFinding = z.infer<typeof StoredFindingSchema>;
 
 const AttemptRecordSchema = z.object({
   agentId: z.string(),
-  taskId: z.string().nullable(),
+  runId: z.string().nullable(),
   runUrl: z.string().nullable(),
   result: z.enum(["completed", "retriable", "non_retriable", "fatal"]),
   reason: z.string(),
-  source: z.enum(["http", "failure-field", "message-pattern", "state", "timeout", "contract"]).nullable(),
+  source: z.enum(["api", "failure-field", "message-pattern", "state", "timeout", "contract"]).nullable(),
   durationMs: z.number(),
 });
 

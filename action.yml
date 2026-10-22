@@ -6,15 +6,30 @@ branding:
   color: blue
 
 inputs:
-  archestra-url:
-    description: The base URL of the Archestra deployment, for example https://archestra.example.com.
+  archestra-gateway-url:
+    description: >-
+      The Archestra MCP gateway that exposes the Remote Agents tools, for example
+      https://archestra.example.com/v1/mcp/code-review.
     required: true
-  archestra-api-key:
-    description: The API key of an Archestra service account. The role must let the account use the listed agents and read their runs.
-    required: true
+  archestra-token:
+    description: >-
+      The Archestra platform token of the person who caused this event (the pull request author, the
+      pusher, or the commenter). The runs act as this person: their credentials, their Claude account,
+      their costs. Empty skips the event with a warning, unless "fallback-token" is set.
+    default: ""
+  fallback-token:
+    description: >-
+      A shared platform token (for example a team token) for actors without their own token. The runs
+      act as the token's owner, who pays for them. Empty disables the fallback.
+    default: ""
   agents:
     description: The IDs of the Archestra agents to use, one for each line. Each agent must have a dedicated runtime.
     required: true
+  fallback-agents:
+    description: >-
+      The agents to use with "fallback-token". Empty means "agents". Leave out agents that use a person's
+      own subscription.
+    default: ""
   strategy:
     description: >-
       How to select the first agent. "rotate": agent number (PR number + run attempt) mod N.
@@ -66,6 +81,12 @@ inputs:
     description: >-
       A GitHub App installation token for this repository (contents write, pull-requests write, actions read;
       actions write if ci-rerun is true). The runtime pushes fixes with it. Without it, fixes are not available.
+    default: ""
+  clone-token:
+    description: >-
+      A read-only GitHub token (contents read) for a private repository. Before each review, the action
+      stores it as the actor's GITHUB_TOKEN credential on the agent, so the runtime can clone. Empty: the
+      review uses the value that is already stored. Public repositories do not need it.
     default: ""
   fix-timeout-minutes:
     description: The time limit for one fix or CI triage attempt, in minutes.

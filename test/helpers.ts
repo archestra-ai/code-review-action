@@ -37,8 +37,8 @@ export class MemoryLogger implements Logger {
 
 export function testInputs(overrides: Record<string, string> = {}, archestra = new FakeArchestra()): Inputs {
   const values: Record<string, string> = {
-    "archestra-url": archestra.baseUrl,
-    "archestra-api-key": archestra.apiKey,
+    "archestra-gateway-url": archestra.gatewayUrl,
+    "archestra-token": archestra.token,
     agents: [AGENT_A, AGENT_B, AGENT_C].join("\n"),
     strategy: "ordered",
     "github-token": "ghs_job_token",
@@ -84,11 +84,11 @@ export function createHarness(): Harness {
         workflowRunUrl: `https://github.com/${github.fullName}/actions/runs/1`,
         gh: testOctokit(inputs.githubToken),
         ghFix: inputs.fixToken ? testOctokit(inputs.fixToken) : null,
-        archestra: new ArchestraClient({ baseUrl: archestra.baseUrl, apiKey: inputs.apiKey }),
+        archestra: new ArchestraClient({ gatewayUrl: inputs.gatewayUrl, token: inputs.token }),
         log,
         clock,
         random: () => 0.5,
-        saveLiveTask: (taskId) => void live.push(taskId),
+        saveLiveRun: (runId) => void live.push(runId),
         startedAt: clock.now(),
       };
     },

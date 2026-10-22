@@ -3,7 +3,7 @@ import type { ArchestraClient } from "./archestra/client";
 import { type AttemptRecord, type FallbackResult, runWithFallback } from "./attempts";
 import type { Octokit } from "./github/octokit";
 import type { Inputs } from "./inputs";
-import { type AttemptValue, type Clock, continueOrNull, executeAttempt, readContract } from "./run-attempt";
+import { type AttemptValue, type Clock, continueRun, executeAttempt, readContract } from "./run-attempt";
 import type { Attachment, Logger, RepoRef } from "./util";
 
 export interface ActionContext {
@@ -23,7 +23,7 @@ export interface ActionContext {
   clock: Clock;
   random: () => number;
   /** Records the live run, so the post step can cancel it. */
-  saveLiveTask: (taskId: string | null) => void;
+  saveLiveRun: (runId: string | null) => void;
   startedAt: number;
 }
 
@@ -93,18 +93,18 @@ export function briefTitle(title: string): string {
 /**
  * Starts the work on the runtimes with the retry and fallback policy. When
  * `continueFrom` names one of the agents, the first attempt on that agent
- * continues the retained workspace; a workspace that is no longer retained
- * gives a fresh run on the same agent. When `credentialToken` is set, it is
- * stored as the agent's GITHUB_TOKEN runtime credential before each attempt.
+ * continues the retained workspace; a workspace that this token cannot
+ * continue gives a fresh run on the same agent. When `credentialToken` is
+ * set, it is stored as the actor's GITHUB_TOKEN credential on the agent
+ * before each attempt; it reaches the next turn.
  */
 export async function launch<T>(
   ctx: ActionContext,
   p: {
     agents: string[];
-    continueFrom: { agentId: string; taskId: string } | null;
+    continueFrom: { agentId: string; runId: string } | null;
     message: string;
     attachments: Attachment[];
-    title: string;
     contract: { file: string; schema: z.ZodType<T> };
     timeoutMs: number;
     credentialToken: string | null;
@@ -128,18 +128,25 @@ export async function launch<T>(
         deadline,
         clock: ctx.clock,
         log: ctx.log,
-        onLive: ctx.saveLiveTask,
-        readResult: (taskId) => readContract(ctx.archestra, taskId, p.contract.file, p.contract.schema),
+        onLive: ctx.saveLiveRun,
+        readResult: (runId) => readContract(ctx.archestra, runId, p.contract.file, p.contract.schema),
         start: async () => {
           if (p.credentialToken) {
-            await ctx.archestra.setRuntimeCredential(agentId, "GITHUB_TOKEN", p.credentialToken);
+            await ctx.archestra.transferCredential(
+              agentId,
+              "GITHUB_TOKEN",
+              p.credentialToken,
+              "GitHub token of the code review action",
+            );
           }
-          const body = { message: p.message, attachments: p.attachments };
           if (continueFrom && continueFrom.agentId === agentId) {
-            const continued = await continueOrNull({
+            const continued = await continueRun({
               client: ctx.archestra,
-              previousTaskId: continueFrom.taskId,
-              body,
+              runId: continueFrom.runId,
+              message: p.message,
+              files: p.attachments,
+              resultFile: p.contract.file,
+              turnKey: `turn-${ctx.clock.now().toString(36)}`,
               deadline,
               clock: ctx.clock,
               log: ctx.log,
@@ -147,7 +154,7 @@ export async function launch<T>(
             if (continued) return continued;
             continueFrom = null;
           }
-          return ctx.archestra.startRun(agentId, { ...body, title: p.title });
+          return ctx.archestra.startRun(agentId, { message: p.message, attachments: p.attachments });
         },
       }),
   });

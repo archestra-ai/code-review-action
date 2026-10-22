@@ -17,7 +17,7 @@ import { loadChangedFiles, loadDiff, loadPullRequest, prAttachmentData } from ".
 import { findingIdFromBody, type StoredFinding } from "../github/sticky";
 import { applyThreadUpdate, listFindingThreads, planThreadUpdates, replyToThread } from "../github/threads";
 import { errorMessage, fullName, jsonAttachment, shortSha, textAttachment } from "../util";
-import { failureForError, isResult, prepareFix, reply, summarize, updateSticky } from "./common";
+import { failureForError, fatalReason, isResult, prepareFix, reply, summarize, updateSticky } from "./common";
 
 export interface FixTriggerInput {
   kind: "fix";
@@ -97,7 +97,7 @@ export async function runFix(ctx: ActionContext, trigger: FixTriggerInput): Prom
     random: ctx.random,
   });
   const continueFrom =
-    marker.run && marker.agent && order.includes(marker.agent) ? { agentId: marker.agent, taskId: marker.run } : null;
+    marker.run && marker.agent && order.includes(marker.agent) ? { agentId: marker.agent, runId: marker.run } : null;
   const agents = preferAgent(order, continueFrom?.agentId ?? null);
 
   await updateSticky(ctx, pr, (s) => {
@@ -109,14 +109,13 @@ export async function runFix(ctx: ActionContext, trigger: FixTriggerInput): Prom
     continueFrom,
     message,
     attachments,
-    title: `${fullName(repo)}#${pr.number} fix`,
     contract: CONTRACTS.fix,
     timeoutMs: inputs.fixTimeoutMs,
     credentialToken: inputs.fixToken,
   });
 
   if (!outcome.ok || !outcome.value) {
-    const reason = outcome.fatal ? "The Archestra API rejected the API key." : "No runtime completed the fix.";
+    const reason = outcome.fatal ? fatalReason(outcome.attempts) : "No runtime completed the fix.";
     await updateSticky(ctx, pr, (s) => {
       s.attempts = outcome.attempts;
       s.operation = "fix";
@@ -131,8 +130,8 @@ export async function runFix(ctx: ActionContext, trigger: FixTriggerInput): Prom
     });
   }
 
-  const { result, taskId, sessionId } = outcome.value;
-  const runUrl = ctx.archestra.runUrl(taskId);
+  const { result, runId } = outcome.value;
+  const runUrl = ctx.archestra.runUrl(runId);
   const selectedIds = new Set(selected.map((finding) => finding.id));
   const reported = result.applied.filter((entry) => selectedIds.has(entry.finding));
   const after = await loadPullRequest(ctx.gh, repo, pr.number);
@@ -163,9 +162,9 @@ export async function runFix(ctx: ActionContext, trigger: FixTriggerInput): Prom
   await updateFindingThreads(ctx, pr.number, [...appliedIds], skipped);
   await updateSticky(ctx, pr, (s, stickyMarker) => {
     Object.assign(stickyMarker, {
-      run: taskId,
+      run: runId,
       agent: outcome.agentId ?? stickyMarker.agent,
-      session: sessionId ?? stickyMarker.session,
+      session: runId,
     });
     s.findings = s.findings.map((finding) =>
       appliedIds.has(finding.id)
@@ -202,7 +201,7 @@ export async function runFix(ctx: ActionContext, trigger: FixTriggerInput): Prom
   return makeResult("fix", {
     status: "success",
     agentId: outcome.agentId ?? null,
-    runId: taskId,
+    runId,
     runUrl,
     attempts: outcome.attempts,
     pushedCommits: check.verified,

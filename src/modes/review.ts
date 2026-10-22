@@ -16,7 +16,7 @@ import { inlineComments, placeFindings, postReview } from "../github/review";
 import { findSticky } from "../github/sticky";
 import { applyThreadUpdate, listFindingThreads, planThreadUpdates, replyToThread } from "../github/threads";
 import { errorMessage, fullName, jsonAttachment, shortSha, textAttachment } from "../util";
-import { failureForError, summarize, updateSticky } from "./common";
+import { failureForError, fatalReason, summarize, updateSticky } from "./common";
 
 export async function runReview(ctx: ActionContext, prNumber: number): Promise<ActionResult> {
   const { gh, repo, inputs, log } = ctx;
@@ -48,7 +48,7 @@ export async function runReview(ctx: ActionContext, prNumber: number): Promise<A
     marker?.run &&
     marker.agent &&
     order.includes(marker.agent)
-      ? { agentId: marker.agent, taskId: marker.run }
+      ? { agentId: marker.agent, runId: marker.run }
       : null;
   const agents = preferAgent(order, incremental?.agentId ?? null);
 
@@ -89,15 +89,16 @@ export async function runReview(ctx: ActionContext, prNumber: number): Promise<A
     continueFrom: incremental,
     message,
     attachments,
-    title: `${fullName(repo)}#${pr.number}`,
     contract: CONTRACTS.review,
     timeoutMs: inputs.timeoutMs,
-    credentialToken: null,
+    // A fix leaves a short-lived App token in the actor's GITHUB_TOKEN; a
+    // private repository needs a fresh read-only token for the review.
+    credentialToken: inputs.cloneToken || null,
   });
 
   if (!outcome.ok || !outcome.value) {
     const reason = outcome.fatal
-      ? "The Archestra API rejected the API key. No more attempts were made."
+      ? fatalReason(outcome.attempts)
       : outcome.deadlineReached
         ? "The overall time limit was reached."
         : "All attempts failed.";
@@ -118,7 +119,7 @@ export async function runReview(ctx: ActionContext, prNumber: number): Promise<A
     });
   }
 
-  const { result: review, taskId, sessionId } = outcome.value;
+  const { result: review, runId } = outcome.value;
   const agentId = outcome.agentId ?? null;
   const index = buildDiffIndex(files);
   let findings = placeFindings(review.findings, index, { headSha: pr.headSha, inline: inputs.post === "review" });
@@ -141,11 +142,11 @@ export async function runReview(ctx: ActionContext, prNumber: number): Promise<A
 
   if (inputs.post !== "none") {
     await updateSticky(ctx, pr, (state, stickyMarker) => {
-      const sameWorkspace = stickyMarker.agent === agentId;
+      // The run id is also the workspace id: a later fix continues it.
       Object.assign(stickyMarker, {
-        run: taskId,
+        run: runId,
         agent: agentId,
-        session: sessionId ?? (sameWorkspace ? stickyMarker.session : null),
+        session: runId,
         sha: pr.headSha,
       });
       state.status = "reviewed";
@@ -173,14 +174,14 @@ export async function runReview(ctx: ActionContext, prNumber: number): Promise<A
   return makeResult("review", {
     status: "success",
     agentId,
-    runId: taskId,
-    runUrl: ctx.archestra.runUrl(taskId),
+    runId,
+    runUrl: ctx.archestra.runUrl(runId),
     findingsCount: count,
     attempts: outcome.attempts,
     failure,
     summary: summarize(
       "Archestra review",
-      [`Verdict: ${review.verdict}. Findings: ${count}. Run: ${ctx.archestra.runUrl(taskId)}`],
+      [`Verdict: ${review.verdict}. Findings: ${count}. Run: ${ctx.archestra.runUrl(runId)}`],
       outcome.attempts,
     ),
   });

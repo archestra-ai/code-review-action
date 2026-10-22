@@ -5,8 +5,12 @@ export type PostMode = "review" | "comment" | "none";
 export type FailOn = "never" | "findings" | "error";
 
 export interface Inputs {
-  archestraUrl: string;
-  apiKey: string;
+  /** The Archestra MCP gateway endpoint, `<origin>/v1/mcp/<gateway>`. */
+  gatewayUrl: string;
+  /** The platform token that the runs act as; "" when the actor has none. */
+  token: string;
+  /** "actor": the actor's own token. "fallback": a shared token. */
+  tokenSource: "actor" | "fallback" | null;
   agents: string[];
   strategy: Strategy;
   retries: number;
@@ -21,6 +25,8 @@ export interface Inputs {
   prNumber: number | null;
   fixCommand: string;
   fixToken: string;
+  /** A read-only GitHub token that review mode stores as GITHUB_TOKEN; "" for none. */
+  cloneToken: string;
   fixTimeoutMs: number;
   ciRerun: boolean;
   maxAutoFixRounds: number;
@@ -50,32 +56,28 @@ export function readInputs(get: (name: string) => string, readFile: (path: strin
     return v;
   };
 
-  const archestraUrl = required("archestra-url");
+  const gatewayUrl = required("archestra-gateway-url");
   let parsedUrl: URL;
   try {
-    parsedUrl = new URL(archestraUrl);
+    parsedUrl = new URL(gatewayUrl);
   } catch {
-    throw new InputError(`Input "archestra-url" is not a valid URL.`);
+    throw new InputError(`Input "archestra-gateway-url" is not a valid URL.`);
   }
   if (!["https:", "http:"].includes(parsedUrl.protocol)) {
-    throw new InputError(`Input "archestra-url" must use https or http.`);
+    throw new InputError(`Input "archestra-gateway-url" must use https or http.`);
   }
-  const apiKey = required("archestra-api-key");
+  if (!/\/mcp\/[^/]+\/?$/.test(parsedUrl.pathname)) {
+    throw new InputError(
+      `Input "archestra-gateway-url" must be the MCP gateway endpoint, for example https://archestra.example.com/v1/mcp/code-review.`,
+    );
+  }
+  const actorToken = value("archestra-token");
+  const fallbackToken = value("fallback-token");
+  const tokenSource = actorToken ? "actor" : fallbackToken ? "fallback" : null;
 
-  const agents = [
-    ...new Set(
-      required("agents")
-        .split(/[\s,]+/)
-        .map((agent) => agent.trim())
-        .filter(Boolean),
-    ),
-  ];
-  for (const agent of agents) {
-    if (!UUID.test(agent)) {
-      throw new InputError(`Input "agents" has a value that is not an agent ID: "${agent}".`);
-    }
-  }
-  if (agents.length === 0) throw new InputError(`Input "agents" has no agent IDs.`);
+  let agents = agentList("agents", required("agents"));
+  const fallbackAgents = value("fallback-agents");
+  if (tokenSource === "fallback" && fallbackAgents) agents = agentList("fallback-agents", fallbackAgents);
 
   const maxFallbacksRaw = value("max-fallbacks");
   const maxFallbacks =
@@ -102,8 +104,9 @@ export function readInputs(get: (name: string) => string, readFile: (path: strin
   const maxAutoFixRounds = integer("max-auto-fix-rounds", value("max-auto-fix-rounds") || "0", 0, 0);
 
   return {
-    archestraUrl,
-    apiKey,
+    gatewayUrl,
+    token: actorToken || fallbackToken,
+    tokenSource,
     agents,
     strategy: oneOf("strategy", value("strategy") || "rotate", ["rotate", "ordered", "random"]),
     retries: integer("retries", value("retries") || "1", 0, 5),
@@ -118,11 +121,30 @@ export function readInputs(get: (name: string) => string, readFile: (path: strin
     prNumber: prNumberRaw ? integer("pr-number", prNumberRaw, 1, Number.MAX_SAFE_INTEGER) : null,
     fixCommand: commandPrefix(value("fix-command") || "/archestra"),
     fixToken: value("fix-token"),
+    cloneToken: value("clone-token"),
     fixTimeoutMs: integer("fix-timeout-minutes", value("fix-timeout-minutes") || "45", 1, 360) * 60_000,
     ciRerun: boolean("ci-rerun", value("ci-rerun") || "false"),
     maxAutoFixRounds,
     incrementalReview: boolean("incremental-review", value("incremental-review") || "true"),
   };
+}
+
+function agentList(name: string, raw: string): string[] {
+  const agents = [
+    ...new Set(
+      raw
+        .split(/[\s,]+/)
+        .map((agent) => agent.trim())
+        .filter(Boolean),
+    ),
+  ];
+  for (const agent of agents) {
+    if (!UUID.test(agent)) {
+      throw new InputError(`Input "${name}" has a value that is not an agent ID: "${agent}".`);
+    }
+  }
+  if (agents.length === 0) throw new InputError(`Input "${name}" has no agent IDs.`);
+  return agents;
 }
 
 function integer(name: string, raw: string, min: number, max: number): number {
