@@ -7,7 +7,7 @@ Eight pass/fail checks that confirm the platform and GitHub behave as the design
 - A throwaway repository with a `main` branch and one open pull request from a branch of the same repository.
 - Two test users: one with **write** access, one with **read** access.
 - A GitHub App installed on the repository (contents: write, pull-requests: write, actions: read). Secrets `SPIKE_APP_ID`, `SPIKE_APP_PRIVATE_KEY`.
-- An Archestra agent with a dedicated runtime and a declared per-user `GITHUB_TOKEN` credential, and a service account key. Secrets `SPIKE_ARCHESTRA_API_KEY`; variables `SPIKE_ARCHESTRA_URL`, `SPIKE_AGENT_ID`.
+- An Archestra agent with a dedicated runtime and a declared per-user `GITHUB_TOKEN` credential. An MCP gateway that lists the Remote Agents tools (`start_agent_run`, `get_agent_run`, `steer_agent_run`, `read_workspace_file`, `transfer_credential`). Your personal platform token. Secret `SPIKE_ARCHESTRA_TOKEN`; variables `SPIKE_ARCHESTRA_GATEWAY_URL` (for example `https://archestra.example.com/v1/mcp/code-review`), `SPIKE_AGENT_ID`.
 
 ## Steps
 
@@ -27,5 +27,5 @@ Eight pass/fail checks that confirm the platform and GitHub behave as the design
 | 4   | A push with the App token starts `pull_request: synchronize`; a push with the job token does not.                        | The `synchronize` job logs the head commit message (`spike: app push` or `spike: job push`).                                                                             |
 | 5   | A commit with the user's noreply email shows the user's avatar.                                                          | Manual: look at the commit list of the pull request.                                                                                                                     |
 | 6   | `resolveReviewThread` works with the App token on a thread the bot created.                                              | The `resolve` step prints `isResolved`.                                                                                                                                  |
-| 7   | After a one-shot run exits, the workspace is `idle` and `/continue` accepts a new turn.                                  | The `runtime` step prints the workspace state and the continue response. Suspend the workspace in Archestra and run it again.                                            |
-| 8   | `PUT /api/agents/:id/runtime/credentials/GITHUB_TOKEN` and then `/continue` give the new value to the next turn.         | The runtime writes `token-check.json` with the SHA-256 of `$GITHUB_TOKEN`; the step compares it with the SHA-256 of the stored value. The token itself is never printed. |
+| 7   | After a one-shot run ends, `get_agent_run` shows `can_continue` and `steer_agent_run` continues the same workspace.      | The `runtime` step prints the workspace state and the steer response. Suspend the workspace in Archestra and run it again.                                               |
+| 8   | `transfer_credential` (GITHUB_TOKEN) and then `steer_agent_run` give the new value to the next turn.                     | The runtime writes `token-check.json` with the SHA-256 of `$GITHUB_TOKEN`; the step compares it with the SHA-256 of the stored value. The token itself is never printed. |

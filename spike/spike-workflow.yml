@@ -149,8 +149,8 @@ jobs:
     if: github.event_name == 'workflow_dispatch' && inputs.step == 'runtime'
     runs-on: ubuntu-latest
     env:
-      URL: ${{ vars.SPIKE_ARCHESTRA_URL }}
-      KEY: ${{ secrets.SPIKE_ARCHESTRA_API_KEY }}
+      GATEWAY: ${{ vars.SPIKE_ARCHESTRA_GATEWAY_URL }}
+      ARCHESTRA_TOKEN: ${{ secrets.SPIKE_ARCHESTRA_TOKEN }}
       AGENT: ${{ vars.SPIKE_AGENT_ID }}
     steps:
       - id: app
@@ -162,32 +162,52 @@ jobs:
           TOKEN: ${{ steps.app.outputs.token }}
         run: |
           set -euo pipefail
-          api() { curl -sS -H "Authorization: $KEY" -H 'Content-Type: application/json' "$@"; }
+          # The Remote Agents tools over the MCP gateway, as the action calls them.
+          # This client declares no capabilities, so the gateway answers with JSON.
+          headers=(-H "Authorization: Bearer $ARCHESTRA_TOKEN" -H 'Content-Type: application/json' -H 'Accept: application/json, text/event-stream')
+          curl -sS "${headers[@]}" "$GATEWAY" -o /dev/null \
+            -d '{"jsonrpc":"2.0","id":0,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"spike","version":"1"}}}'
+          rpc() { curl -sS "${headers[@]}" -H 'Mcp-Protocol-Version: 2025-11-25' "$GATEWAY" -d "$1"; }
+          rpc '{"jsonrpc":"2.0","method":"notifications/initialized"}' > /dev/null
+          # tool <short name> <arguments JSON>: prints the structured result, or a JSON string "ERROR: ...".
+          tool() {
+            rpc "$(jq -nc --arg n "archestra__$1" --argjson a "$2" '{jsonrpc:"2.0",id:1,method:"tools/call",params:{name:$n,arguments:$a}}')" |
+              jq -c 'if .error then "ERROR: \(.error.message)" elif .result.isError then "ERROR: \(.result.content[0].text)" else .result.structuredContent end'
+          }
+          get_run() { tool get_agent_run "$(jq -nc --arg r "$1" '{run_id:$r}')"; }
+          # wait_done <run id> [<created_at of the turn before>]: the newest turn's end state.
           wait_done() {
             for _ in $(seq 1 120); do
-              state=$(api "$URL/api/agent-runs/$1" | jq -r .state)
-              case "$state" in TASK_STATE_COMPLETED|TASK_STATE_FAILED|TASK_STATE_CANCELED|TASK_STATE_REJECTED) echo "$state"; return;; esac
+              run=$(get_run "$1")
+              if [ "$(jq -r .run.created_at <<<"$run")" != "${2:-}" ]; then
+                state=$(jq -r .run.state <<<"$run")
+                case "$state" in completed|failed|canceled|rejected|input-required) echo "$state"; return;; esac
+              fi
               sleep 10
             done
             echo timeout
           }
-          msg='Write the file /home/node/workspace/token-check.json with {"sha256": "<sha256 hex of the GITHUB_TOKEN environment variable>"} and stop. Do not print the token. Do not ask questions.'
-          first=$(api -X POST "$URL/api/agents/$AGENT/runs" -d "$(jq -n --arg m "$msg" '{message:$m, runtimeMode:"one_shot", title:"spike"}')" | jq -r .taskId)
-          echo "first run: $first -> $(wait_done "$first")"
-          workspace=$(api "$URL/api/agent-runs/$first" | jq -r '.workspace.state')
-          echo "workspace state after the run: $workspace"
-          api -X PUT "$URL/api/agents/$AGENT/runtime/credentials/GITHUB_TOKEN" -d "$(jq -n --arg v "$TOKEN" '{value:$v}')" > /dev/null
-          second=$(api -X POST "$URL/api/agent-runs/$first/continue" -d "$(jq -n --arg m "$msg" '{message:$m, runtimeMode:"one_shot"}')")
-          echo "continue response: $(jq -c '{taskId, sessionId, state, error}' <<<"$second")"
-          next=$(jq -r '.taskId // empty' <<<"$second")
-          if [ "$workspace" = "idle" ] && [ -n "$next" ]; then
-            echo "CHECK 7 PASS: workspace idle after the one-shot run; /continue accepted a new turn"
+          msg='Write the file /home/node/workspace/token-check.json with {"sha256": "<sha256 hex of the GITHUB_TOKEN environment variable, or empty when it is not set>"} and stop. Do not print the token. Do not ask questions.'
+          started=$(tool start_agent_run "$(jq -nc --arg a "$AGENT" --arg m "$msg" '{agent_id:$a, message:$m}')")
+          run_id=$(jq -r .run.run_id <<<"$started")
+          echo "run: $(jq -r .run_url <<<"$started")"
+          echo "first turn: $(wait_done "$run_id")"
+          after=$(get_run "$run_id")
+          echo "workspace after the turn: $(jq -c '.workspace | {state, can_continue, continuation_error}' <<<"$after")"
+          stored=$(tool transfer_credential "$(jq -nc --arg a "$AGENT" --arg v "$TOKEN" \
+            '{agent_id:$a, environment:[{key:"GITHUB_TOKEN", type:"secret", value:$v}], label:"spike"}')")
+          echo "credential: $(jq -c 'if type == "object" then {key, scope, valueStored} else . end' <<<"$stored")"
+          steered=$(tool steer_agent_run "$(jq -nc --arg r "$run_id" --arg m "$msg" '{run_id:$r, message:$m}')")
+          echo "steer: $steered"
+          if [ "$(jq -r .workspace.can_continue <<<"$after")" = true ] && [ "$(jq -r '.status? // empty' <<<"$steered")" = continued ]; then
+            echo "CHECK 7 PASS: the finished one-shot run continued in the same workspace"
           else
-            echo "CHECK 7 FAIL: workspace=$workspace continue=$(jq -c . <<<"$second")"
+            echo "CHECK 7 FAIL: workspace=$(jq -c .workspace <<<"$after") steer=$steered"
             exit 0
           fi
-          echo "second run: $next -> $(wait_done "$next")"
-          reported=$(api "$URL/api/agent-runs/$next/workspace/files?path=token-check.json" | jq -r .content_base64 | base64 -d | jq -r .sha256)
+          echo "second turn: $(wait_done "$run_id" "$(jq -r .run.created_at <<<"$after")")"
+          file=$(tool read_workspace_file "$(jq -nc --arg r "$run_id" '{run_id:$r, path:"token-check.json"}')")
+          reported=$(jq -r '.content? // empty' <<<"$file" | jq -r '.sha256? // empty')
           expected=$(printf %s "$TOKEN" | sha256sum | cut -d' ' -f1)
           [ "$reported" = "$expected" ] && echo "CHECK 8 PASS: the next turn saw the new GITHUB_TOKEN" || echo "CHECK 8 FAIL: the turn saw a different value"
           echo "CHECK 7 MANUAL: suspend the workspace in Archestra, then run this step again"
