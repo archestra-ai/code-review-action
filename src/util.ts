@@ -31,10 +31,7 @@ export function truncate(text: string, max: number): string {
 }
 
 /** Keeps the last `maxBytes` bytes of a buffer. */
-export function tailBytes(
-  data: Buffer,
-  maxBytes: number,
-): { data: Buffer; truncated: boolean } {
+export function tailBytes(data: Buffer, maxBytes: number): { data: Buffer; truncated: boolean } {
   if (data.byteLength <= maxBytes) return { data, truncated: false };
   return { data: data.subarray(data.byteLength - maxBytes), truncated: true };
 }
@@ -50,9 +47,7 @@ export function slug(text: string, max = 60): string {
 }
 
 export function toBase64(text: string | Buffer): string {
-  return (typeof text === "string" ? Buffer.from(text, "utf8") : text).toString(
-    "base64",
-  );
+  return (typeof text === "string" ? Buffer.from(text, "utf8") : text).toString("base64");
 }
 
 export function jsonAttachment(name: string, value: unknown): Attachment {
@@ -63,11 +58,7 @@ export function jsonAttachment(name: string, value: unknown): Attachment {
   };
 }
 
-export function textAttachment(
-  name: string,
-  text: string | Buffer,
-  contentType = "text/plain",
-): Attachment {
+export function textAttachment(name: string, text: string | Buffer, contentType = "text/plain"): Attachment {
   // The platform rejects empty attachments.
   const content = text.length === 0 ? "\n" : text;
   return { name, contentType, contentBase64: toBase64(content) };

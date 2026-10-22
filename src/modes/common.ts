@@ -1,3 +1,4 @@
+import type { AttemptRecord } from "../attempts";
 import { type ActionContext, type ActionResult, makeResult, repoUrl } from "../context";
 import { type AuthorIdentity, userIdentity } from "../github/commits";
 import type { Sender, TriggerSource } from "../github/event";
@@ -13,7 +14,6 @@ import {
   type StickyState,
   writeSticky,
 } from "../github/sticky";
-import type { AttemptRecord } from "../attempts";
 import { errorMessage, fullName } from "../util";
 
 export interface FixTrigger {
@@ -33,26 +33,35 @@ export interface FixPreparation {
  * The checks before any fix mode: open same-repo PR, sender with write
  * access, a fix token. Returns a result to stop with, or the preparation.
  */
-export async function prepareFix(
-  ctx: ActionContext,
-  trigger: FixTrigger,
-): Promise<FixPreparation | ActionResult> {
+export async function prepareFix(ctx: ActionContext, trigger: FixTrigger): Promise<FixPreparation | ActionResult> {
   const pr = await loadPullRequest(ctx.gh, ctx.repo, trigger.prNumber);
   if (isFork(pr)) {
-    return makeResult(trigger.kind, { status: "skipped", summary: "Fixes are not available for pull requests from forks." });
+    return makeResult(trigger.kind, {
+      status: "skipped",
+      summary: "Fixes are not available for pull requests from forks.",
+    });
   }
   if (pr.state !== "open") {
     return makeResult(trigger.kind, { status: "skipped", summary: "The pull request is not open." });
   }
   if (!(await hasWriteAccess(ctx.gh, ctx.repo, trigger.sender.login))) {
     ctx.log.warning(`${trigger.sender.login} has no write access. No fix.`);
-    await reply(ctx, trigger, `@${trigger.sender.login} only users with write access to this repository can start a fix.`, true);
+    await reply(
+      ctx,
+      trigger,
+      `@${trigger.sender.login} only users with write access to this repository can start a fix.`,
+      true,
+    );
     if (trigger.source.type === "checkbox") await rerenderSticky(ctx, pr);
-    return makeResult(trigger.kind, { status: "unauthorized", summary: `${trigger.sender.login} has no write access.` });
+    return makeResult(trigger.kind, {
+      status: "unauthorized",
+      summary: `${trigger.sender.login} has no write access.`,
+    });
   }
   await acknowledge(ctx, trigger);
   if (!ctx.ghFix || !ctx.inputs.fixToken) {
-    const message = 'The fix cannot push: the workflow does not give the "fix-token" input (a GitHub App installation token).';
+    const message =
+      'The fix cannot push: the workflow does not give the "fix-token" input (a GitHub App installation token).';
     await reply(ctx, trigger, message, true);
     if (trigger.source.type === "checkbox") await rerenderSticky(ctx, pr);
     return makeResult(trigger.kind, { status: "error", failure: message, summary: message });
@@ -99,7 +108,11 @@ export async function reply(
 async function acknowledge(ctx: ActionContext, trigger: FixTrigger): Promise<void> {
   try {
     if (trigger.source.type === "issue-comment") {
-      await ctx.gh.rest.reactions.createForIssueComment({ ...ctx.repo, comment_id: trigger.source.commentId, content: "eyes" });
+      await ctx.gh.rest.reactions.createForIssueComment({
+        ...ctx.repo,
+        comment_id: trigger.source.commentId,
+        content: "eyes",
+      });
     } else if (trigger.source.type === "review-comment") {
       await ctx.gh.rest.reactions.createForPullRequestReviewComment({
         ...ctx.repo,

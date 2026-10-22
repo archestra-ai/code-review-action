@@ -2,7 +2,11 @@ import { type ArchestraClient, isTerminalState } from "./archestra/client";
 import { errorMessage, type Logger } from "./util";
 
 /** Cancels the run when it is still live. Never throws. */
-export async function cancelIfLive(client: ArchestraClient, taskId: string, log: Logger): Promise<"canceled" | "not-live" | "failed"> {
+export async function cancelIfLive(
+  client: ArchestraClient,
+  taskId: string,
+  log: Logger,
+): Promise<"canceled" | "not-live" | "failed"> {
   try {
     const run = await client.getRun(taskId);
     if (isTerminalState(run.state)) {

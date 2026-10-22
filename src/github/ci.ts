@@ -109,7 +109,11 @@ export async function collectCiEvidence(
 
 async function annotations(gh: Octokit, repo: RepoRef, checkRunId: number, log: Logger): Promise<CiAnnotation[]> {
   try {
-    const { data } = await gh.rest.checks.listAnnotations({ ...repo, check_run_id: checkRunId, per_page: MAX_ANNOTATIONS });
+    const { data } = await gh.rest.checks.listAnnotations({
+      ...repo,
+      check_run_id: checkRunId,
+      per_page: MAX_ANNOTATIONS,
+    });
     return data.slice(0, MAX_ANNOTATIONS).map((annotation) => ({
       path: annotation.path,
       startLine: annotation.start_line,
@@ -182,7 +186,12 @@ async function baseBranchResult(
   });
   const latest = data.workflow_runs[0];
   if (!latest) return null;
-  const jobs = await gh.rest.actions.listJobsForWorkflowRun({ ...repo, run_id: latest.id, filter: "latest", per_page: 100 });
+  const jobs = await gh.rest.actions.listJobsForWorkflowRun({
+    ...repo,
+    run_id: latest.id,
+    filter: "latest",
+    per_page: 100,
+  });
   const job = jobs.data.jobs.find((candidate) => candidate.name === jobName);
   return job
     ? { conclusion: job.conclusion ?? null, url: job.html_url ?? null }

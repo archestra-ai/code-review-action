@@ -91,7 +91,9 @@ export async function postReview(
     return true;
   } catch (error) {
     if (httpStatus(error) === 422) {
-      params.log.warning(`GitHub rejected the inline comments; the findings go into the summary: ${errorMessage(error)}`);
+      params.log.warning(
+        `GitHub rejected the inline comments; the findings go into the summary: ${errorMessage(error)}`,
+      );
       return false;
     }
     throw error;

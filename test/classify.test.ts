@@ -31,7 +31,10 @@ describe("classifyRun with the failure field", () => {
   });
   it("uses failure.retriable = false, also when the message looks retriable", () => {
     const result = classifyRun(
-      run({ statusReason: "service unavailable", failure: { code: "budget_exceeded", retriable: false, message: "Budget exceeded" } }),
+      run({
+        statusReason: "service unavailable",
+        failure: { code: "budget_exceeded", retriable: false, message: "Budget exceeded" },
+      }),
     );
     expect(result).toMatchObject({ class: "non_retriable", source: "failure-field" });
   });

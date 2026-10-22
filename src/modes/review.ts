@@ -1,6 +1,5 @@
 import { orderAgents } from "../attempts";
 import { renderBrief } from "../briefs";
-import { CONTRACTS } from "../contracts";
 import {
   type ActionContext,
   type ActionResult,
@@ -10,6 +9,7 @@ import {
   makeResult,
   preferAgent,
 } from "../context";
+import { CONTRACTS } from "../contracts";
 import { buildDiffIndex } from "../github/diff";
 import { loadChangedFiles, loadDiff, loadPullRequest, prAttachmentData, skipReason } from "../github/pr";
 import { inlineComments, placeFindings, postReview } from "../github/review";
@@ -43,7 +43,11 @@ export async function runReview(ctx: ActionContext, prNumber: number): Promise<A
     random: ctx.random,
   });
   const incremental =
-    inputs.incrementalReview && previous?.status === "reviewed" && marker?.run && marker.agent && order.includes(marker.agent)
+    inputs.incrementalReview &&
+    previous?.status === "reviewed" &&
+    marker?.run &&
+    marker.agent &&
+    order.includes(marker.agent)
       ? { agentId: marker.agent, taskId: marker.run }
       : null;
   const agents = preferAgent(order, incremental?.agentId ?? null);

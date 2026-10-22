@@ -1,8 +1,4 @@
-import type {
-  Classification,
-  ClassificationSource,
-  FailureClass,
-} from "./classify";
+import type { Classification, ClassificationSource, FailureClass } from "./classify";
 import type { Logger } from "./util";
 
 export type Strategy = "rotate" | "ordered" | "random";
@@ -77,17 +73,11 @@ export async function runWithFallback<T>(params: {
   sleep: (ms: number) => Promise<void>;
   log: Logger;
   retryDelaysMs?: readonly number[];
-  attempt: (
-    agentId: string,
-    info: { runtimeIndex: number; retry: number },
-  ) => Promise<AttemptOutcome<T>>;
+  attempt: (agentId: string, info: { runtimeIndex: number; retry: number }) => Promise<AttemptOutcome<T>>;
 }): Promise<FallbackResult<T>> {
   const delays = params.retryDelaysMs ?? DEFAULT_RETRY_DELAYS_MS;
   const attempts: AttemptRecord[] = [];
-  const runtimeCount = Math.min(
-    params.agents.length,
-    1 + Math.max(0, params.maxFallbacks),
-  );
+  const runtimeCount = Math.min(params.agents.length, 1 + Math.max(0, params.maxFallbacks));
   for (let runtimeIndex = 0; runtimeIndex < runtimeCount; runtimeIndex++) {
     const agentId = params.agents[runtimeIndex] as string;
     for (let retry = 0; retry <= params.retries; retry++) {
@@ -119,11 +109,8 @@ export async function runWithFallback<T>(params: {
       }
       if (classification.class === "non_retriable") break;
       if (retry < params.retries) {
-        const delay =
-          delays[Math.min(retry, delays.length - 1)] ?? DEFAULT_RETRY_DELAYS_MS[0];
-        params.log.info(
-          `Retrying the same runtime in ${Math.round((delay ?? 0) / 1000)} s.`,
-        );
+        const delay = delays[Math.min(retry, delays.length - 1)] ?? DEFAULT_RETRY_DELAYS_MS[0];
+        params.log.info(`Retrying the same runtime in ${Math.round((delay ?? 0) / 1000)} s.`);
         await params.sleep(delay ?? 0);
       }
     }

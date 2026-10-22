@@ -5,7 +5,6 @@ You work without a person. Nobody reads your questions.
 ## Inputs
 
 The attachments are in the directory `$ARCHESTRA_AGENT_RUNTIME_ATTACHMENTS_DIR`:
-
 - `fix-request.json`: the failures to fix (check name, earlier root cause), the base branch, the branch name prefix and the author identity.
 - `ci-failure.json` and `ci-log-*.log`: the evidence that the triage used, when it is available.
 

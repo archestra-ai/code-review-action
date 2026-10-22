@@ -49,7 +49,10 @@ export async function verifyCommits(
     }
     const email = commit.commit.author?.email?.toLowerCase();
     if (email !== params.expectedEmail.toLowerCase()) {
-      result.rejected.push({ commit: sha, reason: `commit author is ${email ?? "unknown"}, not ${params.expectedEmail}` });
+      result.rejected.push({
+        commit: sha,
+        reason: `commit author is ${email ?? "unknown"}, not ${params.expectedEmail}`,
+      });
       continue;
     }
     result.verified.push(sha);

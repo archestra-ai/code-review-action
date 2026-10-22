@@ -1,7 +1,7 @@
 import { z } from "zod";
 import type { AttemptRecord } from "../attempts";
 import { ReviewFindingSchema, TriageClassSchema } from "../contracts";
-import { type RepoRef, fullName, isBotUser, shortSha, truncate } from "../util";
+import { fullName, isBotUser, type RepoRef, shortSha, truncate } from "../util";
 import type { Octokit } from "./octokit";
 
 // The sticky comment is the durable state between workflow runs: a visible
@@ -23,8 +23,7 @@ const MARKER_PATTERN = /<!-- archestra-code-review (\S+?)#(\d+)((?: [a-z]+=\S*)*
 const MARKER_VALUE = /^[\w.-]{1,100}$/;
 
 export function serializeMarker(marker: StickyMarker): string {
-  const field = (value: string | null) =>
-    value && MARKER_VALUE.test(value) ? value : "-";
+  const field = (value: string | null) => (value && MARKER_VALUE.test(value) ? value : "-");
   return `<!-- archestra-code-review ${marker.repo}#${marker.pr} session=${field(marker.session)} run=${field(marker.run)} agent=${field(marker.agent)} sha=${field(marker.sha)} -->`;
 }
 
@@ -83,9 +82,7 @@ const AttemptRecordSchema = z.object({
   runUrl: z.string().nullable(),
   result: z.enum(["completed", "retriable", "non_retriable", "fatal"]),
   reason: z.string(),
-  source: z
-    .enum(["http", "failure-field", "message-pattern", "state", "timeout", "contract"])
-    .nullable(),
+  source: z.enum(["http", "failure-field", "message-pattern", "state", "timeout", "contract"]).nullable(),
   durationMs: z.number(),
 });
 
@@ -118,9 +115,7 @@ const StateSchema = z.object({
     }),
   ),
   triageSha: z.string().nullable(),
-  fixPrs: z.array(
-    z.object({ checks: z.array(z.string()), number: z.number(), url: z.string() }),
-  ),
+  fixPrs: z.array(z.object({ checks: z.array(z.string()), number: z.number(), url: z.string() })),
   notice: z.string().nullable(),
 });
 export type StickyState = z.infer<typeof StateSchema>;
@@ -182,9 +177,7 @@ export function actionCheckboxes(body: string): Map<string, boolean> {
 /** Action ids that are ticked in `after` and were not ticked in `before`. */
 export function newlyCheckedActions(before: string, after: string): string[] {
   const previous = actionCheckboxes(before);
-  return [...actionCheckboxes(after)]
-    .filter(([id, checked]) => checked && previous.get(id) !== true)
-    .map(([id]) => id);
+  return [...actionCheckboxes(after)].filter(([id, checked]) => checked && previous.get(id) !== true).map(([id]) => id);
 }
 
 // ===== Rendering =====
@@ -212,10 +205,7 @@ function renderBody(state: StickyState, context: RenderContext): string {
   const out: string[] = [serializeMarker(context.marker), "### Archestra code review", ""];
 
   if (state.status === "unavailable") {
-    out.push(
-      "**Review unavailable.** No runtime completed the review. The attempts are listed below.",
-      "",
-    );
+    out.push("**Review unavailable.** No runtime completed the review. The attempts are listed below.", "");
   } else if (state.verdict) {
     out.push(
       `**Verdict:** ${verdictLabel(state.verdict)} · reviewed \`${shortSha(state.reviewedSha)}\` · ${state.findings.length} finding${state.findings.length === 1 ? "" : "s"}`,
@@ -271,11 +261,7 @@ function renderBody(state: StickyState, context: RenderContext): string {
   next.push("- [ ] Triage and fix failing checks <!-- archestra-action:fix-ci -->");
   const openPreExisting = state.triage
     .map((row, index) => ({ row, index }))
-    .filter(
-      ({ row }) =>
-        row.class === "pre_existing" &&
-        !state.fixPrs.some((pr) => pr.checks.includes(row.check)),
-    );
+    .filter(({ row }) => row.class === "pre_existing" && !state.fixPrs.some((pr) => pr.checks.includes(row.check)));
   for (const { row, index } of openPreExisting) {
     next.push(
       `- [ ] Open a fix PR against ${state.baseBranch} for \`${oneLine(row.check, 120).replace(/`/g, "'")}\` <!-- archestra-action:fix-ci-main:${index} -->`,
@@ -381,7 +367,13 @@ function cell(text: string, max: number): string {
 }
 
 function oneLine(text: string, max: number): string {
-  return truncate(text.replace(/\s+/g, " ").replace(/<!--|-->/g, "").trim(), max);
+  return truncate(
+    text
+      .replace(/\s+/g, " ")
+      .replace(/<!--|-->/g, "")
+      .trim(),
+    max,
+  );
 }
 
 function quote(text: string): string {

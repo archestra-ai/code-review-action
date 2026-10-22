@@ -37,11 +37,7 @@ export class ArchestraApiError extends Error {
     readonly status: number | null,
     readonly detail: string,
   ) {
-    super(
-      status === null
-        ? `${operation}: network error: ${detail}`
-        : `${operation}: HTTP ${status}: ${detail}`,
-    );
+    super(status === null ? `${operation}: network error: ${detail}` : `${operation}: HTTP ${status}: ${detail}`);
     this.name = "ArchestraApiError";
   }
 }
@@ -60,9 +56,7 @@ const RunSchema = z.object({
   agentId: z.string().nullish(),
   endedAt: z.string().nullish(),
   failure: FailureSchema.nullish(),
-  workspace: z
-    .object({ state: z.string(), expiresAt: z.string().nullish() })
-    .nullish(),
+  workspace: z.object({ state: z.string(), expiresAt: z.string().nullish() }).nullish(),
 });
 
 export type AgentRun = z.infer<typeof RunSchema>;
@@ -111,44 +105,28 @@ export class ArchestraClient {
     agentId: string,
     body: { message: string; attachments: Attachment[]; title: string },
   ): Promise<StartedRun> {
-    const data = await this.request(
-      "POST",
-      `/api/agents/${encodeURIComponent(agentId)}/runs`,
-      "start run",
-      { ...body, runtimeMode: "one_shot" },
-    );
+    const data = await this.request("POST", `/api/agents/${encodeURIComponent(agentId)}/runs`, "start run", {
+      ...body,
+      runtimeMode: "one_shot",
+    });
     return parse(StartSchema, data, "start run");
   }
 
-  async continueRun(
-    taskId: string,
-    body: { message: string; attachments: Attachment[] },
-  ): Promise<StartedRun> {
-    const data = await this.request(
-      "POST",
-      `/api/agent-runs/${encodeURIComponent(taskId)}/continue`,
-      "continue run",
-      { ...body, runtimeMode: "one_shot" },
-    );
+  async continueRun(taskId: string, body: { message: string; attachments: Attachment[] }): Promise<StartedRun> {
+    const data = await this.request("POST", `/api/agent-runs/${encodeURIComponent(taskId)}/continue`, "continue run", {
+      ...body,
+      runtimeMode: "one_shot",
+    });
     return parse(StartSchema, data, "continue run");
   }
 
   async getRun(taskId: string): Promise<AgentRun> {
-    const data = await this.request(
-      "GET",
-      `/api/agent-runs/${encodeURIComponent(taskId)}`,
-      "get run",
-    );
+    const data = await this.request("GET", `/api/agent-runs/${encodeURIComponent(taskId)}`, "get run");
     return parse(RunSchema, data, "get run");
   }
 
   async cancelRun(taskId: string): Promise<void> {
-    await this.request(
-      "POST",
-      `/api/agent-runs/${encodeURIComponent(taskId)}/cancel`,
-      "cancel run",
-      {},
-    );
+    await this.request("POST", `/api/agent-runs/${encodeURIComponent(taskId)}/cancel`, "cancel run", {});
   }
 
   /** Reads a file from the run's workspace. Returns null when it is absent. */
@@ -177,11 +155,7 @@ export class ArchestraClient {
     return Buffer.from(file.content_base64, "base64");
   }
 
-  async setRuntimeCredential(
-    agentId: string,
-    key: string,
-    value: string,
-  ): Promise<void> {
+  async setRuntimeCredential(agentId: string, key: string, value: string): Promise<void> {
     await this.request(
       "PUT",
       `/api/agents/${encodeURIComponent(agentId)}/runtime/credentials/${encodeURIComponent(key)}`,
@@ -190,12 +164,7 @@ export class ArchestraClient {
     );
   }
 
-  private async request(
-    method: string,
-    path: string,
-    operation: string,
-    body?: unknown,
-  ): Promise<unknown> {
+  private async request(method: string, path: string, operation: string, body?: unknown): Promise<unknown> {
     let response: Response;
     try {
       response = await this.fetchImpl(`${this.baseUrl}${path}`, {
@@ -209,29 +178,17 @@ export class ArchestraClient {
         signal: AbortSignal.timeout(this.requestTimeoutMs),
       });
     } catch (error) {
-      throw new ArchestraApiError(
-        operation,
-        null,
-        error instanceof Error ? error.message : String(error),
-      );
+      throw new ArchestraApiError(operation, null, error instanceof Error ? error.message : String(error));
     }
     const text = await response.text();
     if (!response.ok) {
-      throw new ArchestraApiError(
-        operation,
-        response.status,
-        errorDetail(text, response.statusText),
-      );
+      throw new ArchestraApiError(operation, response.status, errorDetail(text, response.statusText));
     }
     if (text.trim() === "") return {};
     try {
       return JSON.parse(text);
     } catch {
-      throw new ArchestraApiError(
-        operation,
-        response.status,
-        "the response is not JSON",
-      );
+      throw new ArchestraApiError(operation, response.status, "the response is not JSON");
     }
   }
 }

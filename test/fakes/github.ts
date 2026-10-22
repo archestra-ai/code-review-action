@@ -26,7 +26,14 @@ export interface FakeCheckRun {
   app: string;
   conclusion: string;
   summary?: string;
-  annotations?: Array<{ path: string; start_line: number; end_line: number; annotation_level: string; message: string; title?: string }>;
+  annotations?: Array<{
+    path: string;
+    start_line: number;
+    end_line: number;
+    annotation_level: string;
+    message: string;
+    title?: string;
+  }>;
   log?: string;
   runId?: number;
   workflowId?: number;
@@ -56,7 +63,8 @@ export class FakeGitHub {
       status: "modified",
       additions: 3,
       deletions: 1,
-      patch: "@@ -10,4 +10,6 @@ export function upload() {\n   const a = 1;\n-  send(a);\n+  for (let i = 0; i < 3; i++) {\n+    send(a);\n+  }\n   return a;\n }",
+      patch:
+        "@@ -10,4 +10,6 @@ export function upload() {\n   const a = 1;\n-  send(a);\n+  for (let i = 0; i < 3; i++) {\n+    send(a);\n+  }\n   return a;\n }",
     },
   ];
   diff = "diff --git a/src/upload.ts b/src/upload.ts\n--- a/src/upload.ts\n+++ b/src/upload.ts\n@@ -10,4 +10,6 @@\n";
@@ -150,20 +158,40 @@ export class FakeGitHub {
         this.reviews.push(body);
         for (const comment of body.comments ?? []) {
           const id = ++this.nextId;
-          this.reviewComments.set(id, { id, body: comment.body, user: BOT, path: comment.path, line: comment.line, inReplyTo: null });
+          this.reviewComments.set(id, {
+            id,
+            body: comment.body,
+            user: BOT,
+            path: comment.path,
+            line: comment.line,
+            inReplyTo: null,
+          });
         }
         return HttpResponse.json({ id: this.reviews.length }, { status: 200 });
       }),
       http.get(`${base}/pulls/comments/:id`, ({ params }) => {
         const comment = this.reviewComments.get(Number(params.id));
         if (!comment) return notFound();
-        return HttpResponse.json({ id: comment.id, body: comment.body, user: comment.user, path: comment.path, line: comment.line });
+        return HttpResponse.json({
+          id: comment.id,
+          body: comment.body,
+          user: comment.user,
+          path: comment.path,
+          line: comment.line,
+        });
       }),
       http.post(`${base}/pulls/${this.pr.number}/comments/:id/replies`, async ({ request, params }) => {
         const { body } = (await request.json()) as { body: string };
         const id = ++this.nextId;
         const parent = this.reviewComments.get(Number(params.id));
-        this.reviewComments.set(id, { id, body, user: BOT, path: parent?.path ?? "", line: parent?.line ?? 0, inReplyTo: Number(params.id) });
+        this.reviewComments.set(id, {
+          id,
+          body,
+          user: BOT,
+          path: parent?.path ?? "",
+          line: parent?.line ?? 0,
+          inReplyTo: Number(params.id),
+        });
         return HttpResponse.json({ id, body }, { status: 201 });
       }),
       http.get(`${base}/collaborators/:user/permission`, ({ params }) => {
@@ -209,7 +237,13 @@ export class FakeGitHub {
       http.get(`${base}/actions/jobs/:id`, ({ params }) => {
         const run = this.checkRuns.find((candidate) => candidate.id === Number(params.id));
         if (!run) return notFound();
-        return HttpResponse.json({ id: run.id, run_id: run.runId ?? 900, name: run.name, workflow_name: "CI", html_url: null });
+        return HttpResponse.json({
+          id: run.id,
+          run_id: run.runId ?? 900,
+          name: run.name,
+          workflow_name: "CI",
+          html_url: null,
+        });
       }),
       http.get(`${base}/actions/jobs/:id/logs`, ({ params }) => {
         const run = this.checkRuns.find((candidate) => candidate.id === Number(params.id));
@@ -229,7 +263,9 @@ export class FakeGitHub {
         const run = this.checkRuns.find((candidate) => (candidate.workflowId ?? 77) === Number(params.id));
         return HttpResponse.json({
           total_count: 1,
-          workflow_runs: [{ id: 950, conclusion: run?.baseBranchConclusion ?? "success", html_url: "https://github.com/x/runs/950" }],
+          workflow_runs: [
+            { id: 950, conclusion: run?.baseBranchConclusion ?? "success", html_url: "https://github.com/x/runs/950" },
+          ],
         });
       }),
       http.get(`${base}/actions/runs/950/jobs`, () =>
@@ -251,7 +287,10 @@ export class FakeGitHub {
         const body = (await request.json()) as { head: string; base: string; title: string; body: string };
         const number = 100 + this.createdPulls.length;
         this.createdPulls.push({ number, ...body });
-        return HttpResponse.json({ number, html_url: `https://github.com/${this.fullName}/pull/${number}` }, { status: 201 });
+        return HttpResponse.json(
+          { number, html_url: `https://github.com/${this.fullName}/pull/${number}` },
+          { status: 201 },
+        );
       }),
       http.post(`${base}/issues/:number/assignees`, async ({ request, params }) => {
         const { assignees } = (await request.json()) as { assignees: string[] };
@@ -269,7 +308,9 @@ export class FakeGitHub {
           const threadId = String(variables.id);
           this.resolved.delete(Number(threadId.replace("thread-", "")));
           this.graphqlMutations.push({ action: "unresolve", threadId });
-          return HttpResponse.json({ data: { unresolveReviewThread: { thread: { id: threadId, isResolved: false } } } });
+          return HttpResponse.json({
+            data: { unresolveReviewThread: { thread: { id: threadId, isResolved: false } } },
+          });
         }
         if (query.includes("resolveReviewThread")) {
           const threadId = String(variables.id);

@@ -105,7 +105,13 @@ export async function applyThreadUpdate(gh: Octokit, update: ThreadUpdate): Prom
   await gh.graphql(mutation, { id: update.threadId });
 }
 
-export async function replyToThread(gh: Octokit, repo: RepoRef, pr: number, commentId: number, body: string): Promise<void> {
+export async function replyToThread(
+  gh: Octokit,
+  repo: RepoRef,
+  pr: number,
+  commentId: number,
+  body: string,
+): Promise<void> {
   await gh.rest.pulls.createReplyForReviewComment({ ...repo, pull_number: pr, comment_id: commentId, body });
 }
 

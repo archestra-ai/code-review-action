@@ -5,7 +5,6 @@ You work without a person. Nobody reads your questions.
 ## Inputs
 
 The attachments are in the directory `$ARCHESTRA_AGENT_RUNTIME_ATTACHMENTS_DIR`:
-
 - `fix-request.json`: the branch, the current head commit, the author identity, the selected findings and an optional maintainer note.
 - `pr.json` and `pr.diff`: the pull request.
 

@@ -5,9 +5,7 @@ import { z } from "zod";
 // with these schemas. `npm run schemas` writes the JSON Schema files under
 // schemas/ from these definitions.
 
-const sha = z
-  .string()
-  .regex(/^[0-9a-f]{40}$/, "must be a full 40-character lowercase commit SHA");
+const sha = z.string().regex(/^[0-9a-f]{40}$/, "must be a full 40-character lowercase commit SHA");
 
 export const SeveritySchema = z.enum(["critical", "high", "medium", "low", "nit"]);
 export type Severity = z.infer<typeof SeveritySchema>;
@@ -15,32 +13,15 @@ export type Severity = z.infer<typeof SeveritySchema>;
 export const ReviewFindingSchema = z.object({
   file: z.string().min(1).max(500).describe("Path relative to the repository root"),
   line: z.number().int().positive().describe("Line in the head version of the file"),
-  end_line: z
-    .number()
-    .int()
-    .positive()
-    .optional()
-    .describe("Last line of a multi-line finding"),
+  end_line: z.number().int().positive().optional().describe("Last line of a multi-line finding"),
   severity: SeveritySchema,
   summary: z.string().min(1).max(500).describe("One sentence"),
-  failure_scenario: z
-    .string()
-    .min(1)
-    .max(4000)
-    .describe("Input or state, and the incorrect result"),
-  suggestion: z
-    .string()
-    .max(4000)
-    .optional()
-    .describe("Full replacement text for lines line..end_line"),
+  failure_scenario: z.string().min(1).max(4000).describe("Input or state, and the incorrect result"),
+  suggestion: z.string().max(4000).optional().describe("Full replacement text for lines line..end_line"),
 });
 export type ReviewFinding = z.infer<typeof ReviewFindingSchema>;
 
-export const PreviousFindingStatusSchema = z.enum([
-  "fixed",
-  "still_present",
-  "regressed",
-]);
+export const PreviousFindingStatusSchema = z.enum(["fixed", "still_present", "regressed"]);
 
 export const ReviewResultSchema = z
   .object({
@@ -59,18 +40,13 @@ export const ReviewResultSchema = z
       .optional(),
   })
   .refine(
-    (review) =>
-      review.findings.every(
-        (finding) => finding.end_line === undefined || finding.end_line >= finding.line,
-      ),
+    (review) => review.findings.every((finding) => finding.end_line === undefined || finding.end_line >= finding.line),
     { message: "end_line must not be less than line", path: ["findings"] },
   );
 export type ReviewResult = z.infer<typeof ReviewResultSchema>;
 
 export const FixResultSchema = z.object({
-  applied: z
-    .array(z.object({ finding: z.string().min(1).max(100), commit: sha }))
-    .max(100),
+  applied: z.array(z.object({ finding: z.string().min(1).max(100), commit: sha })).max(100),
   skipped: z
     .array(
       z.object({
@@ -83,13 +59,7 @@ export const FixResultSchema = z.object({
 });
 export type FixResult = z.infer<typeof FixResultSchema>;
 
-export const TriageClassSchema = z.enum([
-  "pr_caused",
-  "flaky",
-  "pre_existing",
-  "infrastructure",
-  "needs_human",
-]);
+export const TriageClassSchema = z.enum(["pr_caused", "flaky", "pre_existing", "infrastructure", "needs_human"]);
 export type TriageClass = z.infer<typeof TriageClassSchema>;
 
 export const CiTriageSchema = z.object({
@@ -112,9 +82,7 @@ export type CiTriage = z.infer<typeof CiTriageSchema>;
 export const FIX_CI_BRANCH_PREFIX = "archestra/fix-ci-";
 
 export const CiMainFixSchema = z.object({
-  branch: z
-    .string()
-    .regex(/^archestra\/fix-ci-[a-z0-9][a-z0-9-]{0,80}$/, "must be archestra/fix-ci-<slug>"),
+  branch: z.string().regex(/^archestra\/fix-ci-[a-z0-9][a-z0-9-]{0,80}$/, "must be archestra/fix-ci-<slug>"),
   commits: z.array(sha).min(1).max(50),
   title: z.string().min(1).max(200).optional(),
   summary: z.string().min(1).max(8000),

@@ -42,10 +42,7 @@ const MAX_INSTRUCTIONS_BYTES = 64 * 1024;
  * is not set. The defaults here agree with action.yml, so a run without the
  * runner's defaults (for example `node dist/index.js`) behaves the same.
  */
-export function readInputs(
-  get: (name: string) => string,
-  readFile: (path: string) => string,
-): Inputs {
+export function readInputs(get: (name: string) => string, readFile: (path: string) => string): Inputs {
   const value = (name: string) => get(name).trim();
   const required = (name: string) => {
     const v = value(name);
@@ -98,9 +95,7 @@ export function readInputs(
     instructions = [instructions, fileText.trim()].filter(Boolean).join("\n\n");
   }
   if (Buffer.byteLength(instructions, "utf8") > MAX_INSTRUCTIONS_BYTES) {
-    throw new InputError(
-      `The review instructions are larger than ${MAX_INSTRUCTIONS_BYTES / 1024} KB.`,
-    );
+    throw new InputError(`The review instructions are larger than ${MAX_INSTRUCTIONS_BYTES / 1024} KB.`);
   }
 
   const prNumberRaw = value("pr-number");
@@ -114,9 +109,7 @@ export function readInputs(
     retries: integer("retries", value("retries") || "1", 0, 5),
     maxFallbacks,
     timeoutMs: integer("timeout-minutes", value("timeout-minutes") || "20", 1, 360) * 60_000,
-    overallTimeoutMs:
-      integer("overall-timeout-minutes", value("overall-timeout-minutes") || "120", 1, 1440) *
-      60_000,
+    overallTimeoutMs: integer("overall-timeout-minutes", value("overall-timeout-minutes") || "120", 1, 1440) * 60_000,
     instructions,
     githubToken: required("github-token"),
     post: oneOf("post", value("post") || "review", ["review", "comment", "none"]),

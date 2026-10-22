@@ -1,7 +1,6 @@
 # Archestra code review action
 
 This GitHub Action reviews pull requests on [Archestra](https://archestra.ai) Agent Runtimes. When a maintainer asks, the same runtime applies the findings, triages failing checks, and prepares a fix pull request for failures that are already on the base branch.
-
 - **Review.** The action starts a one-shot run on one of your Archestra agents. The agent clones the repository at the head commit, reviews the change and writes `review.json`. The action posts a review comment and inline comments.
 - **Balancing and fallback.** You give a list of agents. Each agent has a dedicated runtime and its own model provider. The action selects the first agent from the list (rotation by default). It tries the same agent again after a temporary failure and goes to the next agent after a permanent failure. The number of attempts is finite.
 - **Fixes on request.** A maintainer ticks a box in the review comment or writes a command. The action continues the retained workspace of the review. The runtime pushes the fix to the pull request branch. The commits have the maintainer as the author.
@@ -37,7 +36,6 @@ The review comment keeps the state between workflow runs. A hidden marker line h
 ### 2. Review agents
 
 Create one Archestra agent for each runtime that you want to use. Use different model providers, so that the action can rotate the cost and fall back when one provider is not available.
-
 - Each agent must have a **dedicated runtime** that the service account can use.
 - Use provider authentication, not a personal subscription: Claude Code with `claudeCode.authentication = provider`, or OpenCode, Hermes or OpenClaw with a provider key. Personal sign-ins (Claude Pro/Max, Codex with ChatGPT) do not work from CI.
 - Declare `GITHUB_TOKEN` as a **per-user runtime credential** (not a vault secret). The action stores a fresh token before each fix turn. Set its TTL long enough for a person to click later (for example 72 hours).
@@ -47,7 +45,6 @@ Create one Archestra agent for each runtime that you want to use. Use different 
 ### 3. GitHub App for pushes (fix modes only)
 
 Pushes with the job `GITHUB_TOKEN` do not start new workflow runs, so CI and the next review would not run. Use a GitHub App:
-
 1. Create a GitHub App with these repository permissions: **Contents: write**, **Pull requests: write**, **Actions: read** (and **Actions: write** if you set `ci-rerun: true`).
 2. Install it on the repository. Store its app ID and private key as secrets.
 3. Protect your important branches with rulesets, so that the App can push only to pull request branches and to `archestra/fix-ci-*` branches.
@@ -116,66 +113,66 @@ See [examples/archestra-runtime-review.yml](examples/archestra-runtime-review.ym
 
 Only users with **write**, **maintain** or **admin** access can start a fix. The action checks this with the collaborator permission API. It ignores comments and edits by bots (also its own edits of the review comment), and it never starts a fix without a person.
 
-| You do | The action does |
-| --- | --- |
-| Tick **Apply the findings** in the review comment | Applies all open findings. |
-| Comment `/archestra fix` | Applies all open findings. |
-| Comment `/archestra fix 2,5 <note>` | Applies findings 2 and 5. The note (1000 characters maximum) goes to the runtime as data. |
-| Reply `/archestra fix` under an inline finding | Applies that finding only. |
-| Tick **Triage and fix failing checks**, or comment `/archestra fix-ci` | Collects the failing checks of the head commit, and gives the runtime the log tails and annotations. The runtime classifies each failure and fixes the ones that the pull request causes. |
+| You do                                                                                       | The action does                                                                                                                                                                                                |
+| -------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Tick **Apply the findings** in the review comment                                            | Applies all open findings.                                                                                                                                                                                     |
+| Comment `/archestra fix`                                                                     | Applies all open findings.                                                                                                                                                                                     |
+| Comment `/archestra fix 2,5 <note>`                                                          | Applies findings 2 and 5. The note (1000 characters maximum) goes to the runtime as data.                                                                                                                      |
+| Reply `/archestra fix` under an inline finding                                               | Applies that finding only.                                                                                                                                                                                     |
+| Tick **Triage and fix failing checks**, or comment `/archestra fix-ci`                       | Collects the failing checks of the head commit, and gives the runtime the log tails and annotations. The runtime classifies each failure and fixes the ones that the pull request causes.                      |
 | Tick **Open a fix PR against main for &lt;job&gt;**, or comment `/archestra fix-ci-main [n]` | For a failure that also occurs on the base branch: the runtime fixes it on a new `archestra/fix-ci-<slug>` branch, and the action opens a pull request. Queue the fix PR first, then rebase your pull request. |
-| Click **Commit suggestion** on an inline comment | GitHub applies a small fix directly. No runtime is used. |
+| Click **Commit suggestion** on an inline comment                                             | GitHub applies a small fix directly. No runtime is used.                                                                                                                                                       |
 
 After a fix, the action checks each reported commit: it must be on the branch and its author email must be the noreply address of the person who asked. Only verified commits are shown as applied. The threads of applied findings are resolved. Skipped findings get a reply with the reason. A later review that finds a resolved problem again reopens its thread.
 
 CI triage classes:
 
-| Class | Meaning | Result |
-| --- | --- | --- |
-| `pr_caused` | The change breaks the check. | The runtime pushes a fix. |
-| `flaky` | The check passes when it runs again. | With `ci-rerun: true`, the action re-runs the failed jobs. |
-| `pre_existing` | The check also fails on the base branch. | The review comment offers a separate fix pull request. |
-| `infrastructure` | The runner, a registry or a quota failed. | Re-run the job. |
-| `needs_human` | The runtime cannot find the cause or a safe fix. | The notes are in the reply. |
+| Class            | Meaning                                          | Result                                                     |
+| ---------------- | ------------------------------------------------ | ---------------------------------------------------------- |
+| `pr_caused`      | The change breaks the check.                     | The runtime pushes a fix.                                  |
+| `flaky`          | The check passes when it runs again.             | With `ci-rerun: true`, the action re-runs the failed jobs. |
+| `pre_existing`   | The check also fails on the base branch.         | The review comment offers a separate fix pull request.     |
+| `infrastructure` | The runner, a registry or a quota failed.        | Re-run the job.                                            |
+| `needs_human`    | The runtime cannot find the cause or a safe fix. | The notes are in the reply.                                |
 
 ## Inputs
 
-| Input | Default | Description |
-| --- | --- | --- |
-| `archestra-url` | required | The base URL of the Archestra deployment. |
-| `archestra-api-key` | required | The service account API key. |
-| `agents` | required | Agent IDs, one for each line. |
-| `strategy` | `rotate` | `rotate`: (PR number + run attempt) mod N. `ordered`: the list order. `random`. |
-| `retries` | `1` | Attempts on the same agent after a temporary failure (after 30 s, then 60 s). |
-| `max-fallbacks` | all | More agents to try after a permanent failure. |
-| `timeout-minutes` | `20` | Time limit for one review attempt. |
-| `overall-timeout-minutes` | `120` | Time limit for all attempts. |
-| `instructions`, `instructions-file` | none | More review rules, given to the runtime as `instructions.md`. |
-| `github-token` | `github.token` | Posts the review. Needs `pull-requests: write`. |
-| `post` | `review` | `review`, `comment` or `none`. |
-| `fail-on` | `never` | `never`, `findings` or `error`. |
-| `mode` | `auto` | `auto`, `review`, `fix`, `fix-ci`, `fix-ci-main`. Use with `pr-number` for `workflow_dispatch`. |
-| `fix-command` | `/archestra` | The command prefix. |
-| `fix-token` | none | GitHub App installation token for the fix modes. |
-| `fix-timeout-minutes` | `45` | Time limit for one fix or triage attempt. |
-| `ci-rerun` | `false` | Re-run jobs that the triage finds flaky. |
-| `max-auto-fix-rounds` | `0` | Only `0` is supported: each fix needs a person. |
-| `incremental-review` | `true` | Continue the workspace of the last review of the same pull request. |
+| Input                               | Default        | Description                                                                                     |
+| ----------------------------------- | -------------- | ----------------------------------------------------------------------------------------------- |
+| `archestra-url`                     | required       | The base URL of the Archestra deployment.                                                       |
+| `archestra-api-key`                 | required       | The service account API key.                                                                    |
+| `agents`                            | required       | Agent IDs, one for each line.                                                                   |
+| `strategy`                          | `rotate`       | `rotate`: (PR number + run attempt) mod N. `ordered`: the list order. `random`.                 |
+| `retries`                           | `1`            | Attempts on the same agent after a temporary failure (after 30 s, then 60 s).                   |
+| `max-fallbacks`                     | all            | More agents to try after a permanent failure.                                                   |
+| `timeout-minutes`                   | `20`           | Time limit for one review attempt.                                                              |
+| `overall-timeout-minutes`           | `120`          | Time limit for all attempts.                                                                    |
+| `instructions`, `instructions-file` | none           | More review rules, given to the runtime as `instructions.md`.                                   |
+| `github-token`                      | `github.token` | Posts the review. Needs `pull-requests: write`.                                                 |
+| `post`                              | `review`       | `review`, `comment` or `none`.                                                                  |
+| `fail-on`                           | `never`        | `never`, `findings` or `error`.                                                                 |
+| `mode`                              | `auto`         | `auto`, `review`, `fix`, `fix-ci`, `fix-ci-main`. Use with `pr-number` for `workflow_dispatch`. |
+| `fix-command`                       | `/archestra`   | The command prefix.                                                                             |
+| `fix-token`                         | none           | GitHub App installation token for the fix modes.                                                |
+| `fix-timeout-minutes`               | `45`           | Time limit for one fix or triage attempt.                                                       |
+| `ci-rerun`                          | `false`        | Re-run jobs that the triage finds flaky.                                                        |
+| `max-auto-fix-rounds`               | `0`            | Only `0` is supported: each fix needs a person.                                                 |
+| `incremental-review`                | `true`         | Continue the workspace of the last review of the same pull request.                             |
 
 Outputs: `status`, `mode`, `agent-id`, `run-id`, `run-url`, `findings-count`, `attempts`, `pushed-commits`, `applied`, `skipped`, `triage` (JSON values where the type is a list).
 
 ## Failure handling
 
-| Signal | Class | Next step |
-| --- | --- | --- |
-| HTTP 429, 5xx or a network error from the Archestra API | temporary | Same agent |
-| HTTP 401 | fatal | Stop all attempts (all agents use the same key) |
-| HTTP 403, 404 or 409 when the run starts | permanent | Next agent |
-| Run failure with `retriable: true` | temporary | Same agent |
-| Run failure with `retriable: false` | permanent | Next agent |
-| Run ended canceled, rejected, waiting for input or authentication | permanent | Next agent |
-| Attempt time limit | permanent | Cancel the run, next agent |
-| Result file missing or not valid | permanent | Next agent |
+| Signal                                                            | Class     | Next step                                       |
+| ----------------------------------------------------------------- | --------- | ----------------------------------------------- |
+| HTTP 429, 5xx or a network error from the Archestra API           | temporary | Same agent                                      |
+| HTTP 401                                                          | fatal     | Stop all attempts (all agents use the same key) |
+| HTTP 403, 404 or 409 when the run starts                          | permanent | Next agent                                      |
+| Run failure with `retriable: true`                                | temporary | Same agent                                      |
+| Run failure with `retriable: false`                               | permanent | Next agent                                      |
+| Run ended canceled, rejected, waiting for input or authentication | permanent | Next agent                                      |
+| Attempt time limit                                                | permanent | Cancel the run, next agent                      |
+| Result file missing or not valid                                  | permanent | Next agent                                      |
 
 Older Archestra deployments do not send the `failure` field. Then the action classifies the failure from its message, and the log says so.
 

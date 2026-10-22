@@ -10,8 +10,8 @@ import {
   parseMarker,
   parseState,
   renderSticky,
-  serializeMarker,
   type StickyMarker,
+  serializeMarker,
 } from "../src/github/sticky";
 import { planThreadUpdates } from "../src/github/threads";
 
@@ -38,7 +38,11 @@ describe("marker", () => {
     expect(parseMarker(text)).toMatchObject({ session: null, run: null });
   });
   it("parses the short marker of the original design", () => {
-    expect(parseMarker("<!-- archestra-code-review acme/widgets#12 -->")).toMatchObject({ repo: "acme/widgets", pr: 12, run: null });
+    expect(parseMarker("<!-- archestra-code-review acme/widgets#12 -->")).toMatchObject({
+      repo: "acme/widgets",
+      pr: 12,
+      run: null,
+    });
   });
 });
 
@@ -73,7 +77,15 @@ describe("sticky state and checkboxes", () => {
     expect(newlyCheckedActions(ticked, body)).toEqual([]);
   });
   it("stays below the GitHub comment limit", () => {
-    const big = { ...state, findings: Array.from({ length: 50 }, (_, i) => ({ ...state.findings[0]!, n: i + 1, id: `x-${i}`, failure_scenario: "z".repeat(4000) })) };
+    const big = {
+      ...state,
+      findings: Array.from({ length: 50 }, (_, i) => ({
+        ...state.findings[0]!,
+        n: i + 1,
+        id: `x-${i}`,
+        failure_scenario: "z".repeat(4000),
+      })),
+    };
     expect(renderSticky(big, { marker, repoUrl: "", command: "/archestra" }).length).toBeLessThanOrEqual(65_000);
   });
 });
@@ -105,7 +117,17 @@ describe("parseCommand", () => {
 describe("detectTrigger", () => {
   const sender = { login: "maria", id: 1001, type: "User" };
   const bot = { login: "github-actions[bot]", id: 41898282, type: "Bot" };
-  const sticky = renderSticky({ ...emptyState("main"), findings: placeFindings([{ file: "a", line: 1, severity: "low", summary: "s", failure_scenario: "f" }], new Map(), { headSha: "a".repeat(40), inline: false }) }, { marker, repoUrl: "", command: "/archestra" });
+  const sticky = renderSticky(
+    {
+      ...emptyState("main"),
+      findings: placeFindings(
+        [{ file: "a", line: 1, severity: "low", summary: "s", failure_scenario: "f" }],
+        new Map(),
+        { headSha: "a".repeat(40), inline: false },
+      ),
+    },
+    { marker, repoUrl: "", command: "/archestra" },
+  );
   const edited = (from: string, to: string, by = sender, author = bot) => ({
     action: "edited",
     issue: { number: 7, pull_request: { url: "x" } },
@@ -117,7 +139,11 @@ describe("detectTrigger", () => {
 
   it("starts a fix when a person ticks Apply the findings", () => {
     const ticked = sticky.replace("- [ ] Apply", "- [x] Apply");
-    expect(detectTrigger("issue_comment", edited(sticky, ticked), opts)).toMatchObject({ kind: "fix", findings: "all", sender });
+    expect(detectTrigger("issue_comment", edited(sticky, ticked), opts)).toMatchObject({
+      kind: "fix",
+      findings: "all",
+      sender,
+    });
   });
   it("ignores the action's own rewrite (github-actions[bot])", () => {
     const ticked = sticky.replace("- [ ] Apply", "- [x] Apply");
@@ -134,19 +160,30 @@ describe("detectTrigger", () => {
       comment: { id: 50, body: "/archestra fix", in_reply_to_id: 40, user: sender },
       sender,
     };
-    expect(detectTrigger("pull_request_review_comment", payload, opts)).toMatchObject({ kind: "fix", findings: { inlineReplyTo: 40 } });
+    expect(detectTrigger("pull_request_review_comment", payload, opts)).toMatchObject({
+      kind: "fix",
+      findings: { inlineReplyTo: 40 },
+    });
   });
   it("skips pull request actions that do not start a review", () => {
-    expect(detectTrigger("pull_request", { action: "closed", pull_request: { number: 7 }, sender }, opts).kind).toBe("skip");
+    expect(detectTrigger("pull_request", { action: "closed", pull_request: { number: 7 }, sender }, opts).kind).toBe(
+      "skip",
+    );
   });
   it("maps the 1-based command number to the 0-based triage index", () => {
-    const payload = { action: "created", issue: { number: 7, pull_request: { url: "x" } }, comment: { id: 2, body: "/archestra fix-ci-main 1", user: sender }, sender };
+    const payload = {
+      action: "created",
+      issue: { number: 7, pull_request: { url: "x" } },
+      comment: { id: 2, body: "/archestra fix-ci-main 1", user: sender },
+      sender,
+    };
     expect(detectTrigger("issue_comment", payload, opts)).toMatchObject({ kind: "fix-ci-main", target: 0 });
   });
 });
 
 describe("diff and inline placement", () => {
-  const patch = "@@ -10,4 +10,6 @@ fn\n   const a = 1;\n-  send(a);\n+  for (;;) {\n+    send(a);\n+  }\n   return a;\n }";
+  const patch =
+    "@@ -10,4 +10,6 @@ fn\n   const a = 1;\n-  send(a);\n+  for (;;) {\n+    send(a);\n+  }\n   return a;\n }";
   it("lists added and context lines of the head side", () => {
     expect([...commentableLines(patch)]).toEqual([10, 11, 12, 13, 14, 15]);
   });
@@ -154,7 +191,15 @@ describe("diff and inline placement", () => {
     const index = buildDiffIndex([{ filename: "src/u.ts", status: "modified", additions: 3, deletions: 1, patch }]);
     const placed = placeFindings(
       [
-        { file: "src/u.ts", line: 11, end_line: 13, severity: "high", summary: "s", failure_scenario: "f", suggestion: "x" },
+        {
+          file: "src/u.ts",
+          line: 11,
+          end_line: 13,
+          severity: "high",
+          summary: "s",
+          failure_scenario: "f",
+          suggestion: "x",
+        },
         { file: "src/u.ts", line: 40, severity: "low", summary: "s", failure_scenario: "f" },
         { file: "src/other.ts", line: 1, severity: "low", summary: "s", failure_scenario: "f" },
       ],

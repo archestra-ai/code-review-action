@@ -22,7 +22,10 @@ export function parseCommand(body: string, prefix: string): Command | null {
   if (!head.startsWith(`${prefix} `) && head !== prefix) return null;
   const rest = head.slice(prefix.length).trim();
   const [verb = "", ...words] = rest.split(/\s+/);
-  const tail = lines.slice(first + 1).join("\n").trim();
+  const tail = lines
+    .slice(first + 1)
+    .join("\n")
+    .trim();
 
   switch (verb) {
     case "fix": {

@@ -150,13 +150,22 @@ export class FakeArchestra {
         const content = run.files[path];
         if (content === undefined) return error(404, "File not found");
         const bytes = Buffer.from(content, "utf8");
-        return HttpResponse.json({ path, size: bytes.byteLength, sha256: "0".repeat(64), content_base64: bytes.toString("base64") });
+        return HttpResponse.json({
+          path,
+          size: bytes.byteLength,
+          sha256: "0".repeat(64),
+          content_base64: bytes.toString("base64"),
+        });
       }),
       http.put(`${base}/api/agents/:id/runtime/credentials/:key`, async ({ request, params }) => {
         const denied = this.authorize(request);
         if (denied) return denied;
         const body = (await request.json()) as { value?: string };
-        this.credentials.push({ agentId: String(params.id), key: String(params.key), valueLength: body.value?.length ?? 0 });
+        this.credentials.push({
+          agentId: String(params.id),
+          key: String(params.key),
+          valueLength: body.value?.length ?? 0,
+        });
         return HttpResponse.json({ configured: true });
       }),
     ];
@@ -178,7 +187,10 @@ export class FakeArchestra {
       message: String(body.message ?? ""),
       attachmentNames: attachments.map((attachment) => attachment.name),
       attachments: Object.fromEntries(
-        attachments.map((attachment) => [attachment.name, Buffer.from(attachment.contentBase64, "base64").toString("utf8")]),
+        attachments.map((attachment) => [
+          attachment.name,
+          Buffer.from(attachment.contentBase64, "base64").toString("utf8"),
+        ]),
       ),
       runtimeMode: body.runtimeMode,
       title: body.title,
@@ -228,7 +240,10 @@ export class FakeArchestra {
     run.workspaceState = "idle";
     if (script.end === "TASK_STATE_COMPLETED") {
       run.files = Object.fromEntries(
-        Object.entries(script.files).map(([name, value]) => [name, typeof value === "string" ? value : JSON.stringify(value)]),
+        Object.entries(script.files).map(([name, value]) => [
+          name,
+          typeof value === "string" ? value : JSON.stringify(value),
+        ]),
       );
     } else if (script.end === "TASK_STATE_FAILED") {
       run.statusReason = script.statusReason;

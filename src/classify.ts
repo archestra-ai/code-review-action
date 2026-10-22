@@ -8,13 +8,7 @@ import type { AgentRun, ArchestraApiError } from "./archestra/client";
 export type FailureClass = "retriable" | "non_retriable" | "fatal";
 
 /** Which signal gave the class. The action logs it for each attempt. */
-export type ClassificationSource =
-  | "http"
-  | "failure-field"
-  | "message-pattern"
-  | "state"
-  | "timeout"
-  | "contract";
+export type ClassificationSource = "http" | "failure-field" | "message-pattern" | "state" | "timeout" | "contract";
 
 export interface Classification {
   class: FailureClass;

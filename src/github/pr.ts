@@ -30,11 +30,7 @@ export interface ChangedFile {
 export const MAX_DIFF_BYTES = 5 * 1024 * 1024;
 const MAX_FILES = 3000;
 
-export async function loadPullRequest(
-  gh: Octokit,
-  repo: RepoRef,
-  number: number,
-): Promise<PullRequestInfo> {
+export async function loadPullRequest(gh: Octokit, repo: RepoRef, number: number): Promise<PullRequestInfo> {
   const { data } = await gh.rest.pulls.get({ ...repo, pull_number: number });
   return {
     number: data.number,
@@ -54,11 +50,7 @@ export async function loadPullRequest(
   };
 }
 
-export async function loadChangedFiles(
-  gh: Octokit,
-  repo: RepoRef,
-  number: number,
-): Promise<ChangedFile[]> {
+export async function loadChangedFiles(gh: Octokit, repo: RepoRef, number: number): Promise<ChangedFile[]> {
   const files: ChangedFile[] = [];
   for await (const page of gh.paginate.iterator(gh.rest.pulls.listFiles, {
     ...repo,
@@ -117,12 +109,7 @@ export function isFork(pr: PullRequestInfo): boolean {
 }
 
 /** The pr.json attachment: what the runtime needs to know about the PR. */
-export function prAttachmentData(
-  pr: PullRequestInfo,
-  repo: RepoRef,
-  files: ChangedFile[],
-  diffTruncated: boolean,
-) {
+export function prAttachmentData(pr: PullRequestInfo, repo: RepoRef, files: ChangedFile[], diffTruncated: boolean) {
   return {
     repository: `${repo.owner}/${repo.repo}`,
     number: pr.number,

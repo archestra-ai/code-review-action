@@ -45,11 +45,7 @@ export async function executeAttempt<T>(p: {
   const { client, clock, log } = p;
   const startedAt = clock.now();
   let taskId: string | null = null;
-  const record = (
-    result: AttemptRecord["result"],
-    reason: string,
-    source: AttemptRecord["source"],
-  ): AttemptRecord => ({
+  const record = (result: AttemptRecord["result"], reason: string, source: AttemptRecord["source"]): AttemptRecord => ({
     agentId: p.agentId,
     taskId,
     runUrl: taskId ? client.runUrl(taskId) : null,
@@ -58,9 +54,7 @@ export async function executeAttempt<T>(p: {
     source,
     durationMs: clock.now() - startedAt,
   });
-  const fail = (
-    classification: Classification,
-  ): AttemptOutcome<AttemptValue<T>> => ({
+  const fail = (classification: Classification): AttemptOutcome<AttemptValue<T>> => ({
     ok: false,
     classification,
     record: record(classification.class, classification.reason, classification.source),
@@ -119,18 +113,13 @@ export async function executeAttempt<T>(p: {
 
   if (run.state !== "TASK_STATE_COMPLETED") {
     // INPUT_REQUIRED and AUTH_REQUIRED runs wait; release them.
-    if (
-      run.state === "TASK_STATE_INPUT_REQUIRED" ||
-      run.state === "TASK_STATE_AUTH_REQUIRED"
-    ) {
+    if (run.state === "TASK_STATE_INPUT_REQUIRED" || run.state === "TASK_STATE_AUTH_REQUIRED") {
       await cancelQuietly(client, liveTaskId, log);
     }
     p.onLive(null);
     const classification = classifyRun(run);
     if (classification.source === "message-pattern") {
-      log.info(
-        "This deployment gives no structured failure; the failure was classified from its message.",
-      );
+      log.info("This deployment gives no structured failure; the failure was classified from its message.");
     }
     return fail(classification);
   }
@@ -229,17 +218,11 @@ export async function continueOrNull(p: {
       throw error;
     }
     if (!isWorkspaceBusy(previous, p.clock.now())) {
-      p.log.info(
-        "The previous workspace is no longer retained. Starting a fresh run on the same agent.",
-      );
+      p.log.info("The previous workspace is no longer retained. Starting a fresh run on the same agent.");
       return null;
     }
     if (p.clock.now() + wait >= p.deadline) {
-      throw new ArchestraApiError(
-        "continue run",
-        409,
-        "the workspace stayed busy until the deadline",
-      );
+      throw new ArchestraApiError("continue run", 409, "the workspace stayed busy until the deadline");
     }
     p.log.info(`The workspace is busy. Waiting ${Math.round(wait / 1000)} s.`);
     await p.clock.sleep(wait);
@@ -255,11 +238,7 @@ export function isWorkspaceBusy(run: AgentRun, now: number): boolean {
   return ["active", "resuming", "suspending"].includes(workspace.state);
 }
 
-export async function cancelQuietly(
-  client: ArchestraClient,
-  taskId: string,
-  log: Logger,
-): Promise<void> {
+export async function cancelQuietly(client: ArchestraClient, taskId: string, log: Logger): Promise<void> {
   try {
     await client.cancelRun(taskId);
     log.info(`Canceled run ${taskId}.`);

@@ -1,7 +1,15 @@
 import { orderAgents } from "../attempts";
 import { renderBrief } from "../briefs";
+import {
+  type ActionContext,
+  type ActionResult,
+  briefTitle,
+  cloneUrl,
+  launch,
+  makeResult,
+  preferAgent,
+} from "../context";
 import { CONTRACTS, FIX_CI_BRANCH_PREFIX } from "../contracts";
-import { type ActionContext, type ActionResult, briefTitle, cloneUrl, launch, makeResult, preferAgent } from "../context";
 import { collectCiEvidence } from "../github/ci";
 import { verifyCommits } from "../github/commits";
 import type { Sender, TriggerSource } from "../github/event";
@@ -22,7 +30,9 @@ export async function runFixCiMain(
   const state = sticky?.state;
   const candidates = (state?.triage ?? [])
     .map((row, index) => ({ row, index }))
-    .filter(({ row }) => row.class === "pre_existing" && !state?.fixPrs.some((fixPr) => fixPr.checks.includes(row.check)));
+    .filter(
+      ({ row }) => row.class === "pre_existing" && !state?.fixPrs.some((fixPr) => fixPr.checks.includes(row.check)),
+    );
   const chosen = trigger.target === "all" ? candidates : candidates.filter(({ index }) => index === trigger.target);
   if (!state || chosen.length === 0) {
     await reply(ctx, trigger, "No pre-existing failure agrees with the selection. Run the CI triage first.", true);
@@ -67,7 +77,11 @@ export async function runFixCiMain(
   });
 
   const marker = sticky?.marker ?? null;
-  const order = orderAgents(inputs.agents, inputs.strategy, { prNumber: pr.number, runAttempt: ctx.runAttempt, random: ctx.random });
+  const order = orderAgents(inputs.agents, inputs.strategy, {
+    prNumber: pr.number,
+    runAttempt: ctx.runAttempt,
+    random: ctx.random,
+  });
   const continueFrom =
     marker?.run && marker.agent && order.includes(marker.agent) ? { agentId: marker.agent, taskId: marker.run } : null;
 
@@ -111,12 +125,18 @@ export async function runFixCiMain(
     commits: result.commits,
   });
   if (check.verified.length === 0 || check.rejected.length > 0) {
-    const problem = check.rejected.map((entry) => `${shortSha(entry.commit)}: ${entry.reason}`).join("; ") || "no commits";
+    const problem =
+      check.rejected.map((entry) => `${shortSha(entry.commit)}: ${entry.reason}`).join("; ") || "no commits";
     await updateSticky(ctx, pr, (s) => {
       s.attempts = outcome.attempts;
       s.notice = `The fix branch \`${result.branch}\` did not pass the commit check (${problem}). No PR was opened.`;
     });
-    await reply(ctx, trigger, `The fix branch \`${result.branch}\` did not pass the commit check: ${problem}. No PR was opened.`, true);
+    await reply(
+      ctx,
+      trigger,
+      `The fix branch \`${result.branch}\` did not pass the commit check: ${problem}. No PR was opened.`,
+      true,
+    );
     return makeResult("fix-ci-main", {
       status: "error",
       runId: taskId,
@@ -139,7 +159,13 @@ export async function runFixCiMain(
     `Found by the CI triage of #${pr.number}. Requested by @${identity.login}. Prepared by the review runtime ([run](${runUrl})).`,
   ].join("\n");
   const title = result.title ?? `Fix ${checks.join(", ")} on ${baseBranch}`.slice(0, 200);
-  const { data: fixPr } = await ghFix.rest.pulls.create({ ...repo, head: result.branch, base: baseBranch, title, body });
+  const { data: fixPr } = await ghFix.rest.pulls.create({
+    ...repo,
+    head: result.branch,
+    base: baseBranch,
+    title,
+    body,
+  });
   try {
     await ghFix.rest.issues.addAssignees({ ...repo, issue_number: fixPr.number, assignees: [identity.login] });
     await ghFix.rest.pulls.requestReviewers({ ...repo, pull_number: fixPr.number, reviewers: [identity.login] });

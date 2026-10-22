@@ -1,7 +1,15 @@
 import { orderAgents } from "../attempts";
 import { renderBrief } from "../briefs";
+import {
+  type ActionContext,
+  type ActionResult,
+  briefTitle,
+  cloneUrl,
+  launch,
+  makeResult,
+  preferAgent,
+} from "../context";
 import { CONTRACTS } from "../contracts";
-import { type ActionContext, type ActionResult, briefTitle, cloneUrl, launch, makeResult, preferAgent } from "../context";
 import { collectCiEvidence } from "../github/ci";
 import { verifyCommits } from "../github/commits";
 import type { Sender, TriggerSource } from "../github/event";
@@ -18,7 +26,11 @@ export async function runFixCi(
   const { pr, identity, sticky } = prepared;
   const { inputs, repo, log } = ctx;
 
-  const { evidence, logs } = await collectCiEvidence(ctx.gh, repo, { headSha: pr.headSha, baseBranch: pr.baseRef, log });
+  const { evidence, logs } = await collectCiEvidence(ctx.gh, repo, {
+    headSha: pr.headSha,
+    baseBranch: pr.baseRef,
+    log,
+  });
   if (evidence.failures.length === 0) {
     await reply(ctx, trigger, `No check fails on \`${shortSha(pr.headSha)}\`. Nothing to triage.`, true);
     await updateSticky(ctx, pr, (s) => {
@@ -27,7 +39,10 @@ export async function runFixCi(
     return makeResult("fix-ci", { status: "nothing-to-do", summary: "No failing checks." });
   }
 
-  const [files, diff] = await Promise.all([loadChangedFiles(ctx.gh, repo, pr.number), loadDiff(ctx.gh, repo, pr.number)]);
+  const [files, diff] = await Promise.all([
+    loadChangedFiles(ctx.gh, repo, pr.number),
+    loadDiff(ctx.gh, repo, pr.number),
+  ]);
   const fixRequest = {
     mode: "fix-ci",
     repository: fullName(repo),
@@ -57,7 +72,11 @@ export async function runFixCi(
   });
 
   const marker = sticky?.marker ?? null;
-  const order = orderAgents(inputs.agents, inputs.strategy, { prNumber: pr.number, runAttempt: ctx.runAttempt, random: ctx.random });
+  const order = orderAgents(inputs.agents, inputs.strategy, {
+    prNumber: pr.number,
+    runAttempt: ctx.runAttempt,
+    random: ctx.random,
+  });
   const continueFrom =
     marker?.run && marker.agent && order.includes(marker.agent) ? { agentId: marker.agent, taskId: marker.run } : null;
 
@@ -104,14 +123,17 @@ export async function runFixCi(
     expectedEmail: identity.email,
     commits: reportedCommits,
   });
-  for (const rejected of check.rejected) log.warning(`Commit ${shortSha(rejected.commit)} not verified: ${rejected.reason}`);
+  for (const rejected of check.rejected)
+    log.warning(`Commit ${shortSha(rejected.commit)} not verified: ${rejected.reason}`);
 
   // Re-run flaky jobs when the workflow allows it (needs actions: write on the App token).
   const rerun: number[] = [];
   if (inputs.ciRerun && ctx.ghFix) {
     const flaky = new Set(rows.filter((row) => row.class === "flaky").map((row) => row.check));
     const runIds = new Set(
-      evidence.failures.filter((failure) => flaky.has(failure.name) && failure.runId !== null).map((failure) => failure.runId as number),
+      evidence.failures
+        .filter((failure) => flaky.has(failure.name) && failure.runId !== null)
+        .map((failure) => failure.runId as number),
     );
     for (const runId of runIds) {
       try {

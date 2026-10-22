@@ -41,12 +41,7 @@ export function buildDiffIndex(files: ChangedFile[]): DiffIndex {
   return index;
 }
 
-export function isRangeInDiff(
-  index: DiffIndex,
-  file: string,
-  start: number,
-  end: number,
-): boolean {
+export function isRangeInDiff(index: DiffIndex, file: string, start: number, end: number): boolean {
   const lines = index.get(file);
   if (!lines || end < start || end - start > MAX_RANGE_LINES) return false;
   for (let line = start; line <= end; line++) {
