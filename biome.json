@@ -11,10 +11,22 @@
   "linter": {
     "enabled": true,
     "rules": {
-      "recommended": true
+      "preset": "recommended"
     }
   },
   "assist": {
     "enabled": true
-  }
+  },
+  "overrides": [
+    {
+      "includes": ["test/**", "scripts/**"],
+      "linter": {
+        "rules": {
+          "style": {
+            "noNonNullAssertion": "off"
+          }
+        }
+      }
+    }
+  ]
 }

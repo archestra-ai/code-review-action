@@ -2,7 +2,6 @@ import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { ArchestraClient } from "../src/archestra/client";
 import { cancelIfLive } from "../src/cancel";
 import { collectCiEvidence } from "../src/github/ci";
-import { createOctokit } from "../src/github/octokit";
 import { hasWriteAccess } from "../src/github/permissions";
 import { parseMarker, parseState } from "../src/github/sticky";
 import { run } from "../src/run";
@@ -17,10 +16,11 @@ import {
   mockServer,
   prEvent,
   reviewJson,
+  testOctokit,
 } from "./helpers";
 
 const server = mockServer();
-beforeAll(() => server.listen({ onUnhandledRequest: "error" }));
+beforeAll(() => server.listen({ onUnhandledFrame: "error" }));
 afterEach(() => server.resetHandlers());
 afterAll(() => server.close());
 
@@ -47,7 +47,12 @@ describe("review mode", () => {
     expect(review.comments).toHaveLength(1);
     expect(review.comments[0]).toMatchObject({ path: "src/upload.ts", line: 14, start_line: 12, side: "RIGHT" });
     const sticky = harness.github.stickyBody()!;
-    expect(parseMarker(sticky)).toMatchObject({ pr: 7, run: result.runId, agent: AGENT_A, sha: harness.github.pr.head.sha });
+    expect(parseMarker(sticky)).toMatchObject({
+      pr: 7,
+      run: result.runId,
+      agent: AGENT_A,
+      sha: harness.github.pr.head.sha,
+    });
     expect(sticky).toContain("(outside the diff)");
     expect(harness.archestra.starts[0]!.attachmentNames).toEqual(["pr.json", "pr.diff"]);
     expect(Buffer.byteLength(harness.archestra.starts[0]!.message)).toBeLessThan(8192);
@@ -55,10 +60,18 @@ describe("review mode", () => {
 
   it("skips drafts, [WIP] titles, forks and bot authors", async () => {
     for (const change of [
-      (h: ReturnType<typeof setup>) => void (h.github.pr.draft = true),
-      (h: ReturnType<typeof setup>) => void (h.github.pr.title = "[WIP] retry"),
-      (h: ReturnType<typeof setup>) => void (h.github.pr.head.repoFullName = "fork/widgets"),
-      (h: ReturnType<typeof setup>) => void (h.github.pr.user = { login: "dependabot[bot]", type: "Bot" }),
+      (h: ReturnType<typeof setup>) => {
+        h.github.pr.draft = true;
+      },
+      (h: ReturnType<typeof setup>) => {
+        h.github.pr.title = "[WIP] retry";
+      },
+      (h: ReturnType<typeof setup>) => {
+        h.github.pr.head.repoFullName = "fork/widgets";
+      },
+      (h: ReturnType<typeof setup>) => {
+        h.github.pr.user = { login: "dependabot[bot]", type: "Bot" };
+      },
     ]) {
       const harness = setup();
       change(harness);
@@ -111,14 +124,18 @@ describe("review mode", () => {
     const second = harness.archestra.starts[1]!;
     expect(second).toMatchObject({ kind: "continue", previousTaskId: result.runId });
     expect(second.attachmentNames).toContain("previous-findings.json");
-    expect(harness.github.graphqlMutations).toEqual([{ action: "unresolve", threadId: expect.stringMatching(/^thread-/) }]);
+    expect(harness.github.graphqlMutations).toEqual([
+      { action: "unresolve", threadId: expect.stringMatching(/^thread-/) },
+    ]);
   });
 });
 
 describe("fix mode", () => {
   it("rejects a sender without write access", async () => {
     const { harness } = await reviewed();
-    const result = await run(harness.context("issue_comment", issueCommentEvent(harness.github, "/archestra fix", "reader")));
+    const result = await run(
+      harness.context("issue_comment", issueCommentEvent(harness.github, "/archestra fix", "reader")),
+    );
     expect(result.status).toBe("unauthorized");
     expect(harness.archestra.starts).toHaveLength(1);
   });
@@ -147,7 +164,9 @@ describe("fix mode", () => {
         },
       },
     });
-    const result = await run(harness.context("issue_comment", issueCommentEvent(harness.github, "/archestra fix 1,2 keep it small")));
+    const result = await run(
+      harness.context("issue_comment", issueCommentEvent(harness.github, "/archestra fix 1,2 keep it small")),
+    );
 
     const fixStart = harness.archestra.starts[1]!;
     expect(fixStart).toMatchObject({ kind: "continue", previousTaskId: review.runId });
@@ -158,7 +177,9 @@ describe("fix mode", () => {
       maintainerNote: "keep it small",
     });
     expect(fixStart.message).toContain('git config user.email "1001+maria@users.noreply.github.com"');
-    expect(harness.archestra.credentials).toEqual([{ agentId: AGENT_A, key: "GITHUB_TOKEN", valueLength: "ghs_app_token".length }]);
+    expect(harness.archestra.credentials).toEqual([
+      { agentId: AGENT_A, key: "GITHUB_TOKEN", valueLength: "ghs_app_token".length },
+    ]);
 
     expect(result.pushedCommits).toEqual([good]);
     expect(result.applied).toEqual([{ finding: inDiff!.id, commit: good }]);
@@ -173,7 +194,10 @@ describe("fix mode", () => {
   it("waits while the workspace is busy, then continues", async () => {
     const { harness, result: review } = await reviewed();
     harness.archestra.busyContinues.set(review.runId!, 2);
-    harness.archestra.script(AGENT_A, { end: "TASK_STATE_COMPLETED", files: { "fix-result.json": { applied: [], skipped: [], notes: "" } } });
+    harness.archestra.script(AGENT_A, {
+      end: "TASK_STATE_COMPLETED",
+      files: { "fix-result.json": { applied: [], skipped: [], notes: "" } },
+    });
     await run(harness.context("issue_comment", issueCommentEvent(harness.github, "/archestra fix")));
     expect(harness.archestra.starts[1]).toMatchObject({ kind: "continue" });
     expect(harness.clock.sleeps.filter((ms) => ms === 30_000).length).toBeGreaterThanOrEqual(2);
@@ -182,7 +206,10 @@ describe("fix mode", () => {
   it("starts a fresh run on the same agent when the workspace is no longer retained", async () => {
     const { harness, result: review } = await reviewed();
     harness.archestra.expiredWorkspaces.add(review.runId!);
-    harness.archestra.script(AGENT_A, { end: "TASK_STATE_COMPLETED", files: { "fix-result.json": { applied: [], skipped: [], notes: "" } } });
+    harness.archestra.script(AGENT_A, {
+      end: "TASK_STATE_COMPLETED",
+      files: { "fix-result.json": { applied: [], skipped: [], notes: "" } },
+    });
     await run(harness.context("issue_comment", issueCommentEvent(harness.github, "/archestra fix")));
     expect(harness.archestra.starts[1]).toMatchObject({ kind: "start", agentId: AGENT_A });
     expect(harness.archestra.starts[1]!.attachmentNames).toEqual(["fix-request.json", "pr.json", "pr.diff"]);
@@ -192,9 +219,32 @@ describe("fix mode", () => {
 describe("fix-ci and fix-ci-main modes", () => {
   function withFailingChecks(harness: ReturnType<typeof setup>) {
     harness.github.checkRuns = [
-      { id: 301, name: "test", app: "github-actions", conclusion: "failure", log: "ok\nFAIL upload.test.ts\n", baseBranchConclusion: "success" },
-      { id: 302, name: "lint", app: "github-actions", conclusion: "failure", log: "lint error", baseBranchConclusion: "failure" },
-      { id: 303, name: "external", app: "codecov", conclusion: "failure", summary: "Coverage dropped", annotations: [{ path: "src/upload.ts", start_line: 1, end_line: 1, annotation_level: "failure", message: "uncovered" }] },
+      {
+        id: 301,
+        name: "test",
+        app: "github-actions",
+        conclusion: "failure",
+        log: "ok\nFAIL upload.test.ts\n",
+        baseBranchConclusion: "success",
+      },
+      {
+        id: 302,
+        name: "lint",
+        app: "github-actions",
+        conclusion: "failure",
+        log: "lint error",
+        baseBranchConclusion: "failure",
+      },
+      {
+        id: 303,
+        name: "external",
+        app: "codecov",
+        conclusion: "failure",
+        summary: "Coverage dropped",
+        annotations: [
+          { path: "src/upload.ts", start_line: 1, end_line: 1, annotation_level: "failure", message: "uncovered" },
+        ],
+      },
     ];
   }
 
@@ -203,7 +253,9 @@ describe("fix-ci and fix-ci-main modes", () => {
     withFailingChecks(harness);
     const fixCommit = "3".repeat(40);
     harness.github.headAfterPush = "f".repeat(40);
-    harness.github.branchCommits.set("f".repeat(40), [{ sha: fixCommit, authorEmail: "1001+maria@users.noreply.github.com" }]);
+    harness.github.branchCommits.set("f".repeat(40), [
+      { sha: fixCommit, authorEmail: "1001+maria@users.noreply.github.com" },
+    ]);
     harness.archestra.script(AGENT_A, {
       end: "TASK_STATE_COMPLETED",
       files: {
@@ -219,23 +271,37 @@ describe("fix-ci and fix-ci-main modes", () => {
     });
     const result = await run(harness.context("issue_comment", issueCommentEvent(harness.github, "/archestra fix-ci")));
     const start = harness.archestra.starts[1]!;
-    expect(start.attachmentNames).toEqual(expect.arrayContaining(["ci-failure.json", "ci-log-test.log", "ci-log-lint.log"]));
+    expect(start.attachmentNames).toEqual(
+      expect.arrayContaining(["ci-failure.json", "ci-log-test.log", "ci-log-lint.log"]),
+    );
     const evidence = JSON.parse(start.attachments["ci-failure.json"]!);
-    expect(evidence.failures.find((f: { name: string }) => f.name === "lint").baseBranchResult).toMatchObject({ conclusion: "failure" });
+    expect(evidence.failures.find((f: { name: string }) => f.name === "lint").baseBranchResult).toMatchObject({
+      conclusion: "failure",
+    });
     expect(evidence.failures.find((f: { name: string }) => f.name === "external").annotations).toHaveLength(1);
     expect(result.pushedCommits).toEqual([fixCommit]);
     const sticky = harness.github.stickyBody()!;
     expect(sticky).toContain("Open a fix PR against main for `lint` <!-- archestra-action:fix-ci-main:1 -->");
 
     // Tick the box: open a fix PR against main.
-    const ticked = sticky.replace("- [ ] Open a fix PR against main for `lint`", "- [x] Open a fix PR against main for `lint`");
+    const ticked = sticky.replace(
+      "- [ ] Open a fix PR against main for `lint`",
+      "- [x] Open a fix PR against main for `lint`",
+    );
     const stickyId = [...harness.github.comments.values()].find((c) => c.body === sticky)!.id;
     const branch = "archestra/fix-ci-lint";
     const mainCommit = "4".repeat(40);
     harness.github.branchCommits.set(branch, [{ sha: mainCommit, authorEmail: "1001+maria@users.noreply.github.com" }]);
     harness.archestra.script(AGENT_A, {
       end: "TASK_STATE_COMPLETED",
-      files: { "ci-main-fix.json": { branch, commits: [mainCommit], summary: "Fix the lint error", reproduction: "pnpm lint: fails, then passes" } },
+      files: {
+        "ci-main-fix.json": {
+          branch,
+          commits: [mainCommit],
+          summary: "Fix the lint error",
+          reproduction: "pnpm lint: fails, then passes",
+        },
+      },
     });
     const edit = {
       action: "edited",
@@ -255,13 +321,19 @@ describe("fix-ci and fix-ci-main modes", () => {
 
   it("caps the log tail per job", async () => {
     const harness = setup();
-    harness.github.checkRuns = [{ id: 401, name: "big", app: "github-actions", conclusion: "failure", log: `${"x".repeat(300_000)}END` }];
-    const { logs, evidence } = await collectCiEvidence(createOctokit("t"), { owner: "acme", repo: "widgets" }, {
-      headSha: "a".repeat(40),
-      baseBranch: "main",
-      log: new MemoryLogger(),
-      logCapBytes: 200 * 1024,
-    });
+    harness.github.checkRuns = [
+      { id: 401, name: "big", app: "github-actions", conclusion: "failure", log: `${"x".repeat(300_000)}END` },
+    ];
+    const { logs, evidence } = await collectCiEvidence(
+      testOctokit("t"),
+      { owner: "acme", repo: "widgets" },
+      {
+        headSha: "a".repeat(40),
+        baseBranch: "main",
+        log: new MemoryLogger(),
+        logCapBytes: 200 * 1024,
+      },
+    );
     expect(logs[0]!.content.byteLength).toBe(200 * 1024);
     expect(logs[0]!.content.toString().endsWith("END")).toBe(true);
     expect(evidence.failures[0]).toMatchObject({ logTruncated: true, log: "ci-log-big.log" });
@@ -272,9 +344,11 @@ describe("permission check", () => {
   it("accepts admin, maintain and write; rejects read and non-collaborators", async () => {
     const harness = setup();
     harness.github.collaborators = { a: "admin", m: "maintain", w: "write", t: "triage", r: "read" };
-    const gh = createOctokit("t");
+    const gh = testOctokit("t");
     const repo = { owner: "acme", repo: "widgets" };
-    const results = await Promise.all(["a", "m", "w", "t", "r", "nobody"].map((user) => hasWriteAccess(gh, repo, user)));
+    const results = await Promise.all(
+      ["a", "m", "w", "t", "r", "nobody"].map((user) => hasWriteAccess(gh, repo, user)),
+    );
     expect(results).toEqual([true, true, true, false, false, false]);
   });
 });

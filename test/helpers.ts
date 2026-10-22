@@ -7,6 +7,11 @@ import type { Logger } from "../src/util";
 import { FakeArchestra } from "./fakes/archestra";
 import { FakeGitHub } from "./fakes/github";
 
+/** An Octokit whose requests go through the global fetch, which msw intercepts. */
+export function testOctokit(token: string) {
+  return createOctokit(token, { fetch: (input, init) => globalThis.fetch(input, init) });
+}
+
 export const AGENT_A = "11111111-1111-4111-8111-111111111111";
 export const AGENT_B = "22222222-2222-4222-8222-222222222222";
 export const AGENT_C = "33333333-3333-4333-8333-333333333333";
@@ -77,8 +82,8 @@ export function createHarness(): Harness {
         runAttempt: 1,
         serverUrl: "https://github.com",
         workflowRunUrl: `https://github.com/${github.fullName}/actions/runs/1`,
-        gh: createOctokit(inputs.githubToken),
-        ghFix: inputs.fixToken ? createOctokit(inputs.fixToken) : null,
+        gh: testOctokit(inputs.githubToken),
+        ghFix: inputs.fixToken ? testOctokit(inputs.fixToken) : null,
         archestra: new ArchestraClient({ baseUrl: archestra.baseUrl, apiKey: inputs.apiKey }),
         log,
         clock,
@@ -109,7 +114,12 @@ export function issueCommentEvent(github: FakeGitHub, body: string, sender = "ma
 }
 
 export function reviewJson(findings: unknown[] = [], extra: Record<string, unknown> = {}) {
-  return { verdict: findings.length ? "request_changes" : "approve", summary: "Looks fine apart from the findings.", findings, ...extra };
+  return {
+    verdict: findings.length ? "request_changes" : "approve",
+    summary: "Looks fine apart from the findings.",
+    findings,
+    ...extra,
+  };
 }
 
 export const FINDING_IN_DIFF = {

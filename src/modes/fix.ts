@@ -1,7 +1,15 @@
 import { orderAgents } from "../attempts";
 import { renderBrief } from "../briefs";
+import {
+  type ActionContext,
+  type ActionResult,
+  briefTitle,
+  cloneUrl,
+  launch,
+  makeResult,
+  preferAgent,
+} from "../context";
 import { CONTRACTS } from "../contracts";
-import { type ActionContext, type ActionResult, briefTitle, cloneUrl, launch, makeResult, preferAgent } from "../context";
 import { verifyCommits } from "../github/commits";
 import type { FindingSelection, Sender, TriggerSource } from "../github/event";
 import { httpStatus } from "../github/octokit";
@@ -31,13 +39,21 @@ export async function runFix(ctx: ActionContext, trigger: FixTriggerInput): Prom
     await reply(ctx, trigger, "There are no review findings to apply. Wait until the review is complete.", true);
     return makeResult("fix", { status: "nothing-to-do", summary: "No review findings." });
   }
-  const selected = await selectFindings(ctx, pr.number, state.findings, trigger.findings);
+  const selected = await selectFindings(ctx, state.findings, trigger.findings);
   if (selected.length === 0) {
-    await reply(ctx, trigger, "No open finding agrees with the selection. Use the numbers in the review comment.", true);
+    await reply(
+      ctx,
+      trigger,
+      "No open finding agrees with the selection. Use the numbers in the review comment.",
+      true,
+    );
     return makeResult("fix", { status: "nothing-to-do", summary: "No finding was selected." });
   }
 
-  const [files, diff] = await Promise.all([loadChangedFiles(ctx.gh, repo, pr.number), loadDiff(ctx.gh, repo, pr.number)]);
+  const [files, diff] = await Promise.all([
+    loadChangedFiles(ctx.gh, repo, pr.number),
+    loadDiff(ctx.gh, repo, pr.number),
+  ]);
   const fixRequest = {
     mode: "fix",
     repository: fullName(repo),
@@ -75,8 +91,13 @@ export async function runFix(ctx: ActionContext, trigger: FixTriggerInput): Prom
   });
 
   const marker = sticky.marker;
-  const order = orderAgents(inputs.agents, inputs.strategy, { prNumber: pr.number, runAttempt: ctx.runAttempt, random: ctx.random });
-  const continueFrom = marker.run && marker.agent && order.includes(marker.agent) ? { agentId: marker.agent, taskId: marker.run } : null;
+  const order = orderAgents(inputs.agents, inputs.strategy, {
+    prNumber: pr.number,
+    runAttempt: ctx.runAttempt,
+    random: ctx.random,
+  });
+  const continueFrom =
+    marker.run && marker.agent && order.includes(marker.agent) ? { agentId: marker.agent, taskId: marker.run } : null;
   const agents = preferAgent(order, continueFrom?.agentId ?? null);
 
   await updateSticky(ctx, pr, (s) => {
@@ -155,7 +176,13 @@ export async function runFix(ctx: ActionContext, trigger: FixTriggerInput): Prom
     );
     s.applied = [
       ...s.applied,
-      ...applied.map((entry) => ({ finding: entry.finding, check: null, commit: entry.commit, login: identity.login, runUrl })),
+      ...applied.map((entry) => ({
+        finding: entry.finding,
+        check: null,
+        commit: entry.commit,
+        login: identity.login,
+        runUrl,
+      })),
     ].slice(-50);
     s.skipped = skipped;
     s.attempts = outcome.attempts;
@@ -187,7 +214,6 @@ export async function runFix(ctx: ActionContext, trigger: FixTriggerInput): Prom
 
 async function selectFindings(
   ctx: ActionContext,
-  pr: number,
   findings: StoredFinding[],
   selection: FindingSelection,
 ): Promise<StoredFinding[]> {

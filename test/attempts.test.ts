@@ -1,8 +1,8 @@
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { ArchestraClient } from "../src/archestra/client";
 import { type AttemptOutcome, orderAgents, runWithFallback } from "../src/attempts";
-import { executeAttempt, readContract } from "../src/run-attempt";
 import { ReviewResultSchema } from "../src/contracts";
+import { executeAttempt, readContract } from "../src/run-attempt";
 import { FakeArchestra } from "./fakes/archestra";
 import { AGENT_A, AGENT_B, AGENT_C, FakeClock, MemoryLogger, mockServer, reviewJson } from "./helpers";
 
@@ -29,7 +29,15 @@ function scripted(results: Array<"ok" | "retriable" | "non_retriable" | "fatal">
   const attempt = async (agentId: string): Promise<AttemptOutcome<string>> => {
     calls.push(agentId);
     const result = results[i++] ?? "non_retriable";
-    const record = { agentId, taskId: null, runUrl: null, result: result === "ok" ? ("completed" as const) : result, reason: result, source: null, durationMs: 0 };
+    const record = {
+      agentId,
+      taskId: null,
+      runUrl: null,
+      result: result === "ok" ? ("completed" as const) : result,
+      reason: result,
+      source: null,
+      durationMs: 0,
+    };
     if (result === "ok") return { ok: true, value: agentId, record };
     return { ok: false, classification: { class: result, reason: result, source: "http" }, record };
   };
@@ -97,7 +105,13 @@ describe("runWithFallback", () => {
   it("stops at the overall deadline", async () => {
     const clock = new FakeClock();
     const { calls, attempt } = scripted(Array(20).fill("retriable"));
-    const result = await runWithFallback({ ...base(clock), deadline: clock.now() + 45_000, retries: 5, maxFallbacks: 2, attempt });
+    const result = await runWithFallback({
+      ...base(clock),
+      deadline: clock.now() + 45_000,
+      retries: 5,
+      maxFallbacks: 2,
+      attempt,
+    });
     expect(calls).toEqual(["a", "a"]);
     expect(result.deadlineReached).toBe(true);
   });
@@ -105,7 +119,7 @@ describe("runWithFallback", () => {
 
 describe("executeAttempt against the fake Archestra API", () => {
   const server = mockServer();
-  beforeAll(() => server.listen({ onUnhandledRequest: "error" }));
+  beforeAll(() => server.listen({ onUnhandledFrame: "error" }));
   afterEach(() => server.resetHandlers());
   afterAll(() => server.close());
 
@@ -139,7 +153,11 @@ describe("executeAttempt against the fake Archestra API", () => {
     expect(clock.sleeps).toEqual([5000, 7500, 11250, 16875, 25313, 30000]);
     expect(live[0]).toMatch(/^0000/);
     expect(live.at(-1)).toBeNull();
-    expect(fake.starts[0]).toMatchObject({ runtimeMode: "one_shot", title: "acme/widgets#7", authorization: "<api key>" });
+    expect(fake.starts[0]).toMatchObject({
+      runtimeMode: "one_shot",
+      title: "acme/widgets#7",
+      authorization: "<api key>",
+    });
   });
 
   it("classifies a 401 on start as fatal", async () => {
@@ -152,7 +170,11 @@ describe("executeAttempt against the fake Archestra API", () => {
 
   it("classifies 403/404/409 on start as non-retriable and 429/503 as retriable", async () => {
     const { fake, run } = setup();
-    fake.script(AGENT_A, { start: "http", status: 403 }, { start: "http", status: 409, message: "Sign in to Claude Code before starting this Agent." });
+    fake.script(
+      AGENT_A,
+      { start: "http", status: 403 },
+      { start: "http", status: 409, message: "Sign in to Claude Code before starting this Agent." },
+    );
     fake.script(AGENT_B, { start: "http", status: 429 }, { start: "http", status: 503 });
     for (const [agent, expected] of [
       [AGENT_A, "non_retriable"],
@@ -177,7 +199,11 @@ describe("executeAttempt against the fake Archestra API", () => {
 
   it("treats a missing or invalid review.json as non-retriable", async () => {
     const { fake, run } = setup();
-    fake.script(AGENT_A, { end: "TASK_STATE_COMPLETED", files: {} }, { end: "TASK_STATE_COMPLETED", files: { "review.json": { verdict: "maybe" } } });
+    fake.script(
+      AGENT_A,
+      { end: "TASK_STATE_COMPLETED", files: {} },
+      { end: "TASK_STATE_COMPLETED", files: { "review.json": { verdict: "maybe" } } },
+    );
     for (const reason of [/missing/, /does not match the schema/]) {
       const outcome = await run(AGENT_A);
       expect(outcome.ok).toBe(false);
