@@ -1,0 +1,35 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - name: Lint and type check
+        run: npm run lint
+      - name: Test
+        run: npm test
+      - name: Schemas are up to date
+        run: npm run check:schemas
+      - name: dist is up to date
+        run: npm run check:dist
+      - name: The bundle starts and rejects missing inputs
+        run: |
+          set +e
+          output=$(node dist/index.js 2>&1)
+          status=$?
+          echo "$output"
+          test "$status" -ne 0 && echo "$output" | grep -q 'Input "archestra-url" is required'

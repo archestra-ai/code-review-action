@@ -1,0 +1,21 @@
+{
+  "name": "code-review-action",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Review pull requests on Archestra Agent Runtimes and apply fixes on request",
+  "license": "Apache-2.0",
+  "type": "module",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "check:dist": "npm run build && git diff --exit-code -- dist",
+    "schemas": "node scripts/build.mjs --scripts && node .build/gen-schemas.js",
+    "check:schemas": "npm run schemas && git diff --exit-code -- schemas",
+    "local-run": "node scripts/build.mjs --scripts && node .build/local-run.js",
+    "lint": "biome check . && tsc --noEmit",
+    "lint:fix": "biome check --write .",
+    "test": "vitest run"
+  }
+}

@@ -1,0 +1,292 @@
+import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { ArchestraClient } from "../src/archestra/client";
+import { cancelIfLive } from "../src/cancel";
+import { collectCiEvidence } from "../src/github/ci";
+import { createOctokit } from "../src/github/octokit";
+import { hasWriteAccess } from "../src/github/permissions";
+import { parseMarker, parseState } from "../src/github/sticky";
+import { run } from "../src/run";
+import {
+  AGENT_A,
+  AGENT_B,
+  createHarness,
+  FINDING_IN_DIFF,
+  FINDING_OUTSIDE,
+  issueCommentEvent,
+  MemoryLogger,
+  mockServer,
+  prEvent,
+  reviewJson,
+} from "./helpers";
+
+const server = mockServer();
+beforeAll(() => server.listen({ onUnhandledRequest: "error" }));
+afterEach(() => server.resetHandlers());
+afterAll(() => server.close());
+
+function setup() {
+  const harness = createHarness();
+  server.use(...harness.archestra.handlers(), ...harness.github.handlers());
+  return harness;
+}
+
+async function reviewed(harness = setup()) {
+  harness.archestra.script(AGENT_A, {
+    end: "TASK_STATE_COMPLETED",
+    files: { "review.json": reviewJson([FINDING_IN_DIFF, FINDING_OUTSIDE]) },
+  });
+  const result = await run(harness.context("pull_request", prEvent(harness.github)));
+  return { harness, result };
+}
+
+describe("review mode", () => {
+  it("posts inline comments for findings in the diff and a sticky summary", async () => {
+    const { harness, result } = await reviewed();
+    expect(result).toMatchObject({ status: "success", findingsCount: 2, agentId: AGENT_A });
+    const review = harness.github.reviews[0]!;
+    expect(review.comments).toHaveLength(1);
+    expect(review.comments[0]).toMatchObject({ path: "src/upload.ts", line: 14, start_line: 12, side: "RIGHT" });
+    const sticky = harness.github.stickyBody()!;
+    expect(parseMarker(sticky)).toMatchObject({ pr: 7, run: result.runId, agent: AGENT_A, sha: harness.github.pr.head.sha });
+    expect(sticky).toContain("(outside the diff)");
+    expect(harness.archestra.starts[0]!.attachmentNames).toEqual(["pr.json", "pr.diff"]);
+    expect(Buffer.byteLength(harness.archestra.starts[0]!.message)).toBeLessThan(8192);
+  });
+
+  it("skips drafts, [WIP] titles, forks and bot authors", async () => {
+    for (const change of [
+      (h: ReturnType<typeof setup>) => void (h.github.pr.draft = true),
+      (h: ReturnType<typeof setup>) => void (h.github.pr.title = "[WIP] retry"),
+      (h: ReturnType<typeof setup>) => void (h.github.pr.head.repoFullName = "fork/widgets"),
+      (h: ReturnType<typeof setup>) => void (h.github.pr.user = { login: "dependabot[bot]", type: "Bot" }),
+    ]) {
+      const harness = setup();
+      change(harness);
+      const result = await run(harness.context("pull_request", prEvent(harness.github)));
+      expect(result.status).toBe("skipped");
+      expect(harness.archestra.starts).toHaveLength(0);
+      server.resetHandlers();
+    }
+  });
+
+  it("falls back to the next runtime and lists the attempts when one fails", async () => {
+    const harness = setup();
+    harness.archestra.script(AGENT_A, { end: "TASK_STATE_FAILED", statusReason: "Budget exceeded" });
+    harness.archestra.script(AGENT_B, { end: "TASK_STATE_COMPLETED", files: { "review.json": reviewJson() } });
+    const result = await run(harness.context("pull_request", prEvent(harness.github)));
+    expect(result.agentId).toBe(AGENT_B);
+    expect(result.attempts.map((attempt) => attempt.result)).toEqual(["non_retriable", "completed"]);
+    expect(harness.log.lines.some((line) => line.includes("classified from its message"))).toBe(true);
+  });
+
+  it("posts 'review unavailable' when all attempts fail, and fails the step with fail-on error", async () => {
+    const harness = setup();
+    harness.archestra.script(AGENT_A, { start: "http", status: 401 });
+    const result = await run(harness.context("pull_request", prEvent(harness.github), { "fail-on": "error" }));
+    expect(result.status).toBe("aborted");
+    expect(result.failure).toMatch(/unavailable/);
+    expect(harness.github.stickyBody()).toContain("Review unavailable");
+    expect(harness.archestra.starts).toHaveLength(1);
+  });
+
+  it("moves the findings into the summary when GitHub rejects the inline comments", async () => {
+    const harness = setup();
+    harness.github.rejectReview = true;
+    await reviewed(harness);
+    const state = parseState(harness.github.stickyBody()!)!;
+    expect(state.findings.every((finding) => !finding.inline)).toBe(true);
+  });
+
+  it("continues the last review workspace and reopens regressed threads", async () => {
+    const { harness, result } = await reviewed();
+    const first = parseState(harness.github.stickyBody()!)!.findings[0]!;
+    // A human resolved the thread; the next push regresses the finding.
+    harness.github.resolved.add([...harness.github.reviewComments.keys()][0]!);
+    harness.github.pr.head.sha = "d".repeat(40);
+    harness.archestra.script(AGENT_A, {
+      end: "TASK_STATE_COMPLETED",
+      files: { "review.json": reviewJson([FINDING_IN_DIFF], { previous: [{ id: first.id, status: "regressed" }] }) },
+    });
+    await run(harness.context("pull_request", prEvent(harness.github, "synchronize")));
+    const second = harness.archestra.starts[1]!;
+    expect(second).toMatchObject({ kind: "continue", previousTaskId: result.runId });
+    expect(second.attachmentNames).toContain("previous-findings.json");
+    expect(harness.github.graphqlMutations).toEqual([{ action: "unresolve", threadId: expect.stringMatching(/^thread-/) }]);
+  });
+});
+
+describe("fix mode", () => {
+  it("rejects a sender without write access", async () => {
+    const { harness } = await reviewed();
+    const result = await run(harness.context("issue_comment", issueCommentEvent(harness.github, "/archestra fix", "reader")));
+    expect(result.status).toBe("unauthorized");
+    expect(harness.archestra.starts).toHaveLength(1);
+  });
+
+  it("continues the review run, verifies the commits, resolves the thread and updates the sticky comment", async () => {
+    const { harness, result: review } = await reviewed();
+    const state = parseState(harness.github.stickyBody()!)!;
+    const [inDiff, outside] = state.findings;
+    const good = "1".repeat(40);
+    const foreign = "2".repeat(40);
+    harness.github.headAfterPush = "e".repeat(40);
+    harness.github.branchCommits.set("e".repeat(40), [
+      { sha: good, authorEmail: "1001+maria@users.noreply.github.com" },
+      { sha: foreign, authorEmail: "bot@example.com" },
+    ]);
+    harness.archestra.script(AGENT_A, {
+      end: "TASK_STATE_COMPLETED",
+      files: {
+        "fix-result.json": {
+          applied: [
+            { finding: inDiff!.id, commit: good },
+            { finding: outside!.id, commit: foreign },
+          ],
+          skipped: [],
+          notes: "",
+        },
+      },
+    });
+    const result = await run(harness.context("issue_comment", issueCommentEvent(harness.github, "/archestra fix 1,2 keep it small")));
+
+    const fixStart = harness.archestra.starts[1]!;
+    expect(fixStart).toMatchObject({ kind: "continue", previousTaskId: review.runId });
+    const request = JSON.parse(fixStart.attachments["fix-request.json"]!);
+    expect(request).toMatchObject({
+      branch: "feature/retry",
+      author: { name: "Maria Lopez", email: "1001+maria@users.noreply.github.com" },
+      maintainerNote: "keep it small",
+    });
+    expect(fixStart.message).toContain('git config user.email "1001+maria@users.noreply.github.com"');
+    expect(harness.archestra.credentials).toEqual([{ agentId: AGENT_A, key: "GITHUB_TOKEN", valueLength: "ghs_app_token".length }]);
+
+    expect(result.pushedCommits).toEqual([good]);
+    expect(result.applied).toEqual([{ finding: inDiff!.id, commit: good }]);
+    expect(result.skipped[0]).toMatchObject({ finding: outside!.id, reason: expect.stringContaining("not verified") });
+    expect(harness.github.graphqlMutations).toEqual([{ action: "resolve", threadId: expect.any(String) }]);
+    const sticky = harness.github.stickyBody()!;
+    expect(sticky).toContain("on behalf of @maria");
+    expect(parseState(sticky)!.findings.map((finding) => finding.status)).toEqual(["applied", "skipped"]);
+    expect(harness.github.reactions).toEqual([{ commentId: 9001, content: "eyes" }]);
+  });
+
+  it("waits while the workspace is busy, then continues", async () => {
+    const { harness, result: review } = await reviewed();
+    harness.archestra.busyContinues.set(review.runId!, 2);
+    harness.archestra.script(AGENT_A, { end: "TASK_STATE_COMPLETED", files: { "fix-result.json": { applied: [], skipped: [], notes: "" } } });
+    await run(harness.context("issue_comment", issueCommentEvent(harness.github, "/archestra fix")));
+    expect(harness.archestra.starts[1]).toMatchObject({ kind: "continue" });
+    expect(harness.clock.sleeps.filter((ms) => ms === 30_000).length).toBeGreaterThanOrEqual(2);
+  });
+
+  it("starts a fresh run on the same agent when the workspace is no longer retained", async () => {
+    const { harness, result: review } = await reviewed();
+    harness.archestra.expiredWorkspaces.add(review.runId!);
+    harness.archestra.script(AGENT_A, { end: "TASK_STATE_COMPLETED", files: { "fix-result.json": { applied: [], skipped: [], notes: "" } } });
+    await run(harness.context("issue_comment", issueCommentEvent(harness.github, "/archestra fix")));
+    expect(harness.archestra.starts[1]).toMatchObject({ kind: "start", agentId: AGENT_A });
+    expect(harness.archestra.starts[1]!.attachmentNames).toEqual(["fix-request.json", "pr.json", "pr.diff"]);
+  });
+});
+
+describe("fix-ci and fix-ci-main modes", () => {
+  function withFailingChecks(harness: ReturnType<typeof setup>) {
+    harness.github.checkRuns = [
+      { id: 301, name: "test", app: "github-actions", conclusion: "failure", log: "ok\nFAIL upload.test.ts\n", baseBranchConclusion: "success" },
+      { id: 302, name: "lint", app: "github-actions", conclusion: "failure", log: "lint error", baseBranchConclusion: "failure" },
+      { id: 303, name: "external", app: "codecov", conclusion: "failure", summary: "Coverage dropped", annotations: [{ path: "src/upload.ts", start_line: 1, end_line: 1, annotation_level: "failure", message: "uncovered" }] },
+    ];
+  }
+
+  it("triages, verifies the fix commit and offers a fix PR for the pre-existing failure", async () => {
+    const { harness } = await reviewed();
+    withFailingChecks(harness);
+    const fixCommit = "3".repeat(40);
+    harness.github.headAfterPush = "f".repeat(40);
+    harness.github.branchCommits.set("f".repeat(40), [{ sha: fixCommit, authorEmail: "1001+maria@users.noreply.github.com" }]);
+    harness.archestra.script(AGENT_A, {
+      end: "TASK_STATE_COMPLETED",
+      files: {
+        "ci-triage.json": {
+          failures: [
+            { check: "test", class: "pr_caused", root_cause: "no await", commits: [fixCommit] },
+            { check: "lint", class: "pre_existing", root_cause: "main has a lint error", commits: [] },
+            { check: "external", class: "needs_human", root_cause: "coverage", commits: [] },
+          ],
+          notes: "",
+        },
+      },
+    });
+    const result = await run(harness.context("issue_comment", issueCommentEvent(harness.github, "/archestra fix-ci")));
+    const start = harness.archestra.starts[1]!;
+    expect(start.attachmentNames).toEqual(expect.arrayContaining(["ci-failure.json", "ci-log-test.log", "ci-log-lint.log"]));
+    const evidence = JSON.parse(start.attachments["ci-failure.json"]!);
+    expect(evidence.failures.find((f: { name: string }) => f.name === "lint").baseBranchResult).toMatchObject({ conclusion: "failure" });
+    expect(evidence.failures.find((f: { name: string }) => f.name === "external").annotations).toHaveLength(1);
+    expect(result.pushedCommits).toEqual([fixCommit]);
+    const sticky = harness.github.stickyBody()!;
+    expect(sticky).toContain("Open a fix PR against main for `lint` <!-- archestra-action:fix-ci-main:1 -->");
+
+    // Tick the box: open a fix PR against main.
+    const ticked = sticky.replace("- [ ] Open a fix PR against main for `lint`", "- [x] Open a fix PR against main for `lint`");
+    const stickyId = [...harness.github.comments.values()].find((c) => c.body === sticky)!.id;
+    const branch = "archestra/fix-ci-lint";
+    const mainCommit = "4".repeat(40);
+    harness.github.branchCommits.set(branch, [{ sha: mainCommit, authorEmail: "1001+maria@users.noreply.github.com" }]);
+    harness.archestra.script(AGENT_A, {
+      end: "TASK_STATE_COMPLETED",
+      files: { "ci-main-fix.json": { branch, commits: [mainCommit], summary: "Fix the lint error", reproduction: "pnpm lint: fails, then passes" } },
+    });
+    const edit = {
+      action: "edited",
+      issue: { number: 7, pull_request: { url: "x" } },
+      comment: { id: stickyId, body: ticked, user: { login: "github-actions[bot]", id: 41898282, type: "Bot" } },
+      changes: { body: { from: sticky } },
+      sender: { login: "maria", id: 1001, type: "User" },
+    };
+    const mainResult = await run(harness.context("issue_comment", edit));
+    expect(mainResult.status).toBe("success");
+    expect(harness.github.createdPulls[0]).toMatchObject({ head: branch, base: "main" });
+    expect(harness.github.assignees[0]).toMatchObject({ assignees: ["maria"] });
+    const after = harness.github.stickyBody()!;
+    expect(after).toContain("Queue the fix PR first, then rebase this pull request.");
+    expect(after).not.toContain("archestra-action:fix-ci-main:1");
+  });
+
+  it("caps the log tail per job", async () => {
+    const harness = setup();
+    harness.github.checkRuns = [{ id: 401, name: "big", app: "github-actions", conclusion: "failure", log: `${"x".repeat(300_000)}END` }];
+    const { logs, evidence } = await collectCiEvidence(createOctokit("t"), { owner: "acme", repo: "widgets" }, {
+      headSha: "a".repeat(40),
+      baseBranch: "main",
+      log: new MemoryLogger(),
+      logCapBytes: 200 * 1024,
+    });
+    expect(logs[0]!.content.byteLength).toBe(200 * 1024);
+    expect(logs[0]!.content.toString().endsWith("END")).toBe(true);
+    expect(evidence.failures[0]).toMatchObject({ logTruncated: true, log: "ci-log-big.log" });
+  });
+});
+
+describe("permission check", () => {
+  it("accepts admin, maintain and write; rejects read and non-collaborators", async () => {
+    const harness = setup();
+    harness.github.collaborators = { a: "admin", m: "maintain", w: "write", t: "triage", r: "read" };
+    const gh = createOctokit("t");
+    const repo = { owner: "acme", repo: "widgets" };
+    const results = await Promise.all(["a", "m", "w", "t", "r", "nobody"].map((user) => hasWriteAccess(gh, repo, user)));
+    expect(results).toEqual([true, true, true, false, false, false]);
+  });
+});
+
+describe("post step", () => {
+  it("cancels a live run and leaves a finished one alone", async () => {
+    const harness = setup();
+    harness.archestra.script(AGENT_A, { end: "never" });
+    const client = new ArchestraClient({ baseUrl: harness.archestra.baseUrl, apiKey: harness.archestra.apiKey });
+    const { taskId } = await client.startRun(AGENT_A, { message: "m", attachments: [], title: "t" });
+    expect(await cancelIfLive(client, taskId, new MemoryLogger())).toBe("canceled");
+    expect(await cancelIfLive(client, taskId, new MemoryLogger())).toBe("not-live");
+    expect(harness.archestra.cancels).toEqual([taskId]);
+  });
+});

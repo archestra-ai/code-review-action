@@ -1,0 +1,96 @@
+# Adoption workflow for archestra-ai/archestra.
+# Copy to .github/workflows/archestra-runtime-review.yml beside
+# claude-coreteam-review.yml. Same triggers and filters (opened, synchronize,
+# ready_for_review, reopened; same repository; not a draft; no "[WIP]"), plus
+# comment events for the fix commands and the boxes in the review comment.
+#
+# Secrets: ARCHESTRA_REVIEW_API_KEY (service account on the deployment),
+# ARCHESTRA_REVIEW_APP_ID and ARCHESTRA_REVIEW_APP_PRIVATE_KEY (GitHub App
+# with contents: write, pull-requests: write, actions: read).
+# Variables: ARCHESTRA_REVIEW_URL, ARCHESTRA_REVIEW_AGENTS (agent IDs, one per line).
+name: Archestra Runtime Review
+
+on:
+  pull_request:
+    types: [opened, synchronize, ready_for_review, reopened]
+  issue_comment:
+    types: [created, edited]
+  pull_request_review_comment:
+    types: [created]
+
+permissions: {}
+
+jobs:
+  review:
+    name: Archestra Review
+    if: >-
+      github.repository == 'archestra-ai/archestra' &&
+      github.event_name == 'pull_request' &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      !github.event.pull_request.draft &&
+      !contains(github.event.pull_request.title, '[WIP]')
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    permissions:
+      contents: read
+      pull-requests: write # Post the review comment and inline comments.
+    concurrency:
+      group: archestra-review-${{ github.event.pull_request.number }}
+      cancel-in-progress: true
+    steps:
+      - uses: archestra-ai/code-review-action@v1 # Pin to a commit SHA after the first release.
+        with:
+          archestra-url: ${{ vars.ARCHESTRA_REVIEW_URL }}
+          archestra-api-key: ${{ secrets.ARCHESTRA_REVIEW_API_KEY }}
+          agents: ${{ vars.ARCHESTRA_REVIEW_AGENTS }}
+          strategy: rotate
+          retries: 1
+          timeout-minutes: 20
+          fail-on: never
+
+  fix:
+    name: Archestra Fix
+    # Cheap event filters only; the action checks the sender's write access,
+    # ignores bots, and ignores edits that do not tick a box.
+    if: >-
+      github.repository == 'archestra-ai/archestra' &&
+      github.event.sender.type != 'Bot' &&
+      (
+        (github.event_name == 'issue_comment' && github.event.issue.pull_request &&
+          (contains(github.event.comment.body, '/archestra') ||
+           (github.event.action == 'edited' && contains(github.event.comment.body, 'archestra-action:')))) ||
+        (github.event_name == 'pull_request_review_comment' && contains(github.event.comment.body, '/archestra'))
+      )
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    permissions:
+      contents: read
+      pull-requests: write # Update the review comment and reply.
+      actions: read # Read failing jobs, logs and annotations for the CI triage.
+    concurrency:
+      group: archestra-fix-${{ github.event.issue.number || github.event.pull_request.number }}
+      cancel-in-progress: false
+    steps:
+      # The repository's wrapper around actions/create-github-app-token.
+      - uses: actions/checkout@v5
+        with:
+          sparse-checkout: .github/actions/github-app-token
+          persist-credentials: false
+      - name: Mint the push token
+        id: app-token
+        uses: ./.github/actions/github-app-token
+        with:
+          app-id: ${{ secrets.ARCHESTRA_REVIEW_APP_ID }}
+          private-key: ${{ secrets.ARCHESTRA_REVIEW_APP_PRIVATE_KEY }}
+          repositories: ${{ github.event.repository.name }}
+          permission-contents: write
+          permission-pull-requests: write
+          permission-actions: read
+      - uses: archestra-ai/code-review-action@v1 # Pin to a commit SHA after the first release.
+        with:
+          archestra-url: ${{ vars.ARCHESTRA_REVIEW_URL }}
+          archestra-api-key: ${{ secrets.ARCHESTRA_REVIEW_API_KEY }}
+          agents: ${{ vars.ARCHESTRA_REVIEW_AGENTS }}
+          fix-token: ${{ steps.app-token.outputs.token }}
+          fix-timeout-minutes: 45
+          ci-rerun: false

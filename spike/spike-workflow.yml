@@ -1,0 +1,206 @@
+# Throwaway-repository workflow for the eight spike checks. See README.md.
+# Each job prints "CHECK <n> PASS|FAIL|MANUAL: <detail>" lines; the report
+# step collects them.
+name: Spike
+
+on:
+  workflow_dispatch:
+    inputs:
+      step:
+        description: setup, rewrite, resolve, runtime or report
+        required: true
+      pr:
+        description: Pull request number
+        required: true
+  issue_comment:
+    types: [edited]
+  pull_request:
+    types: [synchronize]
+
+permissions:
+  contents: write
+  pull-requests: write
+  actions: read
+
+env:
+  GH_REPO: ${{ github.repository }}
+
+jobs:
+  setup:
+    if: github.event_name == 'workflow_dispatch' && inputs.step == 'setup'
+    runs-on: ubuntu-latest
+    steps:
+      - id: app
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.SPIKE_APP_ID }}
+          private-key: ${{ secrets.SPIKE_APP_PRIVATE_KEY }}
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - name: Post the bot comment and a review thread
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ inputs.pr }}
+        run: |
+          gh api "repos/$GH_REPO/issues/$PR/comments" -f body=$'<!-- spike-sticky -->\nSpike\n\n- [ ] Apply <!-- archestra-action:fix -->' --jq .id
+          head=$(gh api "repos/$GH_REPO/pulls/$PR" --jq .head.sha)
+          file=$(gh api "repos/$GH_REPO/pulls/$PR/files" --jq '.[0].filename')
+          line=$(gh api "repos/$GH_REPO/pulls/$PR/files" --jq '.[0].patch' | awk '/^@@/{split($3,a,/[+,]/); print a[2]; exit}')
+          gh api "repos/$GH_REPO/pulls/$PR/comments" -f body='spike thread <!-- archestra-finding:spike-1 -->' \
+            -f commit_id="$head" -f path="$file" -F line="$line" -f side=RIGHT --jq .id
+      - name: Push once with the App token and once with the job token (check 4, 5)
+        env:
+          APP_TOKEN: ${{ steps.app.outputs.token }}
+          JOB_TOKEN: ${{ github.token }}
+          PR: ${{ inputs.pr }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          branch=$(gh api "repos/$GH_REPO/pulls/$PR" --jq .head.ref)
+          git fetch origin "$branch" && git checkout -B "$branch" "origin/$branch"
+          user=$(gh api "users/${{ github.actor }}")
+          git config user.name "$(jq -r '.name // .login' <<<"$user")"
+          git config user.email "$(jq -r '"\(.id)+\(.login)@users.noreply.github.com"' <<<"$user")"
+          date > spike-app.txt && git add spike-app.txt && git commit -m "spike: app push"
+          git push "https://x-access-token:${APP_TOKEN}@github.com/${GH_REPO}.git" "HEAD:$branch"
+          sleep 20
+          date > spike-job.txt && git add spike-job.txt && git commit -m "spike: job push"
+          git push "https://x-access-token:${JOB_TOKEN}@github.com/${GH_REPO}.git" "HEAD:$branch"
+          echo "CHECK 5 MANUAL: open the PR commit list; the 'spike: app push' commit must show the avatar of ${{ github.actor }}"
+
+  synchronize:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          message=$(gh api "repos/$GH_REPO/commits/${{ github.event.pull_request.head.sha }}" --jq .commit.message)
+          echo "synchronize started by head commit: $message"
+          case "$message" in
+            "spike: app push"*) echo "CHECK 4 PASS: an App-token push started pull_request: synchronize" ;;
+            "spike: job push"*) echo "CHECK 4 FAIL: a job-token push started pull_request: synchronize" ;;
+            *) echo "CHECK 4 INFO: other push" ;;
+          esac
+
+  edited:
+    if: github.event_name == 'issue_comment' && contains(github.event.comment.body, 'spike-sticky')
+    runs-on: ubuntu-latest
+    steps:
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          SENDER: ${{ github.event.sender.login }}
+          SENDER_TYPE: ${{ github.event.sender.type }}
+          FROM: ${{ github.event.changes.body.from }}
+          BODY: ${{ github.event.comment.body }}
+        run: |
+          echo "sender=$SENDER type=$SENDER_TYPE"
+          if [ "$SENDER_TYPE" = "Bot" ]; then
+            echo "CHECK 3 PASS: ignored: bot sender ($SENDER)"
+            exit 0
+          fi
+          role=$(gh api "repos/$GH_REPO/collaborators/$SENDER/permission" --jq '.role_name // .permission' || echo none)
+          echo "permission of $SENDER: $role"
+          if grep -q -- '- \[ \] Apply' <<<"$FROM" && grep -q -- '- \[x\] Apply' <<<"$BODY"; then
+            case "$role" in
+              admin|maintain|write) echo "CHECK 1 PASS: edited fired, sender=$SENDER, changes.body.from has the unticked box" ;;
+              *) echo "CHECK 2 PASS: a $role user ticked the box, and the permission check rejects the sender" ;;
+            esac
+          else
+            echo "CHECK 1 INFO: the edit did not tick the box"
+          fi
+
+  rewrite:
+    if: github.event_name == 'workflow_dispatch' && inputs.step == 'rewrite'
+    runs-on: ubuntu-latest
+    steps:
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ inputs.pr }}
+        run: |
+          id=$(gh api "repos/$GH_REPO/issues/$PR/comments" --jq '[.[] | select(.body | contains("spike-sticky"))][0].id')
+          body=$(gh api "repos/$GH_REPO/issues/comments/$id" --jq .body)
+          gh api -X PATCH "repos/$GH_REPO/issues/comments/$id" -f body="$body" --jq .id
+          echo "CHECK 3 INFO: rewrote the comment; the 'edited' run must log 'CHECK 3 PASS'"
+
+  resolve:
+    if: github.event_name == 'workflow_dispatch' && inputs.step == 'resolve'
+    runs-on: ubuntu-latest
+    steps:
+      - id: app
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.SPIKE_APP_ID }}
+          private-key: ${{ secrets.SPIKE_APP_PRIVATE_KEY }}
+      - env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+          PR: ${{ inputs.pr }}
+        run: |
+          owner=${GH_REPO%/*}; name=${GH_REPO#*/}
+          thread=$(gh api graphql -f owner="$owner" -f name="$name" -F number="$PR" -f query='
+            query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){pullRequest(number:$number){
+              reviewThreads(first:50){nodes{id comments(first:1){nodes{body}}}}}}}' \
+            --jq '[.data.repository.pullRequest.reviewThreads.nodes[] | select(.comments.nodes[0].body | contains("archestra-finding:spike-1"))][0].id')
+          resolved=$(gh api graphql -f id="$thread" -f query='mutation($id:ID!){resolveReviewThread(input:{threadId:$id}){thread{isResolved}}}' \
+            --jq .data.resolveReviewThread.thread.isResolved)
+          [ "$resolved" = "true" ] && echo "CHECK 6 PASS: resolveReviewThread with the App token" || echo "CHECK 6 FAIL: isResolved=$resolved"
+
+  runtime:
+    if: github.event_name == 'workflow_dispatch' && inputs.step == 'runtime'
+    runs-on: ubuntu-latest
+    env:
+      URL: ${{ vars.SPIKE_ARCHESTRA_URL }}
+      KEY: ${{ secrets.SPIKE_ARCHESTRA_API_KEY }}
+      AGENT: ${{ vars.SPIKE_AGENT_ID }}
+    steps:
+      - id: app
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.SPIKE_APP_ID }}
+          private-key: ${{ secrets.SPIKE_APP_PRIVATE_KEY }}
+      - env:
+          TOKEN: ${{ steps.app.outputs.token }}
+        run: |
+          set -euo pipefail
+          api() { curl -sS -H "Authorization: $KEY" -H 'Content-Type: application/json' "$@"; }
+          wait_done() {
+            for _ in $(seq 1 120); do
+              state=$(api "$URL/api/agent-runs/$1" | jq -r .state)
+              case "$state" in TASK_STATE_COMPLETED|TASK_STATE_FAILED|TASK_STATE_CANCELED|TASK_STATE_REJECTED) echo "$state"; return;; esac
+              sleep 10
+            done
+            echo timeout
+          }
+          msg='Write the file /home/node/workspace/token-check.json with {"sha256": "<sha256 hex of the GITHUB_TOKEN environment variable>"} and stop. Do not print the token. Do not ask questions.'
+          first=$(api -X POST "$URL/api/agents/$AGENT/runs" -d "$(jq -n --arg m "$msg" '{message:$m, runtimeMode:"one_shot", title:"spike"}')" | jq -r .taskId)
+          echo "first run: $first -> $(wait_done "$first")"
+          workspace=$(api "$URL/api/agent-runs/$first" | jq -r '.workspace.state')
+          echo "workspace state after the run: $workspace"
+          api -X PUT "$URL/api/agents/$AGENT/runtime/credentials/GITHUB_TOKEN" -d "$(jq -n --arg v "$TOKEN" '{value:$v}')" > /dev/null
+          second=$(api -X POST "$URL/api/agent-runs/$first/continue" -d "$(jq -n --arg m "$msg" '{message:$m, runtimeMode:"one_shot"}')")
+          echo "continue response: $(jq -c '{taskId, sessionId, state, error}' <<<"$second")"
+          next=$(jq -r '.taskId // empty' <<<"$second")
+          if [ "$workspace" = "idle" ] && [ -n "$next" ]; then
+            echo "CHECK 7 PASS: workspace idle after the one-shot run; /continue accepted a new turn"
+          else
+            echo "CHECK 7 FAIL: workspace=$workspace continue=$(jq -c . <<<"$second")"
+            exit 0
+          fi
+          echo "second run: $next -> $(wait_done "$next")"
+          reported=$(api "$URL/api/agent-runs/$next/workspace/files?path=token-check.json" | jq -r .content_base64 | base64 -d | jq -r .sha256)
+          expected=$(printf %s "$TOKEN" | sha256sum | cut -d' ' -f1)
+          [ "$reported" = "$expected" ] && echo "CHECK 8 PASS: the next turn saw the new GITHUB_TOKEN" || echo "CHECK 8 FAIL: the turn saw a different value"
+          echo "CHECK 7 MANUAL: suspend the workspace in Archestra, then run this step again"
+
+  report:
+    if: github.event_name == 'workflow_dispatch' && inputs.step == 'report'
+    runs-on: ubuntu-latest
+    steps:
+      - env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          echo "Spike checklist (latest result for each check):"
+          for run in $(gh run list --workflow spike.yml --limit 40 --json databaseId --jq '.[].databaseId'); do
+            gh run view "$run" --log 2>/dev/null | grep -o 'CHECK [0-9] [A-Z]*: .*' || true
+          done | sort -u -k2,2n -s | awk '!seen[$2]++'
+          for n in 1 2 3 4 5 6 7 8; do echo "  [$n] see the line above, or not run yet"; done

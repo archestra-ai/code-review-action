@@ -1,0 +1,110 @@
+name: Archestra code review
+description: Review a pull request on an Archestra Agent Runtime, and apply fixes or fix failing checks when a maintainer asks.
+author: Archestra
+branding:
+  icon: check-circle
+  color: blue
+
+inputs:
+  archestra-url:
+    description: The base URL of the Archestra deployment, for example https://archestra.example.com.
+    required: true
+  archestra-api-key:
+    description: The API key of an Archestra service account. The role must let the account use the listed agents and read their runs.
+    required: true
+  agents:
+    description: The IDs of the Archestra agents to use, one for each line. Each agent must have a dedicated runtime.
+    required: true
+  strategy:
+    description: >-
+      How to select the first agent. "rotate": agent number (PR number + run attempt) mod N.
+      "ordered": the first agent, then the next ones. "random": a random order.
+    default: rotate
+  retries:
+    description: How many times to try the same agent again after a temporary failure (0 to 5).
+    default: "1"
+  max-fallbacks:
+    description: How many more agents to try after a permanent failure. Empty means all remaining agents.
+    default: ""
+  timeout-minutes:
+    description: The time limit for one review attempt, in minutes. A cold start of a node can take 5 minutes.
+    default: "20"
+  overall-timeout-minutes:
+    description: The time limit for all attempts together, in minutes.
+    default: "120"
+  instructions:
+    description: More review rules, added to the review brief as instructions.md.
+    default: ""
+  instructions-file:
+    description: A file in the workspace with more review rules. The action adds its text after "instructions".
+    default: ""
+  github-token:
+    description: The token that posts the review and the comments. It needs "pull-requests write".
+    default: ${{ github.token }}
+  post:
+    description: >-
+      Where to post the review. "review": a review comment with the summary, and inline comments.
+      "comment": the review comment only. "none": no posting (outputs only; fixes then are not available).
+    default: review
+  fail-on:
+    description: >-
+      When the step fails. "never": the step does not fail because of the review. "findings": the step fails when
+      the review has findings. "error": the step fails when no runtime completes the work.
+    default: never
+  mode:
+    description: >-
+      The mode: "auto" (from the event), "review", "fix", "fix-ci" or "fix-ci-main".
+      Set it for workflow_dispatch together with "pr-number".
+    default: auto
+  pr-number:
+    description: The pull request number, for events without a pull request (for example workflow_dispatch).
+    default: ""
+  fix-command:
+    description: The comment command prefix.
+    default: /archestra
+  fix-token:
+    description: >-
+      A GitHub App installation token for this repository (contents write, pull-requests write, actions read;
+      actions write if ci-rerun is true). The runtime pushes fixes with it. Without it, fixes are not available.
+    default: ""
+  fix-timeout-minutes:
+    description: The time limit for one fix or CI triage attempt, in minutes.
+    default: "45"
+  ci-rerun:
+    description: Set to true to re-run the failed jobs that the CI triage finds flaky. The fix token then needs "actions write".
+    default: "false"
+  max-auto-fix-rounds:
+    description: Automatic fix rounds without a person. Only 0 is supported; each fix needs a person.
+    default: "0"
+  incremental-review:
+    description: Set to false to start a fresh run for each review instead of continuing the workspace of the last review.
+    default: "true"
+
+outputs:
+  status:
+    description: "The result: success, skipped, nothing-to-do, unauthorized, unavailable, aborted or error."
+  mode:
+    description: The mode that ran.
+  agent-id:
+    description: The agent that completed the work.
+  run-id:
+    description: The Archestra run (task) ID of the completed work.
+  run-url:
+    description: The link to the run page in Archestra.
+  findings-count:
+    description: The number of review findings.
+  attempts:
+    description: The attempts as JSON (agent, run, result, reason, duration).
+  pushed-commits:
+    description: The verified commits that the runtime pushed, as a JSON array.
+  applied:
+    description: The applied findings as JSON ([{finding, commit}]).
+  skipped:
+    description: The skipped findings as JSON ([{finding, reason}]).
+  triage:
+    description: The CI triage result as JSON.
+
+runs:
+  using: node24
+  main: dist/index.js
+  post: dist/post.js

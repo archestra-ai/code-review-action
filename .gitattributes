@@ -1,0 +1,2 @@
+dist/** -diff linguist-generated=true
+schemas/** linguist-generated=true
