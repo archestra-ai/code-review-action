@@ -4,10 +4,23 @@
 # ready_for_review, reopened; same repository; not a draft; no "[WIP]"), plus
 # comment events for the fix commands and the boxes in the review comment.
 #
-# Secrets: ARCHESTRA_REVIEW_API_KEY (service account on the deployment),
-# ARCHESTRA_REVIEW_APP_ID and ARCHESTRA_REVIEW_APP_PRIVATE_KEY (GitHub App
-# with contents: write, pull-requests: write, actions: read).
-# Variables: ARCHESTRA_REVIEW_URL, ARCHESTRA_REVIEW_AGENTS (agent IDs, one per line).
+# Each run acts as the person who caused the event, with that person's
+# Archestra platform token: their credentials, their Claude account, their
+# costs. The "actor" job finds the name of that person's token secret.
+#
+# Secrets: ARCHESTRA_TOKEN_<LOGIN> for each person (organization secrets, for
+# example ARCHESTRA_TOKEN_OCTO_CAT for octo-cat), ARCHESTRA_REVIEW_APP_ID and
+# ARCHESTRA_REVIEW_APP_PRIVATE_KEY (GitHub App with contents: write,
+# pull-requests: write, actions: read).
+# Variables: ARCHESTRA_REVIEW_GATEWAY_URL (the MCP gateway endpoint, for
+# example https://archestra.example.com/v1/mcp/code-review),
+# ARCHESTRA_REVIEW_AGENTS (agent IDs, one per line).
+#
+# The steps read secrets[<name from the actor job>]. A dynamic secret name
+# gives the job the whole secrets context, so keep these jobs to the steps
+# below. For a stricter setup, move each job into a reusable workflow and pass
+# only the one token through its "secrets:" mapping, as
+# claude-coreteam-review.yml does.
 name: Archestra Runtime Review
 
 on:
@@ -21,8 +34,18 @@ on:
 permissions: {}
 
 jobs:
+  actor:
+    name: Resolve the actor
+    if: >-
+      github.repository == 'archestra-ai/archestra' &&
+      github.event.sender.type != 'Bot' &&
+      (github.event_name == 'pull_request' || contains(github.event.comment.body, '/archestra') ||
+        contains(github.event.comment.body, 'archestra-action:'))
+    uses: archestra-ai/code-review-action/.github/workflows/resolve-actor-token.yml@v1 # Pin to a commit SHA.
+
   review:
     name: Archestra Review
+    needs: actor
     if: >-
       github.repository == 'archestra-ai/archestra' &&
       github.event_name == 'pull_request' &&
@@ -40,8 +63,8 @@ jobs:
     steps:
       - uses: archestra-ai/code-review-action@v1 # Pin to a commit SHA after the first release.
         with:
-          archestra-url: ${{ vars.ARCHESTRA_REVIEW_URL }}
-          archestra-api-key: ${{ secrets.ARCHESTRA_REVIEW_API_KEY }}
+          archestra-gateway-url: ${{ vars.ARCHESTRA_REVIEW_GATEWAY_URL }}
+          archestra-token: ${{ secrets[needs.actor.outputs.secret_name] }} # zizmor: ignore[overprovisioned-secrets]
           agents: ${{ vars.ARCHESTRA_REVIEW_AGENTS }}
           strategy: rotate
           retries: 1
@@ -50,6 +73,7 @@ jobs:
 
   fix:
     name: Archestra Fix
+    needs: actor
     # Cheap event filters only; the action checks the sender's write access,
     # ignores bots, and ignores edits that do not tick a box.
     if: >-
@@ -88,8 +112,8 @@ jobs:
           permission-actions: read
       - uses: archestra-ai/code-review-action@v1 # Pin to a commit SHA after the first release.
         with:
-          archestra-url: ${{ vars.ARCHESTRA_REVIEW_URL }}
-          archestra-api-key: ${{ secrets.ARCHESTRA_REVIEW_API_KEY }}
+          archestra-gateway-url: ${{ vars.ARCHESTRA_REVIEW_GATEWAY_URL }}
+          archestra-token: ${{ secrets[needs.actor.outputs.secret_name] }} # zizmor: ignore[overprovisioned-secrets]
           agents: ${{ vars.ARCHESTRA_REVIEW_AGENTS }}
           fix-token: ${{ steps.app-token.outputs.token }}
           fix-timeout-minutes: 45

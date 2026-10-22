@@ -1,0 +1,59 @@
+name: Resolve the actor's Archestra token
+
+# A reusable workflow. It gives the name of the secret that holds the
+# Archestra platform token of the person who caused the event: the pull
+# request author on open, the pusher on synchronize, the commenter on a
+# command or a ticked box. The caller passes
+# secrets[needs.<this job>.outputs.secret_name] to the action, so each run
+# acts as that person and their costs are theirs.
+#
+# The name is the prefix and the GitHub login in upper case, with "-" changed
+# to "_": octo-cat -> ARCHESTRA_TOKEN_OCTO_CAT. The login goes after the
+# prefix because a secret name cannot start with a digit. A bot actor gets an
+# empty name; the action then skips the event, or uses its fallback token.
+
+on:
+  workflow_call:
+    inputs:
+      prefix:
+        description: The secret name prefix.
+        type: string
+        default: ARCHESTRA_TOKEN_
+    outputs:
+      secret_name:
+        description: The name of the actor's token secret, or "" when there is none.
+        value: ${{ jobs.resolve.outputs.secret_name }}
+      login:
+        description: The GitHub login of the actor.
+        value: ${{ jobs.resolve.outputs.login }}
+
+permissions: {}
+
+jobs:
+  resolve:
+    name: Resolve the actor
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    outputs:
+      secret_name: ${{ steps.name.outputs.secret_name }}
+      login: ${{ steps.name.outputs.login }}
+    steps:
+      - id: name
+        env:
+          LOGIN: ${{ github.actor }}
+          PREFIX: ${{ inputs.prefix }}
+        run: |
+          set -euo pipefail
+          if ! [[ "$PREFIX" =~ ^[A-Z_][A-Z0-9_]*$ ]]; then
+            echo "::error::The prefix must be upper-case letters, digits and underscores, and must not start with a digit."
+            exit 1
+          fi
+          echo "login=$LOGIN" >> "$GITHUB_OUTPUT"
+          if [[ "$LOGIN" == *"[bot]" ]] || ! [[ "$LOGIN" =~ ^[A-Za-z0-9-]{1,39}$ ]]; then
+            echo "No token secret for the actor $LOGIN."
+            echo "secret_name=" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          name="${PREFIX}$(tr 'a-z-' 'A-Z_' <<<"$LOGIN")"
+          echo "The actor $LOGIN uses the secret $name."
+          echo "secret_name=$name" >> "$GITHUB_OUTPUT"
