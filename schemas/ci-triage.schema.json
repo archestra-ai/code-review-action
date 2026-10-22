@@ -1,0 +1,67 @@
+{
+  "$id": "ci-triage.schema.json",
+  "title": "ci-triage.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "failures": {
+      "maxItems": 50,
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "check": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 300,
+            "description": "Name of the failing check, as in ci-failure.json"
+          },
+          "class": {
+            "type": "string",
+            "enum": [
+              "pr_caused",
+              "flaky",
+              "pre_existing",
+              "infrastructure",
+              "needs_human"
+            ]
+          },
+          "root_cause": {
+            "type": "string",
+            "maxLength": 4000
+          },
+          "commits": {
+            "default": [],
+            "maxItems": 50,
+            "type": "array",
+            "items": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{40}$"
+            }
+          },
+          "reproduction": {
+            "type": "string",
+            "maxLength": 4000
+          },
+          "notes": {
+            "type": "string",
+            "maxLength": 4000
+          }
+        },
+        "required": [
+          "check",
+          "class",
+          "root_cause"
+        ]
+      }
+    },
+    "notes": {
+      "type": "string",
+      "maxLength": 8000
+    }
+  },
+  "required": [
+    "failures",
+    "notes"
+  ]
+}
