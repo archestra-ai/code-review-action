@@ -32,4 +32,4 @@ jobs:
           output=$(node dist/index.js 2>&1)
           status=$?
           echo "$output"
-          test "$status" -ne 0 && echo "$output" | grep -q 'Input "archestra-url" is required'
+          test "$status" -ne 0 && echo "$output" | grep -q 'Input "archestra-gateway-url" is required'
