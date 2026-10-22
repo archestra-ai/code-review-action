@@ -3817,10 +3817,10 @@ var require_webidl = __commonJS({
       }
     };
     webidl.sequenceConverter = function(converter) {
-      return (V, prefix, argument, Iterable) => {
+      return (V, prefix2, argument, Iterable) => {
         if (webidl.util.Type(V) !== "Object") {
           throw webidl.errors.exception({
-            header: prefix,
+            header: prefix2,
             message: `${argument} (${webidl.util.Stringify(V)}) is not iterable.`
           });
         }
@@ -3829,7 +3829,7 @@ var require_webidl = __commonJS({
         let index = 0;
         if (method === void 0 || typeof method.next !== "function") {
           throw webidl.errors.exception({
-            header: prefix,
+            header: prefix2,
             message: `${argument} is not iterable.`
           });
         }
@@ -3838,16 +3838,16 @@ var require_webidl = __commonJS({
           if (done) {
             break;
           }
-          seq.push(converter(value, prefix, `${argument}[${index++}]`));
+          seq.push(converter(value, prefix2, `${argument}[${index++}]`));
         }
         return seq;
       };
     };
     webidl.recordConverter = function(keyConverter, valueConverter) {
-      return (O, prefix, argument) => {
+      return (O, prefix2, argument) => {
         if (webidl.util.Type(O) !== "Object") {
           throw webidl.errors.exception({
-            header: prefix,
+            header: prefix2,
             message: `${argument} ("${webidl.util.Type(O)}") is not an Object.`
           });
         }
@@ -3855,8 +3855,8 @@ var require_webidl = __commonJS({
         if (!types.isProxy(O)) {
           const keys2 = [...Object.getOwnPropertyNames(O), ...Object.getOwnPropertySymbols(O)];
           for (const key of keys2) {
-            const typedKey = keyConverter(key, prefix, argument);
-            const typedValue = valueConverter(O[key], prefix, argument);
+            const typedKey = keyConverter(key, prefix2, argument);
+            const typedValue = valueConverter(O[key], prefix2, argument);
             result[typedKey] = typedValue;
           }
           return result;
@@ -3865,8 +3865,8 @@ var require_webidl = __commonJS({
         for (const key of keys) {
           const desc = Reflect.getOwnPropertyDescriptor(O, key);
           if (desc?.enumerable) {
-            const typedKey = keyConverter(key, prefix, argument);
-            const typedValue = valueConverter(O[key], prefix, argument);
+            const typedKey = keyConverter(key, prefix2, argument);
+            const typedValue = valueConverter(O[key], prefix2, argument);
             result[typedKey] = typedValue;
           }
         }
@@ -3874,10 +3874,10 @@ var require_webidl = __commonJS({
       };
     };
     webidl.interfaceConverter = function(i) {
-      return (V, prefix, argument, opts) => {
+      return (V, prefix2, argument, opts) => {
         if (opts?.strict !== false && !(V instanceof i)) {
           throw webidl.errors.exception({
-            header: prefix,
+            header: prefix2,
             message: `Expected ${argument} ("${webidl.util.Stringify(V)}") to be an instance of ${i.name}.`
           });
         }
@@ -3885,14 +3885,14 @@ var require_webidl = __commonJS({
       };
     };
     webidl.dictionaryConverter = function(converters) {
-      return (dictionary, prefix, argument) => {
+      return (dictionary, prefix2, argument) => {
         const type = webidl.util.Type(dictionary);
         const dict = {};
         if (type === "Null" || type === "Undefined") {
           return dict;
         } else if (type !== "Object") {
           throw webidl.errors.exception({
-            header: prefix,
+            header: prefix2,
             message: `Expected ${dictionary} to be one of: Null, Undefined, Object.`
           });
         }
@@ -3901,7 +3901,7 @@ var require_webidl = __commonJS({
           if (required2 === true) {
             if (!Object.hasOwn(dictionary, key)) {
               throw webidl.errors.exception({
-                header: prefix,
+                header: prefix2,
                 message: `Missing required key "${key}".`
               });
             }
@@ -3912,10 +3912,10 @@ var require_webidl = __commonJS({
             value ??= defaultValue();
           }
           if (required2 || hasDefault || value !== void 0) {
-            value = converter(value, prefix, `${argument}.${key}`);
+            value = converter(value, prefix2, `${argument}.${key}`);
             if (options.allowedValues && !options.allowedValues.includes(value)) {
               throw webidl.errors.exception({
-                header: prefix,
+                header: prefix2,
                 message: `${value} is not an accepted type. Expected one of ${options.allowedValues.join(", ")}.`
               });
             }
@@ -3926,27 +3926,27 @@ var require_webidl = __commonJS({
       };
     };
     webidl.nullableConverter = function(converter) {
-      return (V, prefix, argument) => {
+      return (V, prefix2, argument) => {
         if (V === null) {
           return V;
         }
-        return converter(V, prefix, argument);
+        return converter(V, prefix2, argument);
       };
     };
-    webidl.converters.DOMString = function(V, prefix, argument, opts) {
+    webidl.converters.DOMString = function(V, prefix2, argument, opts) {
       if (V === null && opts?.legacyNullToEmptyString) {
         return "";
       }
       if (typeof V === "symbol") {
         throw webidl.errors.exception({
-          header: prefix,
+          header: prefix2,
           message: `${argument} is a symbol, which cannot be converted to a DOMString.`
         });
       }
       return String(V);
     };
-    webidl.converters.ByteString = function(V, prefix, argument) {
-      const x = webidl.converters.DOMString(V, prefix, argument);
+    webidl.converters.ByteString = function(V, prefix2, argument) {
+      const x = webidl.converters.DOMString(V, prefix2, argument);
       for (let index = 0; index < x.length; index++) {
         if (x.charCodeAt(index) > 255) {
           throw new TypeError(
@@ -3964,26 +3964,26 @@ var require_webidl = __commonJS({
     webidl.converters.any = function(V) {
       return V;
     };
-    webidl.converters["long long"] = function(V, prefix, argument) {
-      const x = webidl.util.ConvertToInt(V, 64, "signed", void 0, prefix, argument);
+    webidl.converters["long long"] = function(V, prefix2, argument) {
+      const x = webidl.util.ConvertToInt(V, 64, "signed", void 0, prefix2, argument);
       return x;
     };
-    webidl.converters["unsigned long long"] = function(V, prefix, argument) {
-      const x = webidl.util.ConvertToInt(V, 64, "unsigned", void 0, prefix, argument);
+    webidl.converters["unsigned long long"] = function(V, prefix2, argument) {
+      const x = webidl.util.ConvertToInt(V, 64, "unsigned", void 0, prefix2, argument);
       return x;
     };
-    webidl.converters["unsigned long"] = function(V, prefix, argument) {
-      const x = webidl.util.ConvertToInt(V, 32, "unsigned", void 0, prefix, argument);
+    webidl.converters["unsigned long"] = function(V, prefix2, argument) {
+      const x = webidl.util.ConvertToInt(V, 32, "unsigned", void 0, prefix2, argument);
       return x;
     };
-    webidl.converters["unsigned short"] = function(V, prefix, argument, opts) {
-      const x = webidl.util.ConvertToInt(V, 16, "unsigned", opts, prefix, argument);
+    webidl.converters["unsigned short"] = function(V, prefix2, argument, opts) {
+      const x = webidl.util.ConvertToInt(V, 16, "unsigned", opts, prefix2, argument);
       return x;
     };
-    webidl.converters.ArrayBuffer = function(V, prefix, argument, opts) {
+    webidl.converters.ArrayBuffer = function(V, prefix2, argument, opts) {
       if (webidl.util.Type(V) !== "Object" || !types.isAnyArrayBuffer(V)) {
         throw webidl.errors.conversionFailed({
-          prefix,
+          prefix: prefix2,
           argument: `${argument} ("${webidl.util.Stringify(V)}")`,
           types: ["ArrayBuffer"]
         });
@@ -4002,10 +4002,10 @@ var require_webidl = __commonJS({
       }
       return V;
     };
-    webidl.converters.TypedArray = function(V, T, prefix, name, opts) {
+    webidl.converters.TypedArray = function(V, T, prefix2, name, opts) {
       if (webidl.util.Type(V) !== "Object" || !types.isTypedArray(V) || V.constructor.name !== T.name) {
         throw webidl.errors.conversionFailed({
-          prefix,
+          prefix: prefix2,
           argument: `${name} ("${webidl.util.Stringify(V)}")`,
           types: [T.name]
         });
@@ -4024,10 +4024,10 @@ var require_webidl = __commonJS({
       }
       return V;
     };
-    webidl.converters.DataView = function(V, prefix, name, opts) {
+    webidl.converters.DataView = function(V, prefix2, name, opts) {
       if (webidl.util.Type(V) !== "Object" || !types.isDataView(V)) {
         throw webidl.errors.exception({
-          header: prefix,
+          header: prefix2,
           message: `${name} is not a DataView.`
         });
       }
@@ -4045,18 +4045,18 @@ var require_webidl = __commonJS({
       }
       return V;
     };
-    webidl.converters.BufferSource = function(V, prefix, name, opts) {
+    webidl.converters.BufferSource = function(V, prefix2, name, opts) {
       if (types.isAnyArrayBuffer(V)) {
-        return webidl.converters.ArrayBuffer(V, prefix, name, { ...opts, allowShared: false });
+        return webidl.converters.ArrayBuffer(V, prefix2, name, { ...opts, allowShared: false });
       }
       if (types.isTypedArray(V)) {
-        return webidl.converters.TypedArray(V, V.constructor, prefix, name, { ...opts, allowShared: false });
+        return webidl.converters.TypedArray(V, V.constructor, prefix2, name, { ...opts, allowShared: false });
       }
       if (types.isDataView(V)) {
-        return webidl.converters.DataView(V, prefix, name, { ...opts, allowShared: false });
+        return webidl.converters.DataView(V, prefix2, name, { ...opts, allowShared: false });
       }
       throw webidl.errors.conversionFailed({
-        prefix,
+        prefix: prefix2,
         argument: `${name} ("${webidl.util.Stringify(V)}")`,
         types: ["BufferSource"]
       });
@@ -5050,31 +5050,31 @@ var require_formdata = __commonJS({
       }
       append(name, value, filename = void 0) {
         webidl.brandCheck(this, _FormData);
-        const prefix = "FormData.append";
-        webidl.argumentLengthCheck(arguments, 2, prefix);
+        const prefix2 = "FormData.append";
+        webidl.argumentLengthCheck(arguments, 2, prefix2);
         if (arguments.length === 3 && !isBlobLike(value)) {
           throw new TypeError(
             "Failed to execute 'append' on 'FormData': parameter 2 is not of type 'Blob'"
           );
         }
-        name = webidl.converters.USVString(name, prefix, "name");
-        value = isBlobLike(value) ? webidl.converters.Blob(value, prefix, "value", { strict: false }) : webidl.converters.USVString(value, prefix, "value");
-        filename = arguments.length === 3 ? webidl.converters.USVString(filename, prefix, "filename") : void 0;
+        name = webidl.converters.USVString(name, prefix2, "name");
+        value = isBlobLike(value) ? webidl.converters.Blob(value, prefix2, "value", { strict: false }) : webidl.converters.USVString(value, prefix2, "value");
+        filename = arguments.length === 3 ? webidl.converters.USVString(filename, prefix2, "filename") : void 0;
         const entry = makeEntry(name, value, filename);
         this[kState].push(entry);
       }
       delete(name) {
         webidl.brandCheck(this, _FormData);
-        const prefix = "FormData.delete";
-        webidl.argumentLengthCheck(arguments, 1, prefix);
-        name = webidl.converters.USVString(name, prefix, "name");
+        const prefix2 = "FormData.delete";
+        webidl.argumentLengthCheck(arguments, 1, prefix2);
+        name = webidl.converters.USVString(name, prefix2, "name");
         this[kState] = this[kState].filter((entry) => entry.name !== name);
       }
       get(name) {
         webidl.brandCheck(this, _FormData);
-        const prefix = "FormData.get";
-        webidl.argumentLengthCheck(arguments, 1, prefix);
-        name = webidl.converters.USVString(name, prefix, "name");
+        const prefix2 = "FormData.get";
+        webidl.argumentLengthCheck(arguments, 1, prefix2);
+        name = webidl.converters.USVString(name, prefix2, "name");
         const idx = this[kState].findIndex((entry) => entry.name === name);
         if (idx === -1) {
           return null;
@@ -5083,30 +5083,30 @@ var require_formdata = __commonJS({
       }
       getAll(name) {
         webidl.brandCheck(this, _FormData);
-        const prefix = "FormData.getAll";
-        webidl.argumentLengthCheck(arguments, 1, prefix);
-        name = webidl.converters.USVString(name, prefix, "name");
+        const prefix2 = "FormData.getAll";
+        webidl.argumentLengthCheck(arguments, 1, prefix2);
+        name = webidl.converters.USVString(name, prefix2, "name");
         return this[kState].filter((entry) => entry.name === name).map((entry) => entry.value);
       }
       has(name) {
         webidl.brandCheck(this, _FormData);
-        const prefix = "FormData.has";
-        webidl.argumentLengthCheck(arguments, 1, prefix);
-        name = webidl.converters.USVString(name, prefix, "name");
+        const prefix2 = "FormData.has";
+        webidl.argumentLengthCheck(arguments, 1, prefix2);
+        name = webidl.converters.USVString(name, prefix2, "name");
         return this[kState].findIndex((entry) => entry.name === name) !== -1;
       }
       set(name, value, filename = void 0) {
         webidl.brandCheck(this, _FormData);
-        const prefix = "FormData.set";
-        webidl.argumentLengthCheck(arguments, 2, prefix);
+        const prefix2 = "FormData.set";
+        webidl.argumentLengthCheck(arguments, 2, prefix2);
         if (arguments.length === 3 && !isBlobLike(value)) {
           throw new TypeError(
             "Failed to execute 'set' on 'FormData': parameter 2 is not of type 'Blob'"
           );
         }
-        name = webidl.converters.USVString(name, prefix, "name");
-        value = isBlobLike(value) ? webidl.converters.Blob(value, prefix, "name", { strict: false }) : webidl.converters.USVString(value, prefix, "name");
-        filename = arguments.length === 3 ? webidl.converters.USVString(filename, prefix, "name") : void 0;
+        name = webidl.converters.USVString(name, prefix2, "name");
+        value = isBlobLike(value) ? webidl.converters.Blob(value, prefix2, "name", { strict: false }) : webidl.converters.USVString(value, prefix2, "name");
+        filename = arguments.length === 3 ? webidl.converters.USVString(filename, prefix2, "name") : void 0;
         const entry = makeEntry(name, value, filename);
         const idx = this[kState].findIndex((entry2) => entry2.name === name);
         if (idx !== -1) {
@@ -5503,7 +5503,7 @@ var require_body = __commonJS({
         source = new Uint8Array(object2.buffer.slice(object2.byteOffset, object2.byteOffset + object2.byteLength));
       } else if (util.isFormDataLike(object2)) {
         const boundary = `----formdata-undici-0${`${random(1e11)}`.padStart(11, "0")}`;
-        const prefix = `--${boundary}\r
+        const prefix2 = `--${boundary}\r
 Content-Disposition: form-data`;
         const escape = (str) => str.replace(/\n/g, "%0A").replace(/\r/g, "%0D").replace(/"/g, "%22");
         const normalizeLinefeeds = (value) => value.replace(/\r?\n|\r/g, "\r\n");
@@ -5513,14 +5513,14 @@ Content-Disposition: form-data`;
         let hasUnknownSizeValue = false;
         for (const [name, value] of object2) {
           if (typeof value === "string") {
-            const chunk2 = textEncoder.encode(prefix + `; name="${escape(normalizeLinefeeds(name))}"\r
+            const chunk2 = textEncoder.encode(prefix2 + `; name="${escape(normalizeLinefeeds(name))}"\r
 \r
 ${normalizeLinefeeds(value)}\r
 `);
             blobParts.push(chunk2);
             length += chunk2.byteLength;
           } else {
-            const chunk2 = textEncoder.encode(`${prefix}; name="${escape(normalizeLinefeeds(name))}"` + (value.name ? `; filename="${escape(value.name)}"` : "") + `\r
+            const chunk2 = textEncoder.encode(`${prefix2}; name="${escape(normalizeLinefeeds(name))}"` + (value.name ? `; filename="${escape(value.name)}"` : "") + `\r
 Content-Type: ${value.type || "application/octet-stream"}\r
 \r
 `);
@@ -12188,17 +12188,17 @@ var require_headers = __commonJS({
       append(name, value) {
         webidl.brandCheck(this, _Headers);
         webidl.argumentLengthCheck(arguments, 2, "Headers.append");
-        const prefix = "Headers.append";
-        name = webidl.converters.ByteString(name, prefix, "name");
-        value = webidl.converters.ByteString(value, prefix, "value");
+        const prefix2 = "Headers.append";
+        name = webidl.converters.ByteString(name, prefix2, "name");
+        value = webidl.converters.ByteString(value, prefix2, "value");
         return appendHeader(this, name, value);
       }
       // https://fetch.spec.whatwg.org/#dom-headers-delete
       delete(name) {
         webidl.brandCheck(this, _Headers);
         webidl.argumentLengthCheck(arguments, 1, "Headers.delete");
-        const prefix = "Headers.delete";
-        name = webidl.converters.ByteString(name, prefix, "name");
+        const prefix2 = "Headers.delete";
+        name = webidl.converters.ByteString(name, prefix2, "name");
         if (!isValidHeaderName(name)) {
           throw webidl.errors.invalidArgument({
             prefix: "Headers.delete",
@@ -12218,11 +12218,11 @@ var require_headers = __commonJS({
       get(name) {
         webidl.brandCheck(this, _Headers);
         webidl.argumentLengthCheck(arguments, 1, "Headers.get");
-        const prefix = "Headers.get";
-        name = webidl.converters.ByteString(name, prefix, "name");
+        const prefix2 = "Headers.get";
+        name = webidl.converters.ByteString(name, prefix2, "name");
         if (!isValidHeaderName(name)) {
           throw webidl.errors.invalidArgument({
-            prefix,
+            prefix: prefix2,
             value: name,
             type: "header name"
           });
@@ -12233,11 +12233,11 @@ var require_headers = __commonJS({
       has(name) {
         webidl.brandCheck(this, _Headers);
         webidl.argumentLengthCheck(arguments, 1, "Headers.has");
-        const prefix = "Headers.has";
-        name = webidl.converters.ByteString(name, prefix, "name");
+        const prefix2 = "Headers.has";
+        name = webidl.converters.ByteString(name, prefix2, "name");
         if (!isValidHeaderName(name)) {
           throw webidl.errors.invalidArgument({
-            prefix,
+            prefix: prefix2,
             value: name,
             type: "header name"
           });
@@ -12248,19 +12248,19 @@ var require_headers = __commonJS({
       set(name, value) {
         webidl.brandCheck(this, _Headers);
         webidl.argumentLengthCheck(arguments, 2, "Headers.set");
-        const prefix = "Headers.set";
-        name = webidl.converters.ByteString(name, prefix, "name");
-        value = webidl.converters.ByteString(value, prefix, "value");
+        const prefix2 = "Headers.set";
+        name = webidl.converters.ByteString(name, prefix2, "name");
+        value = webidl.converters.ByteString(value, prefix2, "value");
         value = headerValueNormalize(value);
         if (!isValidHeaderName(name)) {
           throw webidl.errors.invalidArgument({
-            prefix,
+            prefix: prefix2,
             value: name,
             type: "header name"
           });
         } else if (!isValidHeaderValue(value)) {
           throw webidl.errors.invalidArgument({
-            prefix,
+            prefix: prefix2,
             value,
             type: "header value"
           });
@@ -12340,7 +12340,7 @@ var require_headers = __commonJS({
         enumerable: false
       }
     });
-    webidl.converters.HeadersInit = function(V, prefix, argument) {
+    webidl.converters.HeadersInit = function(V, prefix2, argument) {
       if (webidl.util.Type(V) === "Object") {
         const iterator = Reflect.get(V, Symbol.iterator);
         if (!util.types.isProxy(V) && iterator === Headers2.prototype.entries) {
@@ -12350,9 +12350,9 @@ var require_headers = __commonJS({
           }
         }
         if (typeof iterator === "function") {
-          return webidl.converters["sequence<sequence<ByteString>>"](V, prefix, argument, iterator.bind(V));
+          return webidl.converters["sequence<sequence<ByteString>>"](V, prefix2, argument, iterator.bind(V));
         }
-        return webidl.converters["record<ByteString, ByteString>"](V, prefix, argument);
+        return webidl.converters["record<ByteString, ByteString>"](V, prefix2, argument);
       }
       throw webidl.errors.conversionFailed({
         prefix: "Headers constructor",
@@ -12717,32 +12717,32 @@ var require_response = __commonJS({
     webidl.converters.URLSearchParams = webidl.interfaceConverter(
       URLSearchParams
     );
-    webidl.converters.XMLHttpRequestBodyInit = function(V, prefix, name) {
+    webidl.converters.XMLHttpRequestBodyInit = function(V, prefix2, name) {
       if (typeof V === "string") {
-        return webidl.converters.USVString(V, prefix, name);
+        return webidl.converters.USVString(V, prefix2, name);
       }
       if (isBlobLike(V)) {
-        return webidl.converters.Blob(V, prefix, name, { strict: false });
+        return webidl.converters.Blob(V, prefix2, name, { strict: false });
       }
       if (ArrayBuffer.isView(V) || types.isArrayBuffer(V)) {
-        return webidl.converters.BufferSource(V, prefix, name);
+        return webidl.converters.BufferSource(V, prefix2, name);
       }
       if (util.isFormDataLike(V)) {
-        return webidl.converters.FormData(V, prefix, name, { strict: false });
+        return webidl.converters.FormData(V, prefix2, name, { strict: false });
       }
       if (V instanceof URLSearchParams) {
-        return webidl.converters.URLSearchParams(V, prefix, name);
+        return webidl.converters.URLSearchParams(V, prefix2, name);
       }
-      return webidl.converters.DOMString(V, prefix, name);
+      return webidl.converters.DOMString(V, prefix2, name);
     };
-    webidl.converters.BodyInit = function(V, prefix, argument) {
+    webidl.converters.BodyInit = function(V, prefix2, argument) {
       if (V instanceof ReadableStream) {
-        return webidl.converters.ReadableStream(V, prefix, argument);
+        return webidl.converters.ReadableStream(V, prefix2, argument);
       }
       if (V?.[Symbol.asyncIterator]) {
         return V;
       }
-      return webidl.converters.XMLHttpRequestBodyInit(V, prefix, argument);
+      return webidl.converters.XMLHttpRequestBodyInit(V, prefix2, argument);
     };
     webidl.converters.ResponseInit = webidl.dictionaryConverter([
       {
@@ -12883,10 +12883,10 @@ var require_request2 = __commonJS({
         if (input2 === kConstruct) {
           return;
         }
-        const prefix = "Request constructor";
-        webidl.argumentLengthCheck(arguments, 1, prefix);
-        input2 = webidl.converters.RequestInfo(input2, prefix, "input");
-        init = webidl.converters.RequestInit(init, prefix, "init");
+        const prefix2 = "Request constructor";
+        webidl.argumentLengthCheck(arguments, 1, prefix2);
+        input2 = webidl.converters.RequestInfo(input2, prefix2, "input");
+        init = webidl.converters.RequestInit(init, prefix2, "init");
         let request = null;
         let fallbackMode = null;
         const baseUrl = environmentSettingsObject.settingsObject.baseUrl;
@@ -13411,14 +13411,14 @@ var require_request2 = __commonJS({
     webidl.converters.Request = webidl.interfaceConverter(
       Request
     );
-    webidl.converters.RequestInfo = function(V, prefix, argument) {
+    webidl.converters.RequestInfo = function(V, prefix2, argument) {
       if (typeof V === "string") {
-        return webidl.converters.USVString(V, prefix, argument);
+        return webidl.converters.USVString(V, prefix2, argument);
       }
       if (V instanceof Request) {
-        return webidl.converters.Request(V, prefix, argument);
+        return webidl.converters.Request(V, prefix2, argument);
       }
-      return webidl.converters.USVString(V, prefix, argument);
+      return webidl.converters.USVString(V, prefix2, argument);
     };
     webidl.converters.AbortSignal = webidl.interfaceConverter(
       AbortSignal
@@ -13612,7 +13612,7 @@ var require_fetch = __commonJS({
     function handleFetchDone(response) {
       finalizeAndReportTiming(response, "fetch");
     }
-    function fetch2(input2, init = void 0) {
+    function fetch(input2, init = void 0) {
       webidl.argumentLengthCheck(arguments, 1, "globalThis.fetch");
       let p = createDeferredPromise();
       let requestObject;
@@ -14567,7 +14567,7 @@ var require_fetch = __commonJS({
       }
     }
     module.exports = {
-      fetch: fetch2,
+      fetch,
       Fetch,
       fetching,
       finalizeAndReportTiming
@@ -15457,10 +15457,10 @@ var require_cache = __commonJS({
       }
       async match(request, options = {}) {
         webidl.brandCheck(this, _Cache);
-        const prefix = "Cache.match";
-        webidl.argumentLengthCheck(arguments, 1, prefix);
-        request = webidl.converters.RequestInfo(request, prefix, "request");
-        options = webidl.converters.CacheQueryOptions(options, prefix, "options");
+        const prefix2 = "Cache.match";
+        webidl.argumentLengthCheck(arguments, 1, prefix2);
+        request = webidl.converters.RequestInfo(request, prefix2, "request");
+        options = webidl.converters.CacheQueryOptions(options, prefix2, "options");
         const p = this.#internalMatchAll(request, options, 1);
         if (p.length === 0) {
           return;
@@ -15469,30 +15469,30 @@ var require_cache = __commonJS({
       }
       async matchAll(request = void 0, options = {}) {
         webidl.brandCheck(this, _Cache);
-        const prefix = "Cache.matchAll";
-        if (request !== void 0) request = webidl.converters.RequestInfo(request, prefix, "request");
-        options = webidl.converters.CacheQueryOptions(options, prefix, "options");
+        const prefix2 = "Cache.matchAll";
+        if (request !== void 0) request = webidl.converters.RequestInfo(request, prefix2, "request");
+        options = webidl.converters.CacheQueryOptions(options, prefix2, "options");
         return this.#internalMatchAll(request, options);
       }
       async add(request) {
         webidl.brandCheck(this, _Cache);
-        const prefix = "Cache.add";
-        webidl.argumentLengthCheck(arguments, 1, prefix);
-        request = webidl.converters.RequestInfo(request, prefix, "request");
+        const prefix2 = "Cache.add";
+        webidl.argumentLengthCheck(arguments, 1, prefix2);
+        request = webidl.converters.RequestInfo(request, prefix2, "request");
         const requests = [request];
         const responseArrayPromise = this.addAll(requests);
         return await responseArrayPromise;
       }
       async addAll(requests) {
         webidl.brandCheck(this, _Cache);
-        const prefix = "Cache.addAll";
-        webidl.argumentLengthCheck(arguments, 1, prefix);
+        const prefix2 = "Cache.addAll";
+        webidl.argumentLengthCheck(arguments, 1, prefix2);
         const responsePromises = [];
         const requestList = [];
         for (let request of requests) {
           if (request === void 0) {
             throw webidl.errors.conversionFailed({
-              prefix,
+              prefix: prefix2,
               argument: "Argument 1",
               types: ["undefined is not allowed"]
             });
@@ -15504,7 +15504,7 @@ var require_cache = __commonJS({
           const r = request[kState];
           if (!urlIsHttpHttpsScheme(r.url) || r.method !== "GET") {
             throw webidl.errors.exception({
-              header: prefix,
+              header: prefix2,
               message: "Expected http/s scheme when method is not GET."
             });
           }
@@ -15514,7 +15514,7 @@ var require_cache = __commonJS({
           const r = new Request(request)[kState];
           if (!urlIsHttpHttpsScheme(r.url)) {
             throw webidl.errors.exception({
-              header: prefix,
+              header: prefix2,
               message: "Expected http/s scheme."
             });
           }
@@ -15590,10 +15590,10 @@ var require_cache = __commonJS({
       }
       async put(request, response) {
         webidl.brandCheck(this, _Cache);
-        const prefix = "Cache.put";
-        webidl.argumentLengthCheck(arguments, 2, prefix);
-        request = webidl.converters.RequestInfo(request, prefix, "request");
-        response = webidl.converters.Response(response, prefix, "response");
+        const prefix2 = "Cache.put";
+        webidl.argumentLengthCheck(arguments, 2, prefix2);
+        request = webidl.converters.RequestInfo(request, prefix2, "request");
+        response = webidl.converters.Response(response, prefix2, "response");
         let innerRequest = null;
         if (request instanceof Request) {
           innerRequest = request[kState];
@@ -15602,14 +15602,14 @@ var require_cache = __commonJS({
         }
         if (!urlIsHttpHttpsScheme(innerRequest.url) || innerRequest.method !== "GET") {
           throw webidl.errors.exception({
-            header: prefix,
+            header: prefix2,
             message: "Expected an http/s scheme when method is not GET"
           });
         }
         const innerResponse = response[kState];
         if (innerResponse.status === 206) {
           throw webidl.errors.exception({
-            header: prefix,
+            header: prefix2,
             message: "Got 206 status"
           });
         }
@@ -15618,7 +15618,7 @@ var require_cache = __commonJS({
           for (const fieldValue of fieldValues) {
             if (fieldValue === "*") {
               throw webidl.errors.exception({
-                header: prefix,
+                header: prefix2,
                 message: "Got * vary field value"
               });
             }
@@ -15626,7 +15626,7 @@ var require_cache = __commonJS({
         }
         if (innerResponse.body && (isDisturbed(innerResponse.body.stream) || innerResponse.body.stream.locked)) {
           throw webidl.errors.exception({
-            header: prefix,
+            header: prefix2,
             message: "Response body is locked or disturbed"
           });
         }
@@ -15671,10 +15671,10 @@ var require_cache = __commonJS({
       }
       async delete(request, options = {}) {
         webidl.brandCheck(this, _Cache);
-        const prefix = "Cache.delete";
-        webidl.argumentLengthCheck(arguments, 1, prefix);
-        request = webidl.converters.RequestInfo(request, prefix, "request");
-        options = webidl.converters.CacheQueryOptions(options, prefix, "options");
+        const prefix2 = "Cache.delete";
+        webidl.argumentLengthCheck(arguments, 1, prefix2);
+        request = webidl.converters.RequestInfo(request, prefix2, "request");
+        options = webidl.converters.CacheQueryOptions(options, prefix2, "options");
         let r = null;
         if (request instanceof Request) {
           r = request[kState];
@@ -15717,9 +15717,9 @@ var require_cache = __commonJS({
        */
       async keys(request = void 0, options = {}) {
         webidl.brandCheck(this, _Cache);
-        const prefix = "Cache.keys";
-        if (request !== void 0) request = webidl.converters.RequestInfo(request, prefix, "request");
-        options = webidl.converters.CacheQueryOptions(options, prefix, "options");
+        const prefix2 = "Cache.keys";
+        if (request !== void 0) request = webidl.converters.RequestInfo(request, prefix2, "request");
+        options = webidl.converters.CacheQueryOptions(options, prefix2, "options");
         let r = null;
         if (request !== void 0) {
           if (request instanceof Request) {
@@ -16021,9 +16021,9 @@ var require_cachestorage = __commonJS({
        */
       async has(cacheName) {
         webidl.brandCheck(this, _CacheStorage);
-        const prefix = "CacheStorage.has";
-        webidl.argumentLengthCheck(arguments, 1, prefix);
-        cacheName = webidl.converters.DOMString(cacheName, prefix, "cacheName");
+        const prefix2 = "CacheStorage.has";
+        webidl.argumentLengthCheck(arguments, 1, prefix2);
+        cacheName = webidl.converters.DOMString(cacheName, prefix2, "cacheName");
         return this.#caches.has(cacheName);
       }
       /**
@@ -16033,9 +16033,9 @@ var require_cachestorage = __commonJS({
        */
       async open(cacheName) {
         webidl.brandCheck(this, _CacheStorage);
-        const prefix = "CacheStorage.open";
-        webidl.argumentLengthCheck(arguments, 1, prefix);
-        cacheName = webidl.converters.DOMString(cacheName, prefix, "cacheName");
+        const prefix2 = "CacheStorage.open";
+        webidl.argumentLengthCheck(arguments, 1, prefix2);
+        cacheName = webidl.converters.DOMString(cacheName, prefix2, "cacheName");
         if (this.#caches.has(cacheName)) {
           const cache2 = this.#caches.get(cacheName);
           return new Cache(kConstruct, cache2);
@@ -16051,9 +16051,9 @@ var require_cachestorage = __commonJS({
        */
       async delete(cacheName) {
         webidl.brandCheck(this, _CacheStorage);
-        const prefix = "CacheStorage.delete";
-        webidl.argumentLengthCheck(arguments, 1, prefix);
-        cacheName = webidl.converters.DOMString(cacheName, prefix, "cacheName");
+        const prefix2 = "CacheStorage.delete";
+        webidl.argumentLengthCheck(arguments, 1, prefix2);
+        cacheName = webidl.converters.DOMString(cacheName, prefix2, "cacheName");
         return this.#caches.delete(cacheName);
       }
       /**
@@ -16464,9 +16464,9 @@ var require_cookies = __commonJS({
     }
     function deleteCookie(headers, name, attributes) {
       webidl.brandCheck(headers, Headers2, { strict: false });
-      const prefix = "deleteCookie";
-      webidl.argumentLengthCheck(arguments, 2, prefix);
-      name = webidl.converters.DOMString(name, prefix, "name");
+      const prefix2 = "deleteCookie";
+      webidl.argumentLengthCheck(arguments, 2, prefix2);
+      name = webidl.converters.DOMString(name, prefix2, "name");
       attributes = webidl.converters.DeleteCookieAttributes(attributes);
       setCookie(headers, {
         name,
@@ -16585,10 +16585,10 @@ var require_events = __commonJS({
           webidl.util.markAsUncloneable(this);
           return;
         }
-        const prefix = "MessageEvent constructor";
-        webidl.argumentLengthCheck(arguments, 1, prefix);
-        type = webidl.converters.DOMString(type, prefix, "type");
-        eventInitDict = webidl.converters.MessageEventInit(eventInitDict, prefix, "eventInitDict");
+        const prefix2 = "MessageEvent constructor";
+        webidl.argumentLengthCheck(arguments, 1, prefix2);
+        type = webidl.converters.DOMString(type, prefix2, "type");
+        eventInitDict = webidl.converters.MessageEventInit(eventInitDict, prefix2, "eventInitDict");
         super(type, eventInitDict);
         this.#eventInit = eventInitDict;
         webidl.util.markAsUncloneable(this);
@@ -16645,9 +16645,9 @@ var require_events = __commonJS({
     var CloseEvent = class _CloseEvent extends Event {
       #eventInit;
       constructor(type, eventInitDict = {}) {
-        const prefix = "CloseEvent constructor";
-        webidl.argumentLengthCheck(arguments, 1, prefix);
-        type = webidl.converters.DOMString(type, prefix, "type");
+        const prefix2 = "CloseEvent constructor";
+        webidl.argumentLengthCheck(arguments, 1, prefix2);
+        type = webidl.converters.DOMString(type, prefix2, "type");
         eventInitDict = webidl.converters.CloseEventInit(eventInitDict);
         super(type, eventInitDict);
         this.#eventInit = eventInitDict;
@@ -16669,11 +16669,11 @@ var require_events = __commonJS({
     var ErrorEvent = class _ErrorEvent extends Event {
       #eventInit;
       constructor(type, eventInitDict) {
-        const prefix = "ErrorEvent constructor";
-        webidl.argumentLengthCheck(arguments, 1, prefix);
+        const prefix2 = "ErrorEvent constructor";
+        webidl.argumentLengthCheck(arguments, 1, prefix2);
         super(type, eventInitDict);
         webidl.util.markAsUncloneable(this);
-        type = webidl.converters.DOMString(type, prefix, "type");
+        type = webidl.converters.DOMString(type, prefix2, "type");
         eventInitDict = webidl.converters.ErrorEventInit(eventInitDict ?? {});
         this.#eventInit = eventInitDict;
       }
@@ -17940,10 +17940,10 @@ var require_websocket = __commonJS({
       constructor(url2, protocols = []) {
         super();
         webidl.util.markAsUncloneable(this);
-        const prefix = "WebSocket constructor";
-        webidl.argumentLengthCheck(arguments, 1, prefix);
-        const options = webidl.converters["DOMString or sequence<DOMString> or WebSocketInit"](protocols, prefix, "options");
-        url2 = webidl.converters.USVString(url2, prefix, "url");
+        const prefix2 = "WebSocket constructor";
+        webidl.argumentLengthCheck(arguments, 1, prefix2);
+        const options = webidl.converters["DOMString or sequence<DOMString> or WebSocketInit"](protocols, prefix2, "options");
+        url2 = webidl.converters.USVString(url2, prefix2, "url");
         protocols = options.protocols;
         const baseURL = environmentSettingsObject.settingsObject.baseUrl;
         let urlRecord;
@@ -17996,12 +17996,12 @@ var require_websocket = __commonJS({
        */
       close(code = void 0, reason = void 0) {
         webidl.brandCheck(this, _WebSocket);
-        const prefix = "WebSocket.close";
+        const prefix2 = "WebSocket.close";
         if (code !== void 0) {
-          code = webidl.converters["unsigned short"](code, prefix, "code", { clamp: true });
+          code = webidl.converters["unsigned short"](code, prefix2, "code", { clamp: true });
         }
         if (reason !== void 0) {
-          reason = webidl.converters.USVString(reason, prefix, "reason");
+          reason = webidl.converters.USVString(reason, prefix2, "reason");
         }
         if (code !== void 0) {
           if (code !== 1e3 && (code < 3e3 || code > 4999)) {
@@ -18026,9 +18026,9 @@ var require_websocket = __commonJS({
        */
       send(data) {
         webidl.brandCheck(this, _WebSocket);
-        const prefix = "WebSocket.send";
-        webidl.argumentLengthCheck(arguments, 1, prefix);
-        data = webidl.converters.WebSocketSendData(data, prefix, "data");
+        const prefix2 = "WebSocket.send";
+        webidl.argumentLengthCheck(arguments, 1, prefix2);
+        data = webidl.converters.WebSocketSendData(data, prefix2, "data");
         if (isConnecting(this)) {
           throw new DOMException("Sent before connected.", "InvalidStateError");
         }
@@ -18220,11 +18220,11 @@ var require_websocket = __commonJS({
     webidl.converters["sequence<DOMString>"] = webidl.sequenceConverter(
       webidl.converters.DOMString
     );
-    webidl.converters["DOMString or sequence<DOMString>"] = function(V, prefix, argument) {
+    webidl.converters["DOMString or sequence<DOMString>"] = function(V, prefix2, argument) {
       if (webidl.util.Type(V) === "Object" && Symbol.iterator in V) {
         return webidl.converters["sequence<DOMString>"](V);
       }
-      return webidl.converters.DOMString(V, prefix, argument);
+      return webidl.converters.DOMString(V, prefix2, argument);
     };
     webidl.converters.WebSocketInit = webidl.dictionaryConverter([
       {
@@ -18760,16 +18760,16 @@ var require_eventsource = __commonJS({
       constructor(url2, eventSourceInitDict = {}) {
         super();
         webidl.util.markAsUncloneable(this);
-        const prefix = "EventSource constructor";
-        webidl.argumentLengthCheck(arguments, 1, prefix);
+        const prefix2 = "EventSource constructor";
+        webidl.argumentLengthCheck(arguments, 1, prefix2);
         if (!experimentalWarned) {
           experimentalWarned = true;
           process.emitWarning("EventSource is experimental, expect them to change at any time.", {
             code: "UNDICI-ES"
           });
         }
-        url2 = webidl.converters.USVString(url2, prefix, "url");
-        eventSourceInitDict = webidl.converters.EventSourceInitDict(eventSourceInitDict, prefix, "eventSourceInitDict");
+        url2 = webidl.converters.USVString(url2, prefix2, "url");
+        eventSourceInitDict = webidl.converters.EventSourceInitDict(eventSourceInitDict, prefix2, "eventSourceInitDict");
         this.#dispatcher = eventSourceInitDict.dispatcher;
         this.#state = {
           lastEventId: "",
@@ -19105,7 +19105,7 @@ var require_undici = __commonJS({
     module.exports.setGlobalDispatcher = setGlobalDispatcher;
     module.exports.getGlobalDispatcher = getGlobalDispatcher;
     var fetchImpl = require_fetch().fetch;
-    module.exports.fetch = async function fetch2(init, options = void 0) {
+    module.exports.fetch = async function fetch(init, options = void 0) {
       try {
         return await fetchImpl(init, options);
       } catch (err) {
@@ -22601,11 +22601,11 @@ function isValidCIDRv6(value) {
   const parts = value.split("/");
   if (parts.length !== 2)
     return false;
-  const [address, prefix] = parts;
-  if (!prefix)
+  const [address, prefix2] = parts;
+  if (!prefix2)
     return false;
-  const prefixNum = Number(prefix);
-  if (`${prefixNum}` !== prefix)
+  const prefixNum = Number(prefix2);
+  if (`${prefixNum}` !== prefix2)
     return false;
   if (prefixNum < 0 || prefixNum > 128)
     return false;
@@ -33111,8 +33111,8 @@ function generateStringFormatCheck(doc, ctx, def, accessor, needsValue = true) {
       doc.write(`if (!${accessor}.includes(${esc(def.includes)})) return INVALID;`);
       break;
     case "starts_with": {
-      const prefix = def.prefix;
-      doc.write(`if (${accessor}.slice(0, ${prefix.length}) !== ${esc(prefix)}) return INVALID;`);
+      const prefix2 = def.prefix;
+      doc.write(`if (${accessor}.slice(0, ${prefix2.length}) !== ${esc(prefix2)}) return INVALID;`);
       break;
     }
     case "ends_with": {
@@ -33856,8 +33856,8 @@ function generateDiscriminatedUnionCheck(doc, ctx, def, accessor) {
       claimed.add(value);
     }
     const conditions = Array.from(values, (value) => literalEquality(ctx, discVar, value));
-    const prefix = firstBranch ? "if" : "else if";
-    doc.write(`${prefix} (${conditions.join(" || ")}) {`);
+    const prefix2 = firstBranch ? "if" : "else if";
+    doc.write(`${prefix2} (${conditions.join(" || ")}) {`);
     doc.indented((d) => {
       const branchOutput = generateCheck(d, ctx, option, accessor);
       d.write(`${outputVar} = ${branchOutput};`);
@@ -34805,12 +34805,12 @@ function _includes(includes, params) {
   });
 }
 // @__NO_SIDE_EFFECTS__
-function _startsWith(prefix, params) {
+function _startsWith(prefix2, params) {
   return new $ZodCheckStartsWith({
     check: "string_format",
     format: "starts_with",
     ...normalizeParams(params),
-    prefix
+    prefix: prefix2
   });
 }
 // @__NO_SIDE_EFFECTS__
@@ -39335,151 +39335,412 @@ function date4(params) {
   return _coercedDate(ZodDate, params);
 }
 
-// src/archestra/client.ts
-var TERMINAL_STATES = /* @__PURE__ */ new Set([
-  "TASK_STATE_COMPLETED",
-  "TASK_STATE_FAILED",
-  "TASK_STATE_CANCELED",
-  "TASK_STATE_REJECTED",
-  "TASK_STATE_INPUT_REQUIRED",
-  "TASK_STATE_AUTH_REQUIRED"
-]);
-function isTerminalState(state) {
-  return TERMINAL_STATES.has(state);
-}
+// src/archestra/mcp.ts
 var ArchestraApiError = class extends Error {
-  constructor(operation, status, detail) {
-    super(status === null ? `${operation}: network error: ${detail}` : `${operation}: HTTP ${status}: ${detail}`);
+  constructor(operation, kind, detail, status = null, missingTool = false) {
+    super(`${operation}: ${prefix(kind, status)}${detail}`);
     this.operation = operation;
-    this.status = status;
+    this.kind = kind;
     this.detail = detail;
+    this.status = status;
+    this.missingTool = missingTool;
     this.name = "ArchestraApiError";
   }
   operation;
-  status;
+  kind;
   detail;
+  status;
+  missingTool;
 };
-var FailureSchema = external_exports.object({
-  code: external_exports.string(),
-  retriable: external_exports.boolean(),
-  message: external_exports.string()
+function prefix(kind, status) {
+  switch (kind) {
+    case "network":
+      return "network error: ";
+    case "http":
+      return `HTTP ${status}: `;
+    case "rpc":
+      return `JSON-RPC error ${status}: `;
+    case "response":
+      return "unexpected response: ";
+    case "tool":
+      return "";
+  }
+}
+var MCP_PROTOCOL_VERSION = "2025-11-25";
+var ToolResultSchema = external_exports.object({
+  content: external_exports.array(external_exports.object({ type: external_exports.string(), text: external_exports.string().optional() }).passthrough()).default([]),
+  structuredContent: external_exports.record(external_exports.string(), external_exports.unknown()).optional(),
+  isError: external_exports.boolean().optional()
 });
-var RunSchema = external_exports.object({
-  taskId: external_exports.string(),
-  state: external_exports.string(),
-  statusReason: external_exports.string().nullish(),
-  sessionId: external_exports.string().nullish(),
-  agentId: external_exports.string().nullish(),
-  endedAt: external_exports.string().nullish(),
-  failure: FailureSchema.nullish(),
-  workspace: external_exports.object({ state: external_exports.string(), expiresAt: external_exports.string().nullish() }).nullish()
-});
-var StartSchema = external_exports.object({
-  taskId: external_exports.string(),
-  state: external_exports.string().optional(),
-  sessionId: external_exports.string().nullish()
-});
-var FileSchema = external_exports.object({
-  path: external_exports.string(),
-  size: external_exports.number(),
-  sha256: external_exports.string(),
-  content_base64: external_exports.string().optional()
-});
-var ArchestraClient = class {
-  baseUrl;
-  apiKey;
+var McpSession = class {
+  url;
+  token;
   fetchImpl;
   requestTimeoutMs;
+  clientInfo;
+  sessionId = null;
+  protocolVersion = MCP_PROTOCOL_VERSION;
+  initializing = null;
+  nextId = 1;
   constructor(options) {
-    this.baseUrl = options.baseUrl.replace(/\/+$/, "");
-    this.apiKey = options.apiKey;
-    this.fetchImpl = options.fetch ?? fetch;
+    this.url = options.url;
+    this.token = options.token;
+    this.fetchImpl = options.fetch ?? ((input2, init) => globalThis.fetch(input2, init));
     this.requestTimeoutMs = options.requestTimeoutMs ?? 12e4;
+    this.clientInfo = { name: options.clientName, version: options.clientVersion };
+  }
+  /** Calls a tool. Returns the structured result, or the parsed text. */
+  async callTool(name, args, operation) {
+    const raw = await this.request("tools/call", { name, arguments: args }, operation);
+    const parsed = ToolResultSchema.safeParse(raw);
+    if (!parsed.success) {
+      throw new ArchestraApiError(operation, "response", "the tool result has no content");
+    }
+    const text = parsed.data.content.map((part) => typeof part.text === "string" ? part.text : "").join("\n").trim();
+    if (parsed.data.isError) {
+      throw new ArchestraApiError(operation, "tool", toolErrorText(text));
+    }
+    if (parsed.data.structuredContent) return parsed.data.structuredContent;
+    try {
+      const json2 = JSON.parse(text);
+      if (json2 && typeof json2 === "object" && !Array.isArray(json2)) return json2;
+    } catch {
+    }
+    return { text };
+  }
+  /** Lists the names of all tools, following the pagination cursor. */
+  async listToolNames(operation) {
+    const names = [];
+    let cursor;
+    for (let page = 0; page < 50; page++) {
+      const result = await this.request("tools/list", cursor ? { cursor } : {}, operation);
+      for (const tool of result.tools ?? []) {
+        if (typeof tool.name === "string") names.push(tool.name);
+      }
+      if (typeof result.nextCursor !== "string" || result.nextCursor === "") break;
+      cursor = result.nextCursor;
+    }
+    return names;
+  }
+  async request(method, params, operation) {
+    await this.ensureInitialized(operation);
+    try {
+      return await this.send(method, params, operation);
+    } catch (error63) {
+      if (error63 instanceof ArchestraApiError && error63.kind === "http" && error63.status === 404 && this.sessionId) {
+        this.sessionId = null;
+        this.initializing = null;
+        await this.ensureInitialized(operation);
+        return this.send(method, params, operation);
+      }
+      throw error63;
+    }
+  }
+  ensureInitialized(operation) {
+    this.initializing ??= this.initialize(operation).catch((error63) => {
+      this.initializing = null;
+      throw error63;
+    });
+    return this.initializing;
+  }
+  async initialize(operation) {
+    const result = await this.send(
+      "initialize",
+      { protocolVersion: MCP_PROTOCOL_VERSION, capabilities: {}, clientInfo: this.clientInfo },
+      operation
+    );
+    if (typeof result.protocolVersion === "string" && result.protocolVersion) {
+      this.protocolVersion = result.protocolVersion;
+    }
+    await this.post({ jsonrpc: "2.0", method: "notifications/initialized" }, operation);
+  }
+  async send(method, params, operation) {
+    const id = this.nextId++;
+    const response = await this.post({ jsonrpc: "2.0", id, method, params }, operation);
+    const message = findResponse(response.messages, id);
+    if (!message) {
+      throw new ArchestraApiError(operation, "response", `no JSON-RPC response for ${method}`);
+    }
+    if (message.error) {
+      throw new ArchestraApiError(
+        operation,
+        "rpc",
+        String(message.error.message ?? "no message").slice(0, 500),
+        typeof message.error.code === "number" ? message.error.code : null
+      );
+    }
+    return message.result ?? {};
+  }
+  async post(body, operation) {
+    const isInitialize = body.method === "initialize";
+    let response;
+    try {
+      response = await this.fetchImpl(this.url, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${this.token}`,
+          "Content-Type": "application/json",
+          Accept: "application/json, text/event-stream",
+          ...isInitialize ? {} : { "Mcp-Protocol-Version": this.protocolVersion },
+          ...this.sessionId && !isInitialize ? { "Mcp-Session-Id": this.sessionId } : {}
+        },
+        body: JSON.stringify(body),
+        signal: AbortSignal.timeout(this.requestTimeoutMs)
+      });
+    } catch (error63) {
+      throw new ArchestraApiError(operation, "network", error63 instanceof Error ? error63.message : String(error63));
+    }
+    if (isInitialize) {
+      const sessionId = response.headers.get("mcp-session-id");
+      if (sessionId) this.sessionId = sessionId;
+    }
+    const text = await response.text();
+    if (!response.ok) {
+      throw new ArchestraApiError(operation, "http", errorDetail(text, response.statusText), response.status);
+    }
+    if (text.trim() === "") return { messages: [] };
+    const contentType = response.headers.get("content-type") ?? "";
+    if (contentType.includes("text/event-stream")) return { messages: parseSse(text) };
+    try {
+      const json2 = JSON.parse(text);
+      return { messages: Array.isArray(json2) ? json2 : [json2] };
+    } catch {
+      throw new ArchestraApiError(operation, "response", "the response is not JSON");
+    }
+  }
+};
+function findResponse(messages, id) {
+  for (const message of messages) {
+    if (message && typeof message === "object" && message.id === id) {
+      const candidate = message;
+      if ("result" in candidate || "error" in candidate) return candidate;
+    }
+  }
+  return null;
+}
+function parseSse(text) {
+  const messages = [];
+  for (const event of text.split(/\r?\n\r?\n/)) {
+    const data = event.split(/\r?\n/).filter((line) => line.startsWith("data:")).map((line) => line.slice(5).replace(/^ /, "")).join("\n");
+    if (!data) continue;
+    try {
+      messages.push(JSON.parse(data));
+    } catch {
+    }
+  }
+  return messages;
+}
+function toolErrorText(text) {
+  return (text.replace(/^Error:\s*/, "") || "the tool returned an error without a message").slice(0, 1e3);
+}
+function errorDetail(text, fallback) {
+  try {
+    const parsed = JSON.parse(text);
+    if (typeof parsed.message === "string") return parsed.message.slice(0, 500);
+    if (typeof parsed.error === "string") return parsed.error.slice(0, 500);
+    if (typeof parsed.error?.message === "string") return parsed.error.message.slice(0, 500);
+  } catch {
+  }
+  return (text.trim() || fallback || "no detail").slice(0, 300);
+}
+
+// src/archestra/client.ts
+var TERMINAL_STATES = /* @__PURE__ */ new Set(["completed", "failed", "canceled", "rejected", "input-required", "auth-required"]);
+function isTerminalState(state) {
+  return TERMINAL_STATES.has(state);
+}
+var RUN_TOOLS = {
+  start: "start_agent_run",
+  get: "get_agent_run",
+  steer: "steer_agent_run",
+  cancel: "cancel_agent_run",
+  read: "read_workspace_file",
+  write: "write_workspace_file",
+  credential: "transfer_credential"
+};
+var ARCHESTRA_PREFIX = "archestra__";
+var RUN_TOOL = "run_tool";
+var FailureSchema = external_exports.object({ code: external_exports.string(), retriable: external_exports.boolean() });
+var RunSummarySchema = external_exports.object({
+  run_id: external_exports.string(),
+  state: external_exports.string(),
+  agent_id: external_exports.string().nullish(),
+  status_reason: external_exports.string().nullish(),
+  failure: FailureSchema.nullish(),
+  created_at: external_exports.string().nullish(),
+  state_changed_at: external_exports.string().nullish()
+});
+var StartResultSchema = external_exports.object({
+  run: RunSummarySchema,
+  run_url: external_exports.string().nullish()
+});
+var GetResultSchema = external_exports.object({
+  run: RunSummarySchema,
+  run_url: external_exports.string().nullish(),
+  workspace: external_exports.object({
+    state: external_exports.string(),
+    retained_until: external_exports.string().nullish(),
+    can_continue: external_exports.boolean(),
+    continuation_error: external_exports.string().nullish()
+  }).nullish()
+});
+var SteerResultSchema = external_exports.object({ status: external_exports.string(), run_url: external_exports.string().nullish() });
+var FileResultSchema = external_exports.object({
+  status: external_exports.string().optional(),
+  content: external_exports.string().optional(),
+  size: external_exports.number().optional()
+});
+var ArchestraClient = class {
+  gatewayUrl;
+  origin;
+  session;
+  toolNames = null;
+  runTool = null;
+  runUrls = /* @__PURE__ */ new Map();
+  constructor(options) {
+    this.gatewayUrl = options.gatewayUrl.replace(/\/+$/, "");
+    this.origin = new URL(this.gatewayUrl).origin;
+    this.session = new McpSession({
+      url: this.gatewayUrl,
+      token: options.token,
+      clientName: "archestra-code-review-action",
+      clientVersion: options.clientVersion ?? "1",
+      fetch: options.fetch,
+      requestTimeoutMs: options.requestTimeoutMs
+    });
   }
   /** The run page in the Archestra UI. */
-  runUrl(taskId) {
-    return `${this.baseUrl}/chat/runs/${taskId}`;
+  runUrl(runId) {
+    return this.runUrls.get(runId) ?? `${this.origin}/chat/runs/${runId}`;
   }
   async startRun(agentId, body) {
-    const data = await this.request("POST", `/api/agents/${encodeURIComponent(agentId)}/runs`, "start run", {
-      ...body,
-      runtimeMode: "one_shot"
-    });
-    return parse3(StartSchema, data, "start run");
+    const data = await this.call(
+      RUN_TOOLS.start,
+      {
+        agent_id: agentId,
+        message: body.message,
+        ...body.attachments.length > 0 ? { attachments: body.attachments } : {}
+      },
+      "start run"
+    );
+    const result = parse3(StartResultSchema, data, "start run");
+    this.remember(result.run.run_id, result.run_url);
+    return {
+      runId: result.run.run_id,
+      state: result.run.state,
+      runUrl: result.run_url ?? null,
+      previousTurnCreatedAt: null
+    };
   }
-  async continueRun(taskId, body) {
-    const data = await this.request("POST", `/api/agent-runs/${encodeURIComponent(taskId)}/continue`, "continue run", {
-      ...body,
-      runtimeMode: "one_shot"
-    });
-    return parse3(StartSchema, data, "continue run");
+  async getRun(runId) {
+    const data = await this.call(RUN_TOOLS.get, { run_id: runId }, "get run");
+    const result = parse3(GetResultSchema, data, "get run");
+    this.remember(runId, result.run_url);
+    const { run, workspace } = result;
+    return {
+      runId,
+      state: run.state,
+      statusReason: run.status_reason ?? null,
+      failure: run.failure ?? null,
+      turnCreatedAt: run.created_at ?? null,
+      runUrl: result.run_url ?? null,
+      workspace: workspace ? {
+        state: workspace.state,
+        retainedUntil: workspace.retained_until ?? null,
+        canContinue: workspace.can_continue,
+        continuationError: workspace.continuation_error ?? null
+      } : null
+    };
   }
-  async getRun(taskId) {
-    const data = await this.request("GET", `/api/agent-runs/${encodeURIComponent(taskId)}`, "get run");
-    return parse3(RunSchema, data, "get run");
+  /**
+   * Sends a message to the run. A finished run with a retained workspace
+   * continues in a new turn ("continued"); a live run gets the message as a
+   * correction ("steered").
+   */
+  async steerRun(runId, message) {
+    const data = await this.call(RUN_TOOLS.steer, { run_id: runId, message }, "continue run");
+    const result = parse3(SteerResultSchema, data, "continue run");
+    return result.status === "steered" ? "steered" : "continued";
   }
-  async cancelRun(taskId) {
-    await this.request("POST", `/api/agent-runs/${encodeURIComponent(taskId)}/cancel`, "cancel run", {});
+  async cancelRun(runId) {
+    await this.call(RUN_TOOLS.cancel, { run_id: runId }, "cancel run");
   }
-  /** Reads a file from the run's workspace. Returns null when it is absent. */
-  async readWorkspaceFile(taskId, path) {
+  /** Reads a file of the run's workspace. Returns null when it does not exist. */
+  async readWorkspaceFile(runId, path) {
     let data;
     try {
-      data = await this.request(
-        "GET",
-        `/api/agent-runs/${encodeURIComponent(taskId)}/workspace/files?path=${encodeURIComponent(path)}`,
-        "read workspace file"
-      );
+      data = await this.call(RUN_TOOLS.read, { run_id: runId, path, encoding: "base64" }, "read workspace file");
     } catch (error63) {
-      if (error63 instanceof ArchestraApiError && error63.status === 404) {
+      if (error63 instanceof ArchestraApiError && error63.kind === "tool" && /No such file or directory/i.test(error63.detail)) {
         return null;
       }
       throw error63;
     }
-    const file2 = parse3(FileSchema, data, "read workspace file");
-    if (file2.content_base64 === void 0) {
-      throw new ArchestraApiError(
-        "read workspace file",
-        200,
-        `${path} has no content in the response (${file2.size} bytes)`
-      );
+    const file2 = parse3(FileResultSchema, data, "read workspace file");
+    if (file2.status === "pending" || file2.content === void 0) {
+      throw new ArchestraApiError("read workspace file", "response", `${path} is not readable yet`, 503);
     }
-    return Buffer.from(file2.content_base64, "base64");
+    return Buffer.from(file2.content, "base64");
   }
-  async setRuntimeCredential(agentId, key, value) {
-    await this.request(
-      "PUT",
-      `/api/agents/${encodeURIComponent(agentId)}/runtime/credentials/${encodeURIComponent(key)}`,
-      "store runtime credential",
-      { value }
+  /** Writes a file into the run's workspace. The parent directory must exist. */
+  async writeWorkspaceFile(runId, path, content) {
+    await this.call(
+      RUN_TOOLS.write,
+      { run_id: runId, path, content: content.toString("base64"), encoding: "base64", overwrite: true },
+      "write workspace file"
     );
   }
-  async request(method, path, operation, body) {
-    let response;
-    try {
-      response = await this.fetchImpl(`${this.baseUrl}${path}`, {
-        method,
-        headers: {
-          Authorization: this.apiKey,
-          Accept: "application/json",
-          ...body === void 0 ? {} : { "Content-Type": "application/json" }
-        },
-        body: body === void 0 ? void 0 : JSON.stringify(body),
-        signal: AbortSignal.timeout(this.requestTimeoutMs)
-      });
-    } catch (error63) {
-      throw new ArchestraApiError(operation, null, error63 instanceof Error ? error63.message : String(error63));
+  /**
+   * Stores a personal credential of the token's user on the agent. It
+   * reaches the agent's next turn, so store it before starting or
+   * continuing the run.
+   */
+  async transferCredential(agentId, key, value, label) {
+    await this.call(
+      RUN_TOOLS.credential,
+      { agent_id: agentId, environment: [{ key, type: "secret", value }], label },
+      "store runtime credential"
+    );
+  }
+  remember(runId, runUrl) {
+    if (runUrl) this.runUrls.set(runId, runUrl);
+  }
+  async call(shortName, args, operation) {
+    const names = await this.resolveTools(operation);
+    const direct = names.get(shortName);
+    if (direct) return this.session.callTool(direct, args, operation);
+    if (this.runTool) {
+      return this.session.callTool(
+        this.runTool,
+        { tool_name: `${ARCHESTRA_PREFIX}${shortName}`, tool_args: args },
+        operation
+      );
     }
-    const text = await response.text();
-    if (!response.ok) {
-      throw new ArchestraApiError(operation, response.status, errorDetail(text, response.statusText));
-    }
-    if (text.trim() === "") return {};
-    try {
-      return JSON.parse(text);
-    } catch {
-      throw new ArchestraApiError(operation, response.status, "the response is not JSON");
-    }
+    throw new ArchestraApiError(
+      operation,
+      "tool",
+      `the gateway does not expose ${shortName}. An administrator adds the Remote Agents tools to the MCP gateway.`,
+      null,
+      true
+    );
+  }
+  resolveTools(operation) {
+    this.toolNames ??= this.session.listToolNames(operation).then(
+      (names) => {
+        const byShortName = /* @__PURE__ */ new Map();
+        for (const shortName of [...Object.values(RUN_TOOLS), RUN_TOOL]) {
+          const match = names.find((name) => name === `${ARCHESTRA_PREFIX}${shortName}`) ?? names.find((name) => name === shortName) ?? names.find((name) => name.endsWith(`__${shortName}`));
+          if (match) byShortName.set(shortName, match);
+        }
+        this.runTool = byShortName.get(RUN_TOOL) ?? null;
+        return byShortName;
+      },
+      (error63) => {
+        this.toolNames = null;
+        throw error63;
+      }
+    );
+    return this.toolNames;
   }
 };
 function parse3(schema, data, operation) {
@@ -39487,23 +39748,11 @@ function parse3(schema, data, operation) {
   if (!result.success) {
     throw new ArchestraApiError(
       operation,
-      200,
-      `unexpected response shape: ${result.error.issues.slice(0, 3).map((issue3) => `${issue3.path.join(".")}: ${issue3.message}`).join("; ")}`
+      "response",
+      result.error.issues.slice(0, 3).map((issue3) => `${issue3.path.join(".")}: ${issue3.message}`).join("; ")
     );
   }
   return result.data;
-}
-function errorDetail(text, fallback) {
-  try {
-    const parsed = JSON.parse(text);
-    if (typeof parsed.error === "string") return parsed.error.slice(0, 500);
-    if (typeof parsed.error?.message === "string") {
-      return parsed.error.message.slice(0, 500);
-    }
-    if (typeof parsed.message === "string") return parsed.message.slice(0, 500);
-  } catch {
-  }
-  return (text.trim() || fallback || "no detail").slice(0, 300);
 }
 
 // src/util.ts
@@ -39512,32 +39761,32 @@ function errorMessage(error63) {
 }
 
 // src/cancel.ts
-async function cancelIfLive(client, taskId, log) {
+async function cancelIfLive(client, runId, log) {
   try {
-    const run = await client.getRun(taskId);
+    const run = await client.getRun(runId);
     if (isTerminalState(run.state)) {
-      log.info(`Run ${taskId} is already ${run.state.replace("TASK_STATE_", "")}.`);
+      log.info(`Run ${runId} is already ${run.state}.`);
       return "not-live";
     }
-    await client.cancelRun(taskId);
-    log.info(`Canceled the live run ${taskId}.`);
+    await client.cancelRun(runId);
+    log.info(`Canceled the live run ${runId}.`);
     return "canceled";
   } catch (error63) {
-    log.warning(`Could not cancel run ${taskId}: ${errorMessage(error63)}`);
+    log.warning(`Could not cancel run ${runId}: ${errorMessage(error63)}`);
     return "failed";
   }
 }
 
 // src/post.ts
 async function post() {
-  const taskId = getState("live-task-id");
-  if (!taskId) return;
-  const archestraUrl = getInput("archestra-url");
-  const apiKey = getInput("archestra-api-key");
-  if (!archestraUrl || !apiKey) return;
-  setSecret(apiKey);
-  const client = new ArchestraClient({ baseUrl: archestraUrl, apiKey, requestTimeoutMs: 2e4 });
-  await cancelIfLive(client, taskId, {
+  const runId = getState("live-run-id");
+  if (!runId) return;
+  const gatewayUrl = getInput("archestra-gateway-url");
+  const token = getInput("archestra-token") || getInput("fallback-token");
+  if (!gatewayUrl || !token) return;
+  setSecret(token);
+  const client = new ArchestraClient({ gatewayUrl, token, requestTimeoutMs: 2e4 });
+  await cancelIfLive(client, runId, {
     info: (message) => info(message),
     warning: (message) => warning(message),
     error: (message) => error(message),
