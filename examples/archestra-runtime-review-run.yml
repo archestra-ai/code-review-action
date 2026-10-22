@@ -1,0 +1,74 @@
+# Reusable job workflow for archestra-runtime-review.yml. Copy it to
+# .github/workflows/archestra-runtime-review-run.yml in the same repository.
+#
+# The calling job passes only the secrets that this job needs: the actor's
+# Archestra token and, for fixes, the GitHub App key. This job never gets
+# the rest of the repository's secrets. Its GITHUB_TOKEN permissions come
+# from the calling job, so a review gets no "actions" permission.
+name: Archestra Runtime Review Run
+
+on:
+  workflow_call:
+    inputs:
+      kind:
+        description: '"review" or "fix".'
+        type: string
+        required: true
+      gateway-url:
+        description: The Archestra MCP gateway endpoint.
+        type: string
+        required: true
+      agents:
+        description: Agent IDs, one for each line.
+        type: string
+        required: true
+      timeout-minutes:
+        description: The time limit for the job.
+        type: number
+        default: 90
+    secrets:
+      ARCHESTRA_TOKEN:
+        description: The actor's Archestra platform token. Empty skips the event with a warning.
+        required: false
+      APP_ID:
+        description: The GitHub App that pushes fixes. Fix jobs only.
+        required: false
+      APP_PRIVATE_KEY:
+        description: The private key of that GitHub App. Fix jobs only.
+        required: false
+
+jobs:
+  run:
+    name: Archestra ${{ inputs.kind }}
+    runs-on: ubuntu-latest
+    timeout-minutes: ${{ inputs.timeout-minutes }}
+    steps:
+      # The repository's wrapper around actions/create-github-app-token.
+      - if: inputs.kind == 'fix'
+        uses: actions/checkout@v5
+        with:
+          sparse-checkout: .github/actions/github-app-token
+          persist-credentials: false
+      - name: Mint the push token
+        if: inputs.kind == 'fix'
+        id: app-token
+        uses: ./.github/actions/github-app-token
+        with:
+          app-id: ${{ secrets.APP_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+          repositories: ${{ github.event.repository.name }}
+          permission-contents: write
+          permission-pull-requests: write
+          permission-actions: read
+      - uses: archestra-ai/code-review-action@v1 # Pin to a commit SHA after the first release.
+        with:
+          archestra-gateway-url: ${{ inputs.gateway-url }}
+          archestra-token: ${{ secrets.ARCHESTRA_TOKEN }}
+          agents: ${{ inputs.agents }}
+          strategy: rotate
+          retries: 1
+          timeout-minutes: 20
+          fail-on: never
+          fix-token: ${{ steps.app-token.outputs.token }}
+          fix-timeout-minutes: 45
+          ci-rerun: false

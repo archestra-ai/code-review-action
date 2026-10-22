@@ -53,7 +53,7 @@ Each person who opens pull requests or asks for fixes:
 1. Creates a platform token in Archestra (Personal Settings).
 2. Stores it as an organization or repository secret named `ARCHESTRA_TOKEN_<LOGIN>`: the GitHub login in upper case, with `-` changed to `_`. For example, `octo-cat` uses `ARCHESTRA_TOKEN_OCTO_CAT`.
 
-The reusable workflow [resolve-actor-token.yml](.github/workflows/resolve-actor-token.yml) gives the secret name for the actor of each event. A person without a token gets no review, and the job log says why. Optionally, set `fallback-token` to a shared team token: the runs of people without a token then act as the team token's owner, who pays for them. Use `fallback-agents` to leave out agents that need a person's own Claude account.
+The reusable workflow [resolve-actor-token.yml](.github/workflows/resolve-actor-token.yml) gives the secret name for the actor of each event. The workflow below passes only that secret to the job that runs the action. A person without a token gets no review, and the job log says why. Optionally, set `fallback-token` to a shared team token: the runs of people without a token then act as the team token's owner, who pays for them. Use `fallback-agents` to leave out agents that need a person's own Claude account.
 
 ### 4. GitHub App for pushes (fix modes only)
 
@@ -67,6 +67,10 @@ The App pushes the commits, but the commit author is the person who asked for th
 
 ### 5. Workflow
 
+Use two workflow files. The entry workflow finds the actor's token secret and calls a reusable job workflow in the same repository. Each call passes only the one token that the job needs, so no job gets the whole secrets context. Keep the job workflow in your repository, not in this one: a reusable workflow cannot find its own commit, so it could not pin this action to the same version.
+
+`.github/workflows/archestra-review.yml`:
+
 ```yaml
 name: Archestra review
 on:
@@ -77,10 +81,7 @@ on:
   pull_request_review_comment:
     types: [created]
 
-permissions:
-  contents: read
-  pull-requests: write
-  actions: read
+permissions: {}
 
 jobs:
   actor:
@@ -89,45 +90,77 @@ jobs:
   review:
     needs: actor
     if: github.event_name == 'pull_request'
-    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
     concurrency:
       group: archestra-review-${{ github.event.pull_request.number }}
       cancel-in-progress: true
-    steps:
-      - uses: archestra-ai/code-review-action@v1
-        with:
-          archestra-gateway-url: https://archestra.example.com/v1/mcp/code-review
-          archestra-token: ${{ secrets[needs.actor.outputs.secret_name] }}
-          agents: |
-            11111111-1111-4111-8111-111111111111
-            22222222-2222-4222-8222-222222222222
+    uses: ./.github/workflows/archestra-review-run.yml
+    with:
+      kind: review
+    # GitHub resolves this lookup before it starts the called job and passes only this token.
+    secrets:
+      ARCHESTRA_TOKEN: ${{ secrets[needs.actor.outputs.secret_name] }}
 
   fix:
     needs: actor
     if: github.event_name != 'pull_request' && contains(github.event.comment.body, 'archestra')
-    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+      actions: read
     concurrency:
       group: archestra-fix-${{ github.event.issue.number || github.event.pull_request.number }}
       cancel-in-progress: false
+    uses: ./.github/workflows/archestra-review-run.yml
+    with:
+      kind: fix
+    secrets:
+      ARCHESTRA_TOKEN: ${{ secrets[needs.actor.outputs.secret_name] }}
+      APP_ID: ${{ secrets.REVIEW_APP_ID }}
+      APP_PRIVATE_KEY: ${{ secrets.REVIEW_APP_PRIVATE_KEY }}
+```
+
+`.github/workflows/archestra-review-run.yml`:
+
+```yaml
+name: Archestra review run
+on:
+  workflow_call:
+    inputs:
+      kind:
+        type: string
+        required: true
+    secrets:
+      ARCHESTRA_TOKEN:
+        required: false
+      APP_ID:
+        required: false
+      APP_PRIVATE_KEY:
+        required: false
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
     steps:
       - id: app-token
+        if: inputs.kind == 'fix'
         uses: actions/create-github-app-token@v2
         with:
-          app-id: ${{ secrets.REVIEW_APP_ID }}
-          private-key: ${{ secrets.REVIEW_APP_PRIVATE_KEY }}
+          app-id: ${{ secrets.APP_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
       - uses: archestra-ai/code-review-action@v1
         with:
           archestra-gateway-url: https://archestra.example.com/v1/mcp/code-review
-          archestra-token: ${{ secrets[needs.actor.outputs.secret_name] }}
+          archestra-token: ${{ secrets.ARCHESTRA_TOKEN }}
           agents: |
             11111111-1111-4111-8111-111111111111
             22222222-2222-4222-8222-222222222222
           fix-token: ${{ steps.app-token.outputs.token }}
 ```
 
-A secret with a computed name gives the job the whole secrets context. Keep these jobs to the steps above. For a stricter setup, move each job into a reusable workflow and pass only the one token through its `secrets:` mapping.
-
-See [examples/archestra-runtime-review.yml](examples/archestra-runtime-review.yml) for a complete workflow with filters.
+The job workflow gets its `GITHUB_TOKEN` permissions from the calling job, so a review gets no `actions` permission. See [examples/archestra-runtime-review.yml](examples/archestra-runtime-review.yml) for a complete workflow with filters.
 
 ## Commands and boxes
 

@@ -4,8 +4,10 @@ name: Resolve the actor's Archestra token
 # Archestra platform token of the person who caused the event: the pull
 # request author on open, the pusher on synchronize, the commenter on a
 # command or a ticked box. The caller passes
-# secrets[needs.<this job>.outputs.secret_name] to the action, so each run
-# acts as that person and their costs are theirs.
+# secrets[needs.<this job>.outputs.secret_name] to its job workflow through a
+# "secrets:" mapping. GitHub resolves that lookup before the called job
+# starts, so the job gets only this one token. Each run then acts as that
+# person, and the costs are theirs.
 #
 # The name is the prefix and the GitHub login in upper case, with "-" changed
 # to "_": octo-cat -> ARCHESTRA_TOKEN_OCTO_CAT. The login goes after the
