@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.2.2 (2026-10-24)
+
+- When the token may not resolve a review thread (GitHub does not let a workflow's installation token do it), the action replies under the thread instead: "Fixed in `<sha>`" after a re-review, "Applied in `<sha>`" after a fix. Before, the first failure stopped every thread update with one warning. Seen on the first review of archestra-ai/archestra#9568.
+
 ## 0.2.1 (2026-10-24)
 
 - A review no longer fails the contract when a `reviewed` entry, an observation, a test focus or a closing section is longer than the brief asks for: the limits in `review.json` only stop pathological output, and the comment shortens long texts. The first live review on a large repository lost an attempt to a 201-character `reviewed` entry.

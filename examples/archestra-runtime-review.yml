@@ -39,7 +39,7 @@ jobs:
         github.event_name == 'pull_request' ||
         (github.event.sender.type != 'Bot' && contains(github.event.comment.body, '/archestra'))
       )
-    uses: archestra-ai/code-review-action/.github/workflows/resolve-actor-token.yml@v1 # Pin to the commit of a release tag, for example @<sha> # v0.2.1.
+    uses: archestra-ai/code-review-action/.github/workflows/resolve-actor-token.yml@v1 # Pin to the commit of a release tag, for example @<sha> # v0.2.2.
 
   review:
     name: Archestra Review

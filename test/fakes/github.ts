@@ -82,6 +82,8 @@ export class FakeGitHub {
   /** Review comments a person deleted: still listed as threads, but a PATCH answers 404. */
   readonly goneComments = new Set<number>();
   readonly graphqlMutations: Array<{ action: "resolve" | "unresolve"; threadId: string }> = [];
+  /** True makes thread mutations fail as they do for a workflow's installation token. */
+  threadMutationsForbidden = false;
   readonly reactions: Array<{ commentId: number; content: string }> = [];
   readonly reruns: number[] = [];
   readonly createdPulls: Array<{ number: number; head: string; base: string; title: string; body: string }> = [];
@@ -337,6 +339,12 @@ export class FakeGitHub {
       }),
       http.post(`${this.api}/graphql`, async ({ request }) => {
         const { query, variables } = (await request.json()) as { query: string; variables: Record<string, unknown> };
+        if (this.threadMutationsForbidden && query.includes("solveReviewThread")) {
+          return HttpResponse.json({
+            data: null,
+            errors: [{ type: "FORBIDDEN", message: "Resource not accessible by integration" }],
+          });
+        }
         if (query.includes("unresolveReviewThread")) {
           const threadId = String(variables.id);
           this.resolved.delete(Number(threadId.replace("thread-", "")));
