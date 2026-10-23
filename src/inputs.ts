@@ -25,7 +25,7 @@ export interface Inputs {
   prNumber: number | null;
   fixCommand: string;
   fixToken: string;
-  /** A read-only GitHub token that review mode stores as GITHUB_TOKEN; "" for none. */
+  /** A read-only GitHub token that review mode stores as CODE_REVIEW_GITHUB_TOKEN; "" for none. */
   cloneToken: string;
   fixTimeoutMs: number;
   ciRerun: boolean;

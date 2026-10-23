@@ -95,7 +95,7 @@ export function briefTitle(title: string): string {
  * `continueFrom` names one of the agents, the first attempt on that agent
  * continues the retained workspace; a workspace that this token cannot
  * continue gives a fresh run on the same agent. When `credentialToken` is
- * set, it is stored as the actor's GITHUB_TOKEN credential on the agent
+ * set, it is stored as the actor's CODE_REVIEW_GITHUB_TOKEN credential on the agent
  * before each attempt; it reaches the next turn.
  */
 export async function launch<T>(
@@ -140,7 +140,7 @@ export async function launch<T>(
           if (p.credentialToken) {
             await ctx.archestra.transferCredential(
               agentId,
-              "GITHUB_TOKEN",
+              "CODE_REVIEW_GITHUB_TOKEN",
               p.credentialToken,
               "GitHub token of the code review action",
             );

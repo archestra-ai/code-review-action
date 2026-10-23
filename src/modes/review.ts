@@ -105,7 +105,7 @@ export async function runReview(ctx: ActionContext, prNumber: number): Promise<A
     attachments,
     contract: CONTRACTS.review,
     timeoutMs: inputs.timeoutMs,
-    // A fix leaves a short-lived App token in the actor's GITHUB_TOKEN; a
+    // A fix leaves a short-lived App token in the actor's CODE_REVIEW_GITHUB_TOKEN; a
     // private repository needs a fresh read-only token for the review.
     credentialToken: inputs.cloneToken || null,
     progress: progressReporter(ctx, pr, agents.length),

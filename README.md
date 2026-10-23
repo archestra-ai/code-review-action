@@ -17,7 +17,7 @@ pull_request ──► action ──► start_agent_run (pr.json, pr.diff) ─�
                    │  read read_workspace_file review.json
                    └──► review comment (sticky) + inline comments
 
-/archestra fix  ──► action ──► transfer_credential GITHUB_TOKEN ──► write_workspace_file (inputs)
+/archestra fix  ──► action ──► transfer_credential CODE_REVIEW_GITHUB_TOKEN ──► write_workspace_file (inputs)
 or a ticked box     │          ──► steer_agent_run (same run, next turn)  runtime commits and pushes
                     └──► verify commits (compare API) ──► resolve threads, update the review comment
 ```
@@ -48,7 +48,7 @@ A run belongs to the person whose token started it. When another person asks for
 Create one Archestra agent for each runtime that you want to use. Use different model providers, so that the action can spread the cost and fall back when one provider is not available.
 - Each agent must have a **dedicated runtime**. Share it with the same people as the gateway, with the **Can use** permission.
 - Claude Code in subscription mode uses the Claude account of the person that the run acts as. Each person connects their Claude account on the agent once. OpenCode, Hermes, OpenClaw, or Claude Code in provider mode use the agent's provider key.
-- Declare `GITHUB_TOKEN` as a **per-user runtime credential**. The fix modes store a fresh App token in it before each turn. For a private repository, give the review job a read-only token as `clone-token`; the action stores it before each review.
+- The action stores GitHub tokens under its own **per-user runtime credential** `CODE_REVIEW_GITHUB_TOKEN` on the agent, created on first use. It does not use `GITHUB_TOKEN`: on many deployments that key is a Connect GitHub credential, which refuses a transferred value. The fix modes store a fresh App token before each turn. For a private repository, give the review job a read-only token as `clone-token`; the action stores it before each review.
 - Set the maximum run duration long enough for a person to click later (for example 72 hours), and a short idle timeout. The action resumes the workspace when it needs it.
 
 ### 3. Platform tokens
