@@ -75,6 +75,15 @@ jobs:
           else
             echo "available=true" >> "$GITHUB_OUTPUT"
           fi
+      - name: Mint the clone token
+        if: steps.token.outputs.available == 'true' && inputs.kind == 'review'
+        id: clone-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          app-id: ${{ secrets.APP_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+          repositories: ${{ github.event.repository.name }}
+          permission-contents: read
       - name: Mint the push token
         if: steps.token.outputs.available == 'true' && inputs.kind == 'fix'
         id: app-token
@@ -96,9 +105,12 @@ jobs:
           retries: 1
           timeout-minutes: 20
           fail-on: never
-          # Private repository: the runtime clones with this read-only token.
-          # Remove the line for a public repository.
-          clone-token: ${{ github.token }}
+          # Private repository: the runtime clones with this token. Mint one
+          # that can only read contents (the step above with
+          # permission-contents: read), or store a fine-grained token; the
+          # job token also carries pull-requests: write. Remove the line for
+          # a public repository.
+          clone-token: ${{ steps.clone-token.outputs.token }}
           fix-token: ${{ steps.app-token.outputs.token }}
           fix-timeout-minutes: 45
           ci-rerun: false
