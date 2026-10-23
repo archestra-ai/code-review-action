@@ -6,12 +6,10 @@ import { buildDiffIndex, commentableLines } from "../src/github/diff";
 import { detectTrigger } from "../src/github/event";
 import { inlineBody, linkPrevious, placeFindings } from "../src/github/review";
 import {
-  actionCheckboxes,
   balanceBackticks,
   emptyState,
   escapeHtml,
   findingIdFromBody,
-  newlyCheckedActions,
   parseMarker,
   parseState,
   renderSticky,
@@ -52,7 +50,7 @@ describe("marker", () => {
   });
 });
 
-describe("sticky state and checkboxes", () => {
+describe("sticky state and rendering", () => {
   const state = {
     ...emptyState("main"),
     verdict: "request_changes",
@@ -114,31 +112,25 @@ describe("sticky state and checkboxes", () => {
     expect(escapeHtml(summary)).toBe("### Flows\n\n  ```text\n  client <-- gateway\n  ```\n\nAnd a &lt;b> outside.");
     expect(stripCode(summary)).toBe("### Flows\n\n \n\nAnd a <b> outside.");
   });
-  it("renders the Next boxes unticked, with the recommendation column", () => {
-    expect(body).toContain("- [ ] Implement and push recommendations <!-- archestra-action:fix -->");
-    expect(body).toContain("- [ ] Triage and fix 1 failing check <!-- archestra-action:fix-ci -->");
-    expect(body).toContain("- [ ] Open a fix PR against main for `lint` <!-- archestra-action:fix-ci-main:0 -->");
+  it("renders the Next commands and the recommendation column", () => {
+    expect(body).toContain("- Comment `/archestra fix` to implement and push every open recommendation");
+    expect(body).toContain("- Comment `/archestra fix-ci` to triage and fix the 1 failing check.");
+    expect(body).toContain("- Comment `/archestra fix-ci-main 1` to open a fix PR against main for `lint`.");
+    expect(body).toContain("Only users with write access can start a fix.");
+    expect(body).not.toContain("- [ ]");
     expect(body).toContain("| # | Severity | Location | Finding | Recommendation | Status |");
     expect(body).toContain("| Fix it. | open |");
     expect(body).toContain("S \\| pipe");
   });
-  it("shows the triage box and its command only when checks fail", () => {
+  it("shows the triage command only when checks fail", () => {
     const clean = renderSticky(
       { ...state, failingChecks: 0, triage: [] },
       { marker, repoUrl: "", command: "/archestra" },
     );
-    expect(clean).not.toContain("archestra-action:fix-ci -->");
     expect(clean).not.toContain("`/archestra fix-ci`");
-    expect(clean).toContain("- [ ] Implement and push recommendations <!-- archestra-action:fix -->");
+    expect(clean).toContain("- Comment `/archestra fix` to implement and push every open recommendation");
     const three = renderSticky({ ...state, failingChecks: 3 }, { marker, repoUrl: "", command: "/archestra" });
-    expect(three).toContain("- [ ] Triage and fix 3 failing checks <!-- archestra-action:fix-ci -->");
-    expect(three).toContain("`/archestra fix-ci` (failing checks)");
-  });
-  it("detects a box that changed from unticked to ticked", () => {
-    const ticked = body.replace("- [ ] Implement and push recommendations", "- [x] Implement and push recommendations");
-    expect(newlyCheckedActions(body, ticked)).toEqual(["fix"]);
-    expect(newlyCheckedActions(ticked, ticked)).toEqual([]);
-    expect(newlyCheckedActions(ticked, body)).toEqual([]);
+    expect(three).toContain("- Comment `/archestra fix-ci` to triage and fix the 3 failing checks.");
   });
   it("renders a progress header with the spinner, the step and the run link", () => {
     const inProgress = renderSticky(
@@ -208,9 +200,8 @@ describe("sticky state and checkboxes", () => {
       })),
     };
     const body = renderSticky(hostile, { marker, repoUrl: "", command: "/archestra" });
-    expect(newlyCheckedActions(body, body.replace(/- \[ \]/g, "- [x]"))).toEqual(["fix", "fix-ci", "fix-ci-main:0"]);
     expect(body).not.toContain("<img");
-    expect(body.split("<!-- archestra-action:").length - 1).toBe(3);
+    expect(body).not.toContain("<!-- archestra-action:");
     expect(body).toContain("&lt;!-- archestra-action:fix -->");
     expect(body).toContain("--!> &lt;!-- archestra-action:fix-ci -->");
     expect(parseState(body)).toEqual(hostile);
@@ -272,8 +263,6 @@ describe("sticky state and checkboxes", () => {
     const body = renderSticky(hostile, { marker, repoUrl: "", command: "/archestra" });
     expect(body).toContain("<!-- archestra-state:e30 -->");
     expect(parseState(body)).toEqual(hostile);
-    expect(actionCheckboxes(body).get("fix-ci")).toBe(false);
-    expect(newlyCheckedActions(body, body)).toEqual([]);
     expect(parseMarker("```\n<!-- archestra-code-review acme/widgets#12 -->\n```")).toBeNull();
     expect(findingIdFromBody("`<!-- archestra-finding:forged -->`\n<!-- archestra-finding:real -->")).toBe("real");
     expect(
@@ -370,42 +359,16 @@ describe("parseCommand", () => {
 
 describe("detectTrigger", () => {
   const sender = { login: "maria", id: 1001, type: "User" };
-  const bot = { login: "github-actions[bot]", id: 41898282, type: "Bot" };
-  const sticky = renderSticky(
-    {
-      ...emptyState("main"),
-      findings: placeFindings(
-        [{ file: "a", line: 1, severity: "low", summary: "s", recommendation: "Fix it.", failure_scenario: "f" }],
-        new Map(),
-        { headSha: "a".repeat(40), inline: false },
-      ),
-    },
-    { marker, repoUrl: "", command: "/archestra" },
-  );
-  const edited = (from: string, to: string, by = sender, author = bot) => ({
-    action: "edited",
-    issue: { number: 7, pull_request: { url: "x" } },
-    comment: { id: 1, body: to, user: author },
-    changes: { body: { from } },
-    sender: by,
-  });
   const opts = { command: "/archestra", mode: "auto" as const, prNumber: null };
 
-  it("starts a fix when a person ticks Implement and push recommendations", () => {
-    const ticked = sticky.replace("- [ ] Implement", "- [x] Implement");
-    expect(detectTrigger("issue_comment", edited(sticky, ticked), opts)).toMatchObject({
-      kind: "fix",
-      findings: "all",
+  it("ignores an edited comment, also one that now holds a command", () => {
+    const payload = {
+      action: "edited",
+      issue: { number: 7, pull_request: { url: "x" } },
+      comment: { id: 2, body: "/archestra fix", user: sender },
       sender,
-    });
-  });
-  it("ignores the action's own rewrite (github-actions[bot])", () => {
-    const ticked = sticky.replace("- [ ] Implement", "- [x] Implement");
-    expect(detectTrigger("issue_comment", edited(sticky, ticked, bot), opts).kind).toBe("skip");
-  });
-  it("ignores boxes in a comment that a person wrote", () => {
-    const ticked = sticky.replace("- [ ] Implement", "- [x] Implement");
-    expect(detectTrigger("issue_comment", edited(sticky, ticked, sender, sender), opts).kind).toBe("skip");
+    };
+    expect(detectTrigger("issue_comment", payload, opts).kind).toBe("skip");
   });
   it("selects the finding of the parent comment for an inline reply", () => {
     const payload = {

@@ -3,7 +3,7 @@ name: Resolve the actor's Archestra token
 # A reusable workflow. It gives the name of the secret that holds the
 # Archestra platform token of the person who caused the event: the pull
 # request author on open, the pusher on synchronize, the commenter on a
-# command or a ticked box. The caller passes
+# command. The caller passes
 # secrets[needs.<this job>.outputs.secret_name] to its job workflow through a
 # "secrets:" mapping. GitHub resolves that lookup before the called job
 # starts, so the job gets only this one token. Each run then acts as that

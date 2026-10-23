@@ -2,7 +2,6 @@ import { z } from "zod";
 import type { Mode } from "../inputs";
 import { isBotUser } from "../util";
 import { parseCommand } from "./commands";
-import { newlyCheckedActions, parseMarker } from "./sticky";
 
 export interface Sender {
   login: string;
@@ -14,7 +13,6 @@ export interface Sender {
 export type TriggerSource =
   | { type: "issue-comment"; commentId: number }
   | { type: "review-comment"; commentId: number; inReplyTo: number | null }
-  | { type: "checkbox"; commentId: number }
   | { type: "dispatch" };
 
 export type FindingSelection = number[] | "all" | { inlineReplyTo: number };
@@ -55,7 +53,6 @@ const IssueCommentEventSchema = z.object({
     pull_request: z.object({ url: z.string().optional() }).nullish(),
   }),
   comment: z.object({ id: z.number(), body: z.string().nullish(), user: UserSchema }),
-  changes: z.object({ body: z.object({ from: z.string() }).optional() }).nullish(),
   sender: UserSchema,
 });
 
@@ -126,35 +123,6 @@ function issueCommentTrigger(payload: unknown, command: string): Trigger {
     return fromCommand(parsedCommand, prNumber, sender, source);
   }
 
-  if (event.action === "edited") {
-    // Ticking a task-list box edits the comment. Only the sticky comment
-    // (a bot comment with the marker) counts.
-    const marker = parseMarker(body);
-    if (!marker || marker.pr !== prNumber || !isBotUser(event.comment.user)) {
-      return { kind: "skip", reason: "the edited comment is not the review comment" };
-    }
-    const before = event.changes?.body?.from;
-    if (before === undefined) return { kind: "skip", reason: "the edit did not change the comment body" };
-    const ticked = newlyCheckedActions(before, body);
-    const source: TriggerSource = { type: "checkbox", commentId: event.comment.id };
-    // One action for each edit. Fixes of the PR first, then CI.
-    if (ticked.includes("fix")) {
-      return { kind: "fix", prNumber, sender, source, findings: "all", note: "" };
-    }
-    if (ticked.includes("fix-ci")) return { kind: "fix-ci", prNumber, sender, source };
-    const mainFix = ticked.find((id) => id.startsWith("fix-ci-main:"));
-    if (mainFix) {
-      const target = mainFix.slice("fix-ci-main:".length);
-      return {
-        kind: "fix-ci-main",
-        prNumber,
-        sender,
-        source,
-        target: target === "all" ? "all" : Number(target),
-      };
-    }
-    return { kind: "skip", reason: "no box was ticked" };
-  }
   return { kind: "skip", reason: `comment action "${event.action}" is not supported` };
 }
 

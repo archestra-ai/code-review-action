@@ -294,10 +294,10 @@ describe("review mode", () => {
   });
 });
 
-describe("triage box", () => {
+describe("triage command", () => {
   it("appears only when the reviewed commit has failing checks", async () => {
     const { harness } = await reviewed();
-    expect(harness.github.stickyBody()).not.toContain("archestra-action:fix-ci -->");
+    expect(harness.github.stickyBody()).not.toContain("/archestra fix-ci");
     harness.github.checkRuns = [
       {
         id: 301,
@@ -328,7 +328,7 @@ describe("triage box", () => {
     harness.archestra.script(AGENT_A, { end: "completed", files: { "review.json": reviewJson([FINDING_IN_DIFF]) } });
     await run(harness.context("pull_request", prEvent(harness.github, "synchronize")));
     const body = harness.github.stickyBody()!;
-    expect(body).toContain("- [ ] Triage and fix 2 failing checks <!-- archestra-action:fix-ci -->");
+    expect(body).toContain("- Comment `/archestra fix-ci` to triage and fix the 2 failing checks.");
     expect(body).toContain("| Recommendation |");
     expect(body).toContain(FINDING_IN_DIFF.recommendation);
     expect(parseState(body)?.failingChecks).toBe(2);
@@ -585,14 +585,9 @@ describe("fix-ci and fix-ci-main modes", () => {
     expect(evidence.failures.find((f: { name: string }) => f.name === "external").annotations).toHaveLength(1);
     expect(result.pushedCommits).toEqual([fixCommit]);
     const sticky = harness.github.stickyBody()!;
-    expect(sticky).toContain("Open a fix PR against main for `lint` <!-- archestra-action:fix-ci-main:1 -->");
+    expect(sticky).toContain("- Comment `/archestra fix-ci-main 2` to open a fix PR against main for `lint`.");
 
-    // Tick the box: open a fix PR against main.
-    const ticked = sticky.replace(
-      "- [ ] Open a fix PR against main for `lint`",
-      "- [x] Open a fix PR against main for `lint`",
-    );
-    const stickyId = [...harness.github.comments.values()].find((c) => c.body === sticky)!.id;
+    // The command opens a fix PR against main.
     const branch = "archestra/fix-ci-lint";
     const mainCommit = "4".repeat(40);
     harness.github.branchCommits.set(branch, [{ sha: mainCommit, authorEmail: "1001+maria@users.noreply.github.com" }]);
@@ -607,20 +602,15 @@ describe("fix-ci and fix-ci-main modes", () => {
         },
       },
     });
-    const edit = {
-      action: "edited",
-      issue: { number: 7, pull_request: { url: "x" } },
-      comment: { id: stickyId, body: ticked, user: { login: "github-actions[bot]", id: 41898282, type: "Bot" } },
-      changes: { body: { from: sticky } },
-      sender: { login: "maria", id: 1001, type: "User" },
-    };
-    const mainResult = await run(harness.context("issue_comment", edit));
+    const mainResult = await run(
+      harness.context("issue_comment", issueCommentEvent(harness.github, "/archestra fix-ci-main 2")),
+    );
     expect(mainResult.status).toBe("success");
     expect(harness.github.createdPulls[0]).toMatchObject({ head: branch, base: "main" });
     expect(harness.github.assignees[0]).toMatchObject({ assignees: ["maria"] });
     const after = harness.github.stickyBody()!;
     expect(after).toContain("Queue the fix PR first, then rebase this pull request.");
-    expect(after).not.toContain("archestra-action:fix-ci-main:1");
+    expect(after).not.toContain("to open a fix PR against main for `lint`");
   });
 
   it("caps the log tail per job", async () => {

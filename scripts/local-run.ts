@@ -141,12 +141,8 @@ try {
   out.push("ci-failure.json:", "");
   block("json", ciStart.attachments["ci-failure.json"]!);
 
-  // 4. Fix on main: the maintainer ticks the box of the pre-existing failure.
-  section("Mode fix-ci-main (box ticked in the sticky comment)");
-  const sticky = [...harness.github.comments.values()].find((comment) =>
-    comment.body.includes("<!-- archestra-code-review "),
-  )!;
-  const ticked = sticky.body.replace(/- \[ \] (Open a fix PR against main for `lint`)/, "- [x] $1");
+  // 4. Fix on main: the maintainer asks for a fix PR for the pre-existing failure (row 2 of the triage).
+  section("Mode fix-ci-main (/archestra fix-ci-main 2)");
   const branch = "archestra/fix-ci-lint";
   const mainCommit = "4".repeat(40);
   harness.github.branchCommits.set(branch, [{ sha: mainCommit, authorEmail: "1001+maria@users.noreply.github.com" }]);
@@ -163,13 +159,7 @@ try {
     },
   });
   result = await run(
-    harness.context("issue_comment", {
-      action: "edited",
-      issue: { number: harness.github.pr.number, pull_request: { url: "x" } },
-      comment: { id: sticky.id, body: ticked, user: sticky.user },
-      changes: { body: { from: sticky.body } },
-      sender: { login: "maria", id: 1001, type: "User" },
-    }),
+    harness.context("issue_comment", issueCommentEvent(harness.github, "/archestra fix-ci-main 2", "maria", 9003)),
   );
   out.push(`Result: \`${JSON.stringify({ status: result.status, pushed: result.pushedCommits })}\``, "");
   out.push("Opened pull request:", "");

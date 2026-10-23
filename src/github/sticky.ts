@@ -281,7 +281,7 @@ const StateSchema = z.object({
   triageSha: z.string().nullable(),
   fixPrs: z.array(z.object({ checks: z.array(z.string()), number: z.number(), url: z.string() })),
   notice: z.string().nullable(),
-  /** Failing check runs on the reviewed commit, counted at review time; drives the triage box. */
+  /** Failing check runs on the reviewed commit, counted at review time; drives the triage command. */
   failingChecks: z.number().int().nonnegative().default(0),
   /** The job in progress; null when no job runs. Rendered as the header. */
   progress: ProgressSchema.nullable().default(null),
@@ -364,26 +364,6 @@ export function addJob(state: StickyState, job: JobRecord): void {
 
 function encodeState(state: StickyState): string {
   return `<!-- archestra-state:${Buffer.from(JSON.stringify(state), "utf8").toString("base64url")} -->`;
-}
-
-// ===== Checkboxes =====
-
-export type ActionId = "fix" | "fix-ci" | `fix-ci-main:${number}` | "fix-ci-main:all";
-
-const ACTION_LINE = /^\s*[-*] \[([ xX])\] .*?<!-- archestra-action:([a-z0-9:-]{1,40}) -->\s*$/gm;
-
-export function actionCheckboxes(body: string): Map<string, boolean> {
-  const result = new Map<string, boolean>();
-  for (const match of stripCode(body).matchAll(ACTION_LINE)) {
-    result.set(match[2] as string, (match[1] as string).toLowerCase() === "x");
-  }
-  return result;
-}
-
-/** Action ids that are ticked in `after` and were not ticked in `before`. */
-export function newlyCheckedActions(before: string, after: string): string[] {
-  const previous = actionCheckboxes(before);
-  return [...actionCheckboxes(after)].filter(([id, checked]) => checked && previous.get(id) !== true).map(([id]) => id);
 }
 
 // ===== Rendering =====
@@ -537,24 +517,27 @@ function renderBody(state: StickyState, context: RenderContext): string {
     out.push(
       `#### CI triage (\`${shortSha(state.triageSha)}\`)`,
       "",
-      "| Check | Class | Root cause |",
-      "| --- | --- | --- |",
+      "| # | Check | Class | Root cause |",
+      "| --- | --- | --- | --- |",
     );
-    for (const row of triageRows) {
-      out.push(`| ${cell(row.check, 120)} | ${row.class} | ${cell(row.rootCause, 400)} |`);
+    // The number is the `n` of the fix-ci-main command.
+    for (const [index, row] of triageRows.entries()) {
+      out.push(`| ${index + 1} | ${cell(row.check, 120)} | ${row.class} | ${cell(row.rootCause, 400)} |`);
     }
     out.push("");
   }
 
-  // "Next": one-click follow-ups. The boxes are always rendered unticked.
+  // "Next": the commands a maintainer can write, only the ones that apply now.
   const next: string[] = [];
   if (state.findings.some((finding) => finding.status === "open" || finding.status === "skipped")) {
-    next.push("- [ ] Implement and push recommendations <!-- archestra-action:fix -->");
+    next.push(
+      `- Comment \`${command} fix\` to implement and push every open recommendation, or \`${command} fix 2,5 <note>\` for selected findings. Reply \`${command} fix\` under an inline finding to implement only that one.`,
+    );
   }
-  // Only when the reviewed commit has failing checks; otherwise the box is noise.
+  // Only when the reviewed commit has failing checks; otherwise the line is noise.
   if (state.failingChecks > 0) {
     next.push(
-      `- [ ] Triage and fix ${state.failingChecks} failing check${state.failingChecks === 1 ? "" : "s"} <!-- archestra-action:fix-ci -->`,
+      `- Comment \`${command} fix-ci\` to triage and fix the ${state.failingChecks} failing check${state.failingChecks === 1 ? "" : "s"}.`,
     );
   }
   const openPreExisting = state.triage
@@ -562,28 +545,16 @@ function renderBody(state: StickyState, context: RenderContext): string {
     .filter(({ row }) => row.class === "pre_existing" && !state.fixPrs.some((pr) => pr.checks.includes(row.check)));
   for (const { row, index } of openPreExisting) {
     next.push(
-      `- [ ] Open a fix PR against ${state.baseBranch} for \`${oneLine(row.check, 120).replace(/`/g, "'")}\` <!-- archestra-action:fix-ci-main:${index} -->`,
+      `- Comment \`${command} fix-ci-main ${index + 1}\` to open a fix PR against ${state.baseBranch} for \`${oneLine(row.check, 120).replace(/`/g, "'")}\`.`,
     );
   }
   if (openPreExisting.length > 1) {
     next.push(
-      `- [ ] Open one fix PR against ${state.baseBranch} for all pre-existing failures <!-- archestra-action:fix-ci-main:all -->`,
+      `- Comment \`${command} fix-ci-main\` to open one fix PR against ${state.baseBranch} for all pre-existing failures.`,
     );
   }
   if (next.length > 0) {
-    const commands = [
-      `\`${command} fix\` (all recommendations)`,
-      `\`${command} fix 2,5 <note>\` (selected ones)`,
-      ...(state.failingChecks > 0 ? [`\`${command} fix-ci\` (failing checks)`] : []),
-    ];
-    out.push(
-      "#### Next",
-      "",
-      ...next,
-      "",
-      `Or comment ${commands.join(", ")}. Reply \`${command} fix\` under an inline finding to implement only that one. Only users with write access can start a fix.`,
-      "",
-    );
+    out.push("#### Next", "", ...next, "", "Only users with write access can start a fix.", "");
   }
 
   if (state.fixPrs.length > 0) {

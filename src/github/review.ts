@@ -119,9 +119,7 @@ export function inlineComments(findings: StoredFinding[], index: DiffIndex, comm
 
 /**
  * One inline comment: the finding, why it fails, what to change, and how to
- * have it implemented. GitHub fires no event for a box ticked inside a
- * review comment, so the trigger here is a reply; the one-click box is in
- * the summary comment.
+ * have it implemented (a reply with the fix command).
  */
 export function inlineBody(
   finding: StoredFinding,
@@ -139,7 +137,7 @@ export function inlineBody(
     "",
     escapeHtml(truncate(finding.recommendation, 1500)),
     "",
-    `To implement and push this fix, reply \`${command} fix\` to this comment. For all findings, tick the box in the review summary.`,
+    `To implement and push this fix, reply \`${command} fix\` to this comment. For all findings, comment \`${command} fix\` on the pull request.`,
   ];
   const end = finding.end_line ?? finding.line;
   if (

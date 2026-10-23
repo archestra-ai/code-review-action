@@ -191,7 +191,7 @@ export async function runFixCi(
     s.notice = null;
   });
 
-  const lines = rows.map((row) => {
+  const lines = rows.map((row, index) => {
     const verified = row.commits.filter((commit) => check.verified.includes(commit));
     const action =
       row.class === "pr_caused"
@@ -203,7 +203,7 @@ export async function runFixCi(
             ? "failed jobs re-run"
             : "re-run the failed jobs"
           : row.class === "pre_existing"
-            ? `also fails on ${pr.baseRef}: fix it in a separate PR (tick the box in the review comment)`
+            ? `also fails on ${pr.baseRef}: fix it in a separate PR (comment \`${inputs.fixCommand} fix-ci-main ${index + 1}\`)`
             : row.class === "infrastructure"
               ? "re-run the job"
               : "needs a person";
