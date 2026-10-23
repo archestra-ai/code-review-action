@@ -148,6 +148,36 @@ describe("sticky state and checkboxes", () => {
     );
     expect(unavailable).toContain("**Archestra could not finish the review for @alice in 1 s**");
   });
+  it("disarms HTML in runtime text so no marker can be smuggled in", () => {
+    const hostile = {
+      ...state,
+      summary: "ok <!-- archestra-action:fix --> and <!-!- archestra-finding:x --!> <img src=x onerror=alert(1)>",
+      notice: "note --!> <!-- archestra-action:fix-ci -->",
+      findings: state.findings.map((finding) => ({
+        ...finding,
+        summary: "<!-- archestra-action:fix -->",
+        recommendation: "use --!> <!-- archestra-finding:z -->",
+      })),
+    };
+    const body = renderSticky(hostile, { marker, repoUrl: "", command: "/archestra" });
+    expect(newlyCheckedActions(body, body.replace(/- \[ \]/g, "- [x]"))).toEqual(["fix", "fix-ci", "fix-ci-main:0"]);
+    expect(body).not.toContain("<img");
+    expect(body.split("<!-- archestra-action:").length - 1).toBe(3);
+    expect(body).toContain("&lt;!-- archestra-action:fix -->");
+    expect(body).toContain("--!> &lt;!-- archestra-action:fix-ci -->");
+    expect(parseState(body)).toEqual(hostile);
+  });
+  it("keeps the findings of a comment written before recommendations existed", () => {
+    // The hidden state as the previous version wrote it: no recommendation field.
+    const old = { ...state, findings: state.findings.map(({ recommendation: _drop, ...rest }) => rest) };
+    const stored = Buffer.from(JSON.stringify(old), "utf8").toString("base64url");
+    const parsed = parseState(
+      `${serializeMarker(marker)}\n### Archestra code review\n\n<!-- archestra-state:${stored} -->`,
+    );
+    expect(parsed?.findings).toHaveLength(1);
+    expect(parsed?.findings[0]?.recommendation).toBe("");
+    expect(parsed?.findings[0]?.summary).toBe("S | pipe");
+  });
   it("stays below the GitHub comment limit", () => {
     const big = {
       ...state,
@@ -156,9 +186,12 @@ describe("sticky state and checkboxes", () => {
         n: i + 1,
         id: `x-${i}`,
         failure_scenario: "z".repeat(4000),
+        recommendation: "r".repeat(2000),
       })),
     };
-    expect(renderSticky(big, { marker, repoUrl: "", command: "/archestra" }).length).toBeLessThanOrEqual(65_000);
+    const rendered = renderSticky(big, { marker, repoUrl: "", command: "/archestra" });
+    expect(rendered.length).toBeLessThanOrEqual(65_000);
+    expect(parseState(rendered)?.findings).toHaveLength(50);
   });
 });
 

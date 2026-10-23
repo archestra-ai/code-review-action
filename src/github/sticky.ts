@@ -59,6 +59,16 @@ export function findingMarker(id: string): string {
   return `<!-- archestra-finding:${id} -->`;
 }
 
+/**
+ * Disarms HTML in text the runtime wrote. Every `<` becomes `&lt;`, so no
+ * comment marker, tag or entity the action parses can be smuggled in; the
+ * Markdown around it still renders. Replacing only `<!--` would leave
+ * `<!-!-` and `--!>` forms that browsers accept.
+ */
+export function escapeHtml(text: string): string {
+  return text.replace(/&(?!(?:[a-z]+|#\d+|#x[0-9a-f]+);)/gi, "&amp;").replace(/</g, "&lt;");
+}
+
 export function findingIdFromBody(body: string): string | null {
   return /<!-- archestra-finding:([\w.-]{1,100}) -->/.exec(body)?.[1] ?? null;
 }
@@ -73,6 +83,8 @@ const StoredFindingSchema = ReviewFindingSchema.extend({
   inline: z.boolean(),
   status: FindingStatusSchema,
   failure_scenario: z.string().max(4000),
+  /** Comments written before recommendations existed have none; keep their findings. */
+  recommendation: z.string().max(2000).default(""),
 });
 export type StoredFinding = z.infer<typeof StoredFindingSchema>;
 
@@ -282,7 +294,8 @@ function renderBody(state: StickyState, context: RenderContext): string {
     );
   }
   if (state.notice) out.push(`> ${oneLine(state.notice, 1000)}`, "");
-  if (state.summary) out.push(state.summary.trim(), "");
+  // The summary keeps its Markdown; only HTML is disarmed.
+  if (state.summary) out.push(escapeHtml(state.summary).trim(), "");
 
   if (state.findings.length > 0) {
     out.push(
@@ -435,6 +448,7 @@ function shrink(state: StickyState, level: number): StickyState {
       return {
         ...rest,
         failure_scenario: truncate(finding.failure_scenario, limit),
+        recommendation: truncate(finding.recommendation, Math.max(limit, 120)),
         summary: truncate(finding.summary, Math.max(limit, 120)),
       };
     }),
@@ -453,18 +467,11 @@ function cell(text: string, max: number): string {
 }
 
 function oneLine(text: string, max: number): string {
-  return truncate(
-    text
-      .replace(/\s+/g, " ")
-      .replace(/<!--|-->/g, "")
-      .trim(),
-    max,
-  );
+  return truncate(escapeHtml(text).replace(/\s+/g, " ").trim(), max);
 }
 
 function quote(text: string): string {
-  return truncate(text, 2000)
-    .replace(/<!--|-->/g, "")
+  return escapeHtml(truncate(text, 2000))
     .split("\n")
     .map((line) => `> ${line}`)
     .join("\n");
