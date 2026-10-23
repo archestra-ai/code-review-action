@@ -287,8 +287,11 @@ describe("diff and inline placement", () => {
       { headSha: "c".repeat(40), inline: true },
     );
     expect(placed.map((finding) => finding.inline)).toEqual([true, false, false]);
-    const body = inlineBody(placed[0]!, index);
+    const body = inlineBody(placed[0]!, index, "/archestra");
     expect(body).toContain("```suggestion\nx\n```");
+    expect(body).toContain("**Recommendation:** Fix it.");
+    expect(body).toContain("To implement and push this fix, reply `/archestra fix` to this comment.");
+    expect(body.indexOf("reply `/archestra fix`")).toBeLessThan(body.indexOf("```suggestion"));
     expect(findingIdFromBody(body)).toBe("ccccccc-1");
   });
 });

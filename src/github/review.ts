@@ -35,7 +35,7 @@ export function placeFindings(
   });
 }
 
-export function inlineComments(findings: StoredFinding[], index: DiffIndex): InlineComment[] {
+export function inlineComments(findings: StoredFinding[], index: DiffIndex, command: string): InlineComment[] {
   return findings
     .filter((finding) => finding.inline)
     .map((finding) => {
@@ -46,18 +46,26 @@ export function inlineComments(findings: StoredFinding[], index: DiffIndex): Inl
         line: end,
         side: "RIGHT" as const,
         ...(multiLine ? { start_line: finding.line, start_side: "RIGHT" as const } : {}),
-        body: inlineBody(finding, index),
+        body: inlineBody(finding, index, command),
       };
     });
 }
 
-export function inlineBody(finding: StoredFinding, index: DiffIndex): string {
+/**
+ * One inline comment: the finding, why it fails, what to change, and how to
+ * have it implemented. GitHub fires no event for a box ticked inside a
+ * review comment, so the trigger here is a reply; the one-click box is in
+ * the summary comment.
+ */
+export function inlineBody(finding: StoredFinding, index: DiffIndex, command: string): string {
   const parts = [
     `**${finding.n}. [${finding.severity}] ${truncate(finding.summary.replace(/\s+/g, " "), 300)}**`,
     "",
     truncate(finding.failure_scenario, 3000).replace(/<!--|-->/g, ""),
     "",
     `**Recommendation:** ${truncate(finding.recommendation, 1500).replace(/<!--|-->/g, "")}`,
+    "",
+    `To implement and push this fix, reply \`${command} fix\` to this comment. For all findings, tick the box in the review summary.`,
   ];
   const end = finding.end_line ?? finding.line;
   if (finding.suggestion !== undefined && isRangeInDiff(index, finding.file, finding.line, end)) {
