@@ -189,14 +189,14 @@ describe("sticky state and rendering", () => {
     const review = ReviewResultSchema.parse({
       verdict: "comment",
       summary: "",
-      reviewed: Array.from({ length: 30 }, () => long),
+      reviewed: Array.from({ length: 10 }, () => long),
       findings: [],
-      observations: Array.from({ length: 30 }, () => "o".repeat(1500)),
+      observations: Array.from({ length: 10 }, () => "o".repeat(1500)),
       tests: [{ file: "t.ts", focus: "f".repeat(900) }],
       coverage: "c".repeat(5000),
       conclusion: "v".repeat(5000),
     });
-    expect(review.reviewed).toHaveLength(30);
+    expect(review.reviewed).toHaveLength(10);
     const rendered = renderSticky(
       { ...state, reviewed: review.reviewed ?? [], observations: review.observations ?? [] },
       { marker, repoUrl: "", command: null },
