@@ -96,7 +96,7 @@ jobs:
           permission-pull-requests: write
           permission-actions: read
       - if: steps.token.outputs.available == 'true'
-        uses: archestra-ai/code-review-action@v1 # Pin to the commit of a release tag, for example @<sha> # v0.2.2.
+        uses: archestra-ai/code-review-action@v1 # Pin to the commit of a release tag, for example @<sha> # v0.3.0.
         with:
           archestra-gateway-url: ${{ inputs.gateway-url }}
           archestra-token: ${{ secrets.ARCHESTRA_TOKEN }}

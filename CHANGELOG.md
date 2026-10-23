@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.3.0 (2026-10-24)
+
+- Change map: `review.json` can list the places a rule of the change reached (`changes`: file, line, what changed), and the comment shows them as a table after the summary, so a reader sees at once that a rule applied in several places reached all of them.
+- The in-progress header shows the Archestra logo instead of the Claude spinner that claude-code-action uses: the action does not know which model an agent runs, so it shows no provider's logo.
+- The brief asks for a shorter review: checks within about five minutes (the dependency installation starts in the background before the reading; then the type check of the changed packages, the linter on the changed files, and the test files of the diff, no longer the test suites of whole packages), `reviewed` entries of one line with at most three files, up to eight one-sentence observations, test focus of at most 80 characters with the concrete values the test pins, limitations as a list with commands by their essentials, and small inconsistencies (order, names, dates, copy) as `nit` findings. The comment caps the lines of those lists.
+
 ## 0.2.2 (2026-10-24)
 
 - When the token may not resolve a review thread (GitHub does not let a workflow's installation token do it), the action replies under the thread instead: "Fixed in `<sha>`" after a re-review, "Applied in `<sha>`" after a fix. Before, the first failure stopped every thread update with one warning. Seen on the first review of archestra-ai/archestra#9568.

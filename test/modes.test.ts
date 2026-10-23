@@ -153,6 +153,11 @@ describe("review mode", () => {
       files: {
         "review.json": reviewJson([{ ...FINDING_IN_DIFF, title: "Retries without a pause" }], {
           reviewed: ["The uploader (`src/upload.ts`)"],
+          changes: [
+            { file: "./src/upload.ts", line: 11, what: "wraps send in a loop" },
+            { file: "src/upload.ts", line: 2, what: "a line outside the hunks" },
+            { file: "src/other.ts", what: "not in the diff" },
+          ],
           observations: ["**Loop bound** (`src/upload.ts`): three attempts is a sane default."],
           tests: [
             { file: "src/upload.ts", focus: "the retry loop" },
@@ -168,6 +173,14 @@ describe("review mode", () => {
     const sticky = harness.github.stickyBody()!;
     expect(sticky).toContain("### Archestra code review: #7 — Add retry to the uploader");
     expect(sticky).toContain("**Reviewed**\n\n- The uploader (`src/upload.ts`)");
+    // A "./" prefix still finds the file; a line in the hunks links to the line, a line outside to the file.
+    expect(sticky).toMatch(
+      /\| \[`src\/upload\.ts:11`\]\(https:\/\/github\.com\/acme\/widgets\/pull\/7\/files#diff-[0-9a-f]{64}R11\) \| wraps send in a loop \|/,
+    );
+    expect(sticky).toMatch(
+      /\| \[`src\/upload\.ts:2`\]\(https:\/\/github\.com\/acme\/widgets\/pull\/7\/files#diff-[0-9a-f]{64}\) \| a line outside the hunks \|/,
+    );
+    expect(sticky).toContain("| `src/other.ts` | not in the diff |");
     expect(sticky).toContain("| Retries without a pause | open |");
     expect(sticky).toContain("#### 1. Retries without a pause\n\n**File:** [`src/upload.ts:12-14`]");
     // The code at the lines of the finding, from the patch of the fake pull request.
@@ -423,13 +436,13 @@ describe("triage command", () => {
 });
 
 describe("progress comment", () => {
-  it("posts the sticky comment at start with a spinner, updates the step, and ends with the duration", async () => {
+  it("posts the sticky comment at start with the Archestra logo, updates the step, and ends with the duration", async () => {
     const { harness, result } = await reviewed();
     const history = harness.github.stickyHistory;
     expect(history.length).toBeGreaterThanOrEqual(3);
     expect(history[0]).toContain("**Archestra is reviewing `");
     expect(history[0]).toContain("for @alice…**");
-    expect(history[0]).toContain('<img src="https://github.com/user-attachments/assets/');
+    expect(history[0]).toContain('<img src="https://avatars.githubusercontent.com/u/');
     expect(history[0]).toContain("- preparing the inputs");
     expect(history.some((body) => body.includes("- starting a run on agent 1 of 3"))).toBe(true);
     expect(

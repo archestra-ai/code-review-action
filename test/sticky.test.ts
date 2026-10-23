@@ -161,6 +161,29 @@ describe("sticky state and rendering", () => {
     expect(positions).toEqual([...positions].sort((a, b) => a - b));
   });
 
+  it("renders the change map with links to the files in the diff", () => {
+    const mapped = {
+      ...state,
+      changes: [
+        { file: "src/a.ts", line: 12, what: "removed cache reads from the sum <b>", link: "line" as const },
+        { file: "src/b.ts", line: 3, what: "line outside the hunks", link: "file" as const },
+        { file: "docs/x.md", line: null, what: "explains the rule", link: "none" as const },
+      ],
+    };
+    const rendered = renderSticky(mapped, { marker, repoUrl: "https://github.com/acme/widgets", command: null });
+    const anchor = createHash("sha256").update("src/a.ts").digest("hex");
+    const anchorB = createHash("sha256").update("src/b.ts").digest("hex");
+    expect(rendered).toContain(
+      `### Change map\n\n| File | What changed |\n| --- | --- |\n| [\`src/a.ts:12\`](https://github.com/acme/widgets/pull/7/files#diff-${anchor}R12) | removed cache reads from the sum &lt;b> |\n| [\`src/b.ts:3\`](https://github.com/acme/widgets/pull/7/files#diff-${anchorB}) | line outside the hunks |\n| \`docs/x.md\` | explains the rule |\n`,
+    );
+    expect(rendered.indexOf("### Change map")).toBeLessThan(rendered.indexOf("### Findings"));
+    expect(parseState(rendered)).toEqual(mapped);
+    expect(
+      ReviewResultSchema.parse({ verdict: "approve", summary: "", findings: [], changes: [{ file: "a", what: "b" }] })
+        .changes,
+    ).toEqual([{ file: "a", what: "b" }]);
+  });
+
   it("quotes the code of a finding in a fence that the reader strips, and names its language", () => {
     const code = "```\n<!-- archestra-state:e30 -->\nconst a = `x`;";
     const withCode = {
@@ -201,8 +224,8 @@ describe("sticky state and rendering", () => {
       { ...state, reviewed: review.reviewed ?? [], observations: review.observations ?? [] },
       { marker, repoUrl: "", command: null },
     );
-    expect(rendered).toContain(`- ${"r".repeat(399)}…\n`);
-    expect(rendered).toContain(`- ${"o".repeat(999)}…\n`);
+    expect(rendered).toContain(`- ${"r".repeat(199)}…\n`);
+    expect(rendered).toContain(`- ${"o".repeat(599)}…\n`);
   });
 
   it("shows no commands when no workflow listens to them", () => {
@@ -349,7 +372,7 @@ describe("sticky state and rendering", () => {
     const three = renderSticky({ ...state, failingChecks: 3 }, { marker, repoUrl: "", command: "/archestra" });
     expect(three).toContain("- Comment `/archestra fix-ci` to triage and fix the 3 failing checks.");
   });
-  it("renders a progress header with the spinner, the step and the run link", () => {
+  it("renders a progress header with the logo, the step and the run link", () => {
     const inProgress = renderSticky(
       {
         ...state,
@@ -366,13 +389,14 @@ describe("sticky state and rendering", () => {
     );
     const header = inProgress.split("\n").slice(1, 4).join("\n");
     expect(header).toContain("**Archestra is reviewing `aaaaaaa` for @alice…**");
-    expect(header).toContain('<img src="https://github.com/user-attachments/assets/');
+    expect(header).toContain('<img src="https://avatars.githubusercontent.com/u/');
+    expect(header).toContain('alt="Archestra"');
     expect(header).toContain("[View job](https://github.com/acme/widgets/actions/runs/1)");
     expect(header).toContain("- waiting for the runtime to finish ([run](https://archestra.test/chat/runs/r1))");
     expect(inProgress.indexOf("Archestra is reviewing")).toBeLessThan(inProgress.indexOf("### Archestra code review"));
     expect(parseState(inProgress)?.progress?.step).toBe("waiting for the runtime to finish");
   });
-  it("renders a finished header with the duration, and no spinner", () => {
+  it("renders a finished header with the duration, and no logo", () => {
     const done = renderSticky(
       {
         ...state,

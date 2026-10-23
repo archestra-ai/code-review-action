@@ -13,7 +13,7 @@ export const BRIEFS = {
 export type BriefName = keyof typeof BRIEFS;
 
 /** The platform rejects a message of about 16 KB or more; keep well below that. */
-export const MAX_MESSAGE_BYTES = 12 * 1024;
+export const MAX_MESSAGE_BYTES = 14 * 1024;
 
 /**
  * Replaces each {{name}} placeholder. A placeholder without a value is an

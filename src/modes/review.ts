@@ -11,9 +11,16 @@ import {
 } from "../context";
 import { CONTRACTS } from "../contracts";
 import { countFailingChecks } from "../github/ci";
-import { buildDiffIndex, excerptFor } from "../github/diff";
+import { buildDiffIndex, excerptFor, isRangeInDiff } from "../github/diff";
 import { httpStatus } from "../github/octokit";
-import { loadChangedFiles, loadDiff, loadPullRequest, prAttachmentData, skipReason } from "../github/pr";
+import {
+  type ChangedFile,
+  loadChangedFiles,
+  loadDiff,
+  loadPullRequest,
+  prAttachmentData,
+  skipReason,
+} from "../github/pr";
 import {
   coversFinding,
   inlineBody,
@@ -251,12 +258,22 @@ export async function runReview(ctx: ActionContext, prNumber: number): Promise<A
     state.title = pr.title;
     state.summary = review.summary;
     state.reviewed = review.reviewed ?? [];
+    state.changes = (review.changes ?? []).map((change) => {
+      const file = changedFile(files, change.file);
+      const line = change.line ?? null;
+      return {
+        file: file?.filename ?? change.file,
+        line,
+        what: change.what,
+        link: !file ? "none" : line !== null && isRangeInDiff(index, file.filename, line, line) ? "line" : "file",
+      } as const;
+    });
     state.observations = review.observations ?? [];
     // The line counts of a test file come from the pull request; a file outside the diff has none.
     state.tests = (review.tests ?? []).map((test) => {
-      const file = files.find((candidate) => candidate.filename === test.file);
+      const file = changedFile(files, test.file);
       return {
-        file: test.file,
+        file: file?.filename ?? test.file,
         additions: file?.additions ?? null,
         deletions: file?.deletions ?? null,
         focus: test.focus,
@@ -300,6 +317,15 @@ export async function runReview(ctx: ActionContext, prNumber: number): Promise<A
       outcome.attempts,
     ),
   });
+}
+
+/**
+ * The changed file a runtime path names: the path as the pull request lists it, with a leading
+ * "./" or "/" stripped, or the old name of a renamed file.
+ */
+function changedFile(files: ChangedFile[], path: string): ChangedFile | undefined {
+  const normalized = path.replace(/^(?:\.\/|\/)+/, "");
+  return files.find((file) => file.filename === normalized || file.previousFilename === normalized);
 }
 
 /**
