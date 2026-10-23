@@ -45633,6 +45633,36 @@ function findingMarker(id) {
   return `<!-- archestra-finding:${id} -->`;
 }
 function escapeHtml(text) {
+  let out = "";
+  let position = 0;
+  for (const block of text.matchAll(FENCED_BLOCK)) {
+    const fence = block[1] ?? block[2] ?? "";
+    const closed = new RegExp(`\\n {0,3}${fence}${fence[0]}*[ \\t]*$`).test(block[0]);
+    out += escapeProse(text.slice(position, block.index)) + block[0] + (closed ? "" : `
+${fence}`);
+    position = block.index + block[0].length;
+  }
+  return out + escapeProse(text.slice(position));
+}
+var FENCED_BLOCK = /^(?:(`{3,})[^`\n]*\n[\s\S]*?(?:^ {0,3}\1`*[ \t]*$|$(?![\s\S]))|(~{3,})[^\n]*\n[\s\S]*?(?:^ {0,3}\2~*[ \t]*$|$(?![\s\S])))/gm;
+function escapeProse(text) {
+  return text.split("\n").map(escapeLine).join("\n");
+}
+function escapeLine(line) {
+  const runs = [...line.matchAll(/`+/g)].map((run2) => ({ start: run2.index, end: run2.index + run2[0].length }));
+  let out = "";
+  let position = 0;
+  for (const open3 of runs) {
+    if (open3.start < position) continue;
+    const length = open3.end - open3.start;
+    const close = runs.find((run2) => run2.start >= open3.end && run2.end - run2.start === length);
+    if (close === void 0) continue;
+    out += escapeText(line.slice(position, open3.start)) + line.slice(open3.start, close.end);
+    position = close.end;
+  }
+  return out + escapeText(line.slice(position));
+}
+function escapeText(text) {
   return text.replace(/&(?!(?:[a-z]+|#\d+|#x[0-9a-f]+);)/gi, "&amp;").replace(/</g, "&lt;");
 }
 function findingIdFromBody(body) {
@@ -45961,7 +45991,7 @@ function cell(text, max) {
   return oneLine(text, max).replace(/\|/g, "\\|");
 }
 function oneLine(text, max) {
-  return truncate(escapeHtml(text).replace(/\s+/g, " ").trim(), max);
+  return escapeHtml(truncate(text.replace(/\s+/g, " ").trim(), max));
 }
 function quote(text) {
   return escapeHtml(truncate(text, 2e3)).split("\n").map((line) => `> ${line}`).join("\n");
@@ -47271,7 +47301,7 @@ function inlineComments(findings, index, command) {
 }
 function inlineBody(finding, index, command) {
   const parts = [
-    `**${finding.n}. [${finding.severity}] ${truncate(escapeHtml(finding.summary).replace(/\s+/g, " "), 300)}**`,
+    `**${finding.n}. [${finding.severity}] ${escapeHtml(truncate(finding.summary.replace(/\s+/g, " "), 300))}**`,
     "",
     escapeHtml(truncate(finding.failure_scenario, 3e3)),
     "",
