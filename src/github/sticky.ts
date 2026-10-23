@@ -60,12 +60,51 @@ export function findingMarker(id: string): string {
 }
 
 /**
- * Disarms HTML in text the runtime wrote. Every `<` becomes `&lt;`, so no
- * comment marker, tag or entity the action parses can be smuggled in; the
- * Markdown around it still renders. Replacing only `<!--` would leave
- * `<!-!-` and `--!>` forms that browsers accept.
+ * Escapes `<` and a bare `&` in text the runtime wrote, so that no HTML and no hidden comment marker
+ * reaches GitHub. Markdown code spans and fenced code blocks stay as written: GitHub shows their text
+ * literally, entities included.
  */
 export function escapeHtml(text: string): string {
+  let out = "";
+  let position = 0;
+  for (const block of text.matchAll(FENCED_BLOCK)) {
+    const fence = block[1] ?? block[2] ?? "";
+    // GitHub shows an unclosed fence to the end of the text; close it so the rest of the comment still renders.
+    const closed = new RegExp(`\\n {0,3}${fence}${fence[0]}*[ \\t]*$`).test(block[0]);
+    out += escapeProse(text.slice(position, block.index)) + block[0] + (closed ? "" : `\n${fence}`);
+    position = block.index + block[0].length;
+  }
+  return out + escapeProse(text.slice(position));
+}
+
+/**
+ * A fenced code block at the left margin: the opening fence line, the content, and the closing fence
+ * (at least as long, same character) or the end of the text. A backtick fence's info string has no backtick.
+ */
+const FENCED_BLOCK =
+  /^(?:(`{3,})[^`\n]*\n[\s\S]*?(?:^ {0,3}\1`*[ \t]*$|$(?![\s\S]))|(~{3,})[^\n]*\n[\s\S]*?(?:^ {0,3}\2~*[ \t]*$|$(?![\s\S])))/gm;
+
+function escapeProse(text: string): string {
+  return text.split("\n").map(escapeLine).join("\n");
+}
+
+/** Escapes one line of prose. A code span, a backtick run closed by a run of the same length, stays as written. */
+function escapeLine(line: string): string {
+  const runs = [...line.matchAll(/`+/g)].map((run) => ({ start: run.index, end: run.index + run[0].length }));
+  let out = "";
+  let position = 0;
+  for (const open of runs) {
+    if (open.start < position) continue;
+    const length = open.end - open.start;
+    const close = runs.find((run) => run.start >= open.end && run.end - run.start === length);
+    if (close === undefined) continue;
+    out += escapeText(line.slice(position, open.start)) + line.slice(open.start, close.end);
+    position = close.end;
+  }
+  return out + escapeText(line.slice(position));
+}
+
+function escapeText(text: string): string {
   return text.replace(/&(?!(?:[a-z]+|#\d+|#x[0-9a-f]+);)/gi, "&amp;").replace(/</g, "&lt;");
 }
 
@@ -467,7 +506,7 @@ function cell(text: string, max: number): string {
 }
 
 function oneLine(text: string, max: number): string {
-  return truncate(escapeHtml(text).replace(/\s+/g, " ").trim(), max);
+  return escapeHtml(truncate(text.replace(/\s+/g, " ").trim(), max));
 }
 
 function quote(text: string): string {

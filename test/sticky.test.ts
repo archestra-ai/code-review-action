@@ -5,6 +5,7 @@ import { detectTrigger } from "../src/github/event";
 import { inlineBody, placeFindings } from "../src/github/review";
 import {
   emptyState,
+  escapeHtml,
   findingIdFromBody,
   newlyCheckedActions,
   parseMarker,
@@ -166,6 +167,48 @@ describe("sticky state and checkboxes", () => {
     expect(body).toContain("&lt;!-- archestra-action:fix -->");
     expect(body).toContain("--!> &lt;!-- archestra-action:fix-ci -->");
     expect(parseState(body)).toEqual(hostile);
+  });
+  it("leaves code spans and fenced blocks as the runtime wrote them", () => {
+    expect(escapeHtml("use `Vec<u8>`, not <b>bold</b>")).toBe("use `Vec<u8>`, not &lt;b>bold&lt;/b>");
+    expect(escapeHtml("``a ` <x>`` then <y>")).toBe("``a ` <x>`` then &lt;y>");
+    expect(escapeHtml("```ts\nconst f = <T,>() => 1;\n```\n<p>")).toBe("```ts\nconst f = <T,>() => 1;\n```\n&lt;p>");
+    expect(escapeHtml("~~~\n<!-- shown -->\n~~~\n<!-- hidden -->")).toBe(
+      "~~~\n<!-- shown -->\n~~~\n&lt;!-- hidden -->",
+    );
+    expect(escapeHtml("````\n```\n<a>\n````")).toBe("````\n```\n<a>\n````");
+  });
+  it("escapes what GitHub would not show as code", () => {
+    // A backtick run without a closer, a span across lines, and an indented fence are plain text.
+    expect(escapeHtml("stray ` <!-- archestra-action:fix -->")).toBe("stray ` &lt;!-- archestra-action:fix -->");
+    expect(escapeHtml("`a\n<b>`")).toBe("`a\n&lt;b>`");
+    expect(escapeHtml("```a``` <!-- x -->\n<!-- y -->")).toBe("```a``` &lt;!-- x -->\n&lt;!-- y -->");
+    expect(escapeHtml("   ```\n<!-- z -->")).toBe("   ```\n&lt;!-- z -->");
+    // An unclosed fence gets its closing line, so the rest of the comment renders.
+    expect(escapeHtml("```\n<!-- in code -->")).toBe("```\n<!-- in code -->\n```");
+    expect(escapeHtml("~~~~\n~~~\n<a>")).toBe("~~~~\n~~~\n<a>\n~~~~");
+  });
+  it("truncates before it escapes, so no entity is cut in half", () => {
+    const patch = "@@ -1,2 +1,3 @@\n a\n+b\n c";
+    const index = buildDiffIndex([{ filename: "src/a.ts", status: "modified", additions: 1, deletions: 0, patch }]);
+    const [finding] = placeFindings(
+      [
+        {
+          file: "src/a.ts",
+          line: 2,
+          severity: "low",
+          summary: `${"x".repeat(299)}<img src=x>`,
+          recommendation: "r",
+          failure_scenario: "f",
+        },
+      ],
+      index,
+      { headSha: "b".repeat(40), inline: true },
+    );
+    const body = inlineBody(finding!, index, "/archestra");
+    expect(body).toContain(`${"x".repeat(299)}…**`);
+    expect(body).not.toMatch(/&[a-z]*…/);
+    const sticky = renderSticky({ ...state, findings: [finding!] }, { marker, repoUrl: "", command: "/archestra" });
+    expect(sticky).not.toMatch(/&[a-z]*…/);
   });
   it("keeps the findings of a comment written before recommendations existed", () => {
     // The hidden state as the previous version wrote it: no recommendation field.

@@ -59,7 +59,7 @@ export function inlineComments(findings: StoredFinding[], index: DiffIndex, comm
  */
 export function inlineBody(finding: StoredFinding, index: DiffIndex, command: string): string {
   const parts = [
-    `**${finding.n}. [${finding.severity}] ${truncate(escapeHtml(finding.summary).replace(/\s+/g, " "), 300)}**`,
+    `**${finding.n}. [${finding.severity}] ${escapeHtml(truncate(finding.summary.replace(/\s+/g, " "), 300))}**`,
     "",
     escapeHtml(truncate(finding.failure_scenario, 3000)),
     "",
