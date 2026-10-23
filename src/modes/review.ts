@@ -16,7 +16,15 @@ import { inlineComments, placeFindings, postReview } from "../github/review";
 import { findSticky } from "../github/sticky";
 import { applyThreadUpdate, listFindingThreads, planThreadUpdates, replyToThread } from "../github/threads";
 import { errorMessage, fullName, jsonAttachment, shortSha, textAttachment } from "../util";
-import { failureForError, fatalReason, summarize, updateSticky } from "./common";
+import {
+  failureForError,
+  fatalReason,
+  finishProgress,
+  progressReporter,
+  startProgress,
+  summarize,
+  updateSticky,
+} from "./common";
 
 export async function runReview(ctx: ActionContext, prNumber: number): Promise<ActionResult> {
   const { gh, repo, inputs, log } = ctx;
@@ -75,6 +83,7 @@ export async function runReview(ctx: ActionContext, prNumber: number): Promise<A
       ),
     );
   }
+  await startProgress(ctx, pr, { doing: `reviewing \`${shortSha(pr.headSha)}\``, login: pr.authorLogin });
   const message = renderBrief("review", {
     repo: fullName(repo),
     number: pr.number,
@@ -94,6 +103,7 @@ export async function runReview(ctx: ActionContext, prNumber: number): Promise<A
     // A fix leaves a short-lived App token in the actor's GITHUB_TOKEN; a
     // private repository needs a fresh read-only token for the review.
     credentialToken: inputs.cloneToken || null,
+    progress: progressReporter(ctx, pr, agents.length),
   });
 
   if (!outcome.ok || !outcome.value) {
@@ -102,14 +112,18 @@ export async function runReview(ctx: ActionContext, prNumber: number): Promise<A
       : outcome.deadlineReached
         ? "The overall time limit was reached."
         : "All attempts failed.";
-    if (inputs.post !== "none") {
-      await updateSticky(ctx, pr, (state) => {
-        state.status = "unavailable";
-        state.attempts = outcome.attempts;
-        state.operation = `review of ${shortSha(pr.headSha)}`;
-        state.notice = `Review unavailable for \`${shortSha(pr.headSha)}\`: ${reason}`;
+    await updateSticky(ctx, pr, (state) => {
+      finishProgress(ctx, state, {
+        did: `the review of \`${shortSha(pr.headSha)}\``,
+        login: pr.authorLogin,
+        outcome: "unavailable",
       });
-    }
+      if (inputs.post === "none") return;
+      state.status = "unavailable";
+      state.attempts = outcome.attempts;
+      state.operation = `review of ${shortSha(pr.headSha)}`;
+      state.notice = `Review unavailable for \`${shortSha(pr.headSha)}\`: ${reason}`;
+    });
     const failure = failureForError(ctx, `The review is unavailable: ${reason}`);
     return makeResult("review", {
       status: outcome.fatal ? "aborted" : "unavailable",
@@ -140,33 +154,33 @@ export async function runReview(ctx: ActionContext, prNumber: number): Promise<A
   const fixedIds = statuses.filter((s) => s.status === "fixed" && known.has(s.id)).map((s) => s.id);
   const regressedIds = statuses.filter((s) => s.status === "regressed" && known.has(s.id)).map((s) => s.id);
 
-  if (inputs.post !== "none") {
-    await updateSticky(ctx, pr, (state, stickyMarker) => {
-      // The run id is also the workspace id: a later fix continues it.
-      Object.assign(stickyMarker, {
-        run: runId,
-        agent: agentId,
-        session: runId,
-        sha: pr.headSha,
-      });
-      state.status = "reviewed";
-      state.verdict = review.verdict;
-      state.summary = review.summary;
-      state.reviewedSha = pr.headSha;
-      state.baseBranch = pr.baseRef;
-      state.findings = findings;
-      state.attempts = outcome.attempts;
-      state.operation = `review of ${shortSha(pr.headSha)}`;
-      state.skipped = [];
-      state.notice = null;
-      if (state.triageSha !== pr.headSha) {
-        state.triage = [];
-        state.triageSha = null;
-      }
-      state.applied = state.applied.slice(-50);
+  await updateSticky(ctx, pr, (state, stickyMarker) => {
+    finishProgress(ctx, state, { did: `reviewed \`${shortSha(pr.headSha)}\``, login: pr.authorLogin, outcome: "ok" });
+    if (inputs.post === "none") return;
+    // The run id is also the workspace id: a later fix continues it.
+    Object.assign(stickyMarker, {
+      run: runId,
+      agent: agentId,
+      session: runId,
+      sha: pr.headSha,
     });
-    await updatePreviousThreads(ctx, pr.number, fixedIds, regressedIds, pr.headSha);
-  }
+    state.status = "reviewed";
+    state.verdict = review.verdict;
+    state.summary = review.summary;
+    state.reviewedSha = pr.headSha;
+    state.baseBranch = pr.baseRef;
+    state.findings = findings;
+    state.attempts = outcome.attempts;
+    state.operation = `review of ${shortSha(pr.headSha)}`;
+    state.skipped = [];
+    state.notice = null;
+    if (state.triageSha !== pr.headSha) {
+      state.triage = [];
+      state.triageSha = null;
+    }
+    state.applied = state.applied.slice(-50);
+  });
+  if (inputs.post !== "none") await updatePreviousThreads(ctx, pr.number, fixedIds, regressedIds, pr.headSha);
 
   const count = findings.length;
   const failure =

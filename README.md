@@ -22,6 +22,8 @@ or a ticked box     │          ──► steer_agent_run (same run, next turn)
                     └──► verify commits (compare API) ──► resolve threads, update the review comment
 ```
 
+The review comment appears as soon as the job starts, with a progress header: who the job acts for, the current step and a link to the run. The same comment is rewritten with the result at the end, with the time the job took. Every later job on the pull request updates that one comment.
+
 The review comment keeps the state between workflow runs. A hidden marker line holds the run (its ID is also the workspace ID), the agent and the reviewed commit:
 
 ```text

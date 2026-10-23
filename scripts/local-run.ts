@@ -45,6 +45,13 @@ try {
   block("markdown", harness.archestra.starts[0]!.message);
   out.push("Posted review:", "");
   block("json", JSON.stringify(harness.github.reviews[0], null, 2));
+  out.push("Progress headers (first write, then the last):", "");
+  block(
+    "markdown",
+    [harness.github.stickyHistory[0], harness.github.stickyHistory.at(-1)]
+      .map((body) => body?.split("\n").slice(1, 4).join("\n") ?? "")
+      .join("\n…\n"),
+  );
   out.push("Sticky comment:", "");
   block(
     "markdown",

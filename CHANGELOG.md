@@ -3,6 +3,7 @@
 ## 0.1.0 (not released)
 
 - Review mode: start a one-shot review run on one of several Archestra agents with dedicated runtimes. Rotate, ordered or random selection. Retry temporary failures on the same runtime; go to the next runtime after a permanent failure; a finite number of attempts.
+- Progress in the review comment: the comment is posted when the job starts, with a header that names the person the job acts for, the current step (preparing inputs, starting a run on agent n of m, waiting for the runtime, retrying, moving to the next agent) with a link to the run, and a spinner. The final write turns it into a finished header with the duration. The same comment is used by every later job.
 - Post the review: a sticky review comment with the verdict, the findings, the attempts and "Next" boxes, and inline comments with `suggestion` blocks for findings inside the diff.
 - Fix mode: `/archestra fix`, `/archestra fix 2,5 <note>`, a reply under an inline finding, or the "Apply the findings" box. The runtime continues the review workspace and pushes commits authored by the person who asked. The action verifies the commits and resolves the threads of applied findings.
 - CI triage mode: `/archestra fix-ci` or the "Triage and fix failing checks" box. The action collects the failing jobs, log tails and annotations; the runtime classifies each failure and fixes the ones that the pull request causes.

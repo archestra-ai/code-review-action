@@ -14,7 +14,18 @@ import { collectCiEvidence } from "../github/ci";
 import { verifyCommits } from "../github/commits";
 import type { Sender, TriggerSource } from "../github/event";
 import { type Attachment, errorMessage, fullName, jsonAttachment, shortSha, textAttachment } from "../util";
-import { failureForError, fatalReason, isResult, prepareFix, reply, summarize, updateSticky } from "./common";
+import {
+  failureForError,
+  fatalReason,
+  finishProgress,
+  isResult,
+  prepareFix,
+  progressReporter,
+  reply,
+  startProgress,
+  summarize,
+  updateSticky,
+} from "./common";
 
 export async function runFixCiMain(
   ctx: ActionContext,
@@ -85,23 +96,25 @@ export async function runFixCiMain(
   const continueFrom =
     marker?.run && marker.agent && order.includes(marker.agent) ? { agentId: marker.agent, runId: marker.run } : null;
 
-  await updateSticky(ctx, pr, (s) => {
-    s.notice = `Preparing a fix PR against ${baseBranch} for ${checks.map((check) => `\`${check.replace(/`/g, "'")}\``).join(", ")} for @${identity.login}. [Workflow run](${ctx.workflowRunUrl})`;
-  });
+  const doing = `preparing a fix PR against ${baseBranch} for ${checks.map((check) => `\`${check.replace(/`/g, "'")}\``).join(", ")}`;
+  await startProgress(ctx, pr, { doing, login: identity.login });
+  const agents = preferAgent(order, continueFrom?.agentId ?? null);
 
   const outcome = await launch(ctx, {
-    agents: preferAgent(order, continueFrom?.agentId ?? null),
+    agents,
     continueFrom,
     message,
     attachments,
     contract: CONTRACTS["fix-ci-main"],
     timeoutMs: inputs.fixTimeoutMs,
     credentialToken: inputs.fixToken,
+    progress: progressReporter(ctx, pr, agents.length),
   });
 
   if (!outcome.ok || !outcome.value) {
     const reason = outcome.fatal ? fatalReason(outcome.attempts) : "No runtime completed the fix.";
     await updateSticky(ctx, pr, (s) => {
+      finishProgress(ctx, s, { did: doing, login: identity.login, outcome: "unavailable" });
       s.attempts = outcome.attempts;
       s.operation = `fix PR against ${baseBranch}`;
       s.notice = `The fix PR requested by @${identity.login} was not prepared: ${reason}`;
@@ -127,6 +140,7 @@ export async function runFixCiMain(
     const problem =
       check.rejected.map((entry) => `${shortSha(entry.commit)}: ${entry.reason}`).join("; ") || "no commits";
     await updateSticky(ctx, pr, (s) => {
+      finishProgress(ctx, s, { did: doing, login: identity.login, outcome: "error" });
       s.attempts = outcome.attempts;
       s.notice = `The fix branch \`${result.branch}\` did not pass the commit check (${problem}). No PR was opened.`;
     });
@@ -173,6 +187,7 @@ export async function runFixCiMain(
   }
 
   await updateSticky(ctx, pr, (s) => {
+    finishProgress(ctx, s, { did: `opened fix PR #${fixPr.number}`, login: identity.login, outcome: "ok" });
     s.fixPrs = [...s.fixPrs, { checks, number: fixPr.number, url: fixPr.html_url }];
     s.attempts = outcome.attempts;
     s.operation = `fix PR against ${baseBranch}`;

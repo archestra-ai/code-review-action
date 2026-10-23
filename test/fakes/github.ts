@@ -103,6 +103,9 @@ export class FakeGitHub {
     return comment;
   }
 
+  /** Every body written to the sticky comment, in order (create and each update). */
+  readonly stickyHistory: string[] = [];
+
   stickyBody(): string | null {
     for (const comment of this.comments.values()) {
       if (comment.body.includes("<!-- archestra-code-review ")) return comment.body;
@@ -127,12 +130,14 @@ export class FakeGitHub {
       http.post(`${base}/issues/${this.pr.number}/comments`, async ({ request }) => {
         const { body } = (await request.json()) as { body: string };
         const comment = this.addComment(body);
+        if (body.includes("<!-- archestra-code-review ")) this.stickyHistory.push(body);
         return HttpResponse.json(this.commentJson(comment), { status: 201 });
       }),
       http.patch(`${base}/issues/comments/:id`, async ({ request, params }) => {
         const comment = this.comments.get(Number(params.id));
         if (!comment) return notFound();
         comment.body = ((await request.json()) as { body: string }).body;
+        if (comment.body.includes("<!-- archestra-code-review ")) this.stickyHistory.push(comment.body);
         return HttpResponse.json(this.commentJson(comment));
       }),
       http.post(`${base}/issues/comments/:id/reactions`, async ({ request, params }) => {

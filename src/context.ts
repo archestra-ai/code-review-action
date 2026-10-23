@@ -1,6 +1,6 @@
 import type { z } from "zod";
 import type { ArchestraClient } from "./archestra/client";
-import { type AttemptRecord, type FallbackResult, runWithFallback } from "./attempts";
+import { type AttemptRecord, type FallbackResult, type ProgressReporter, runWithFallback } from "./attempts";
 import type { Octokit } from "./github/octokit";
 import type { Inputs } from "./inputs";
 import { type AttemptValue, type Clock, continueRun, executeAttempt, readContract } from "./run-attempt";
@@ -108,6 +108,8 @@ export async function launch<T>(
     contract: { file: string; schema: z.ZodType<T> };
     timeoutMs: number;
     credentialToken: string | null;
+    /** Updates the progress comment at each step; optional. */
+    progress?: ProgressReporter;
   },
 ): Promise<FallbackResult<AttemptValue<T>>> {
   const deadline = overallDeadline(ctx);
@@ -120,6 +122,7 @@ export async function launch<T>(
     now: ctx.clock.now,
     sleep: ctx.clock.sleep,
     log: ctx.log,
+    progress: p.progress,
     attempt: (agentId) =>
       executeAttempt<T>({
         client: ctx.archestra,
@@ -128,7 +131,10 @@ export async function launch<T>(
         deadline,
         clock: ctx.clock,
         log: ctx.log,
-        onLive: ctx.saveLiveRun,
+        onLive: (runId) => {
+          ctx.saveLiveRun(runId);
+          if (runId && p.progress) void p.progress.running(ctx.archestra.runUrl(runId));
+        },
         readResult: (runId) => readContract(ctx.archestra, runId, p.contract.file, p.contract.schema),
         start: async () => {
           if (p.credentialToken) {

@@ -76,6 +76,54 @@ describe("sticky state and checkboxes", () => {
     expect(newlyCheckedActions(ticked, ticked)).toEqual([]);
     expect(newlyCheckedActions(ticked, body)).toEqual([]);
   });
+  it("renders a progress header with the spinner, the step and the run link", () => {
+    const inProgress = renderSticky(
+      {
+        ...state,
+        progress: {
+          doing: "reviewing `aaaaaaa`",
+          login: "alice",
+          startedAt: "2026-10-23T10:00:00.000Z",
+          workflowRunUrl: "https://github.com/acme/widgets/actions/runs/1",
+          step: "waiting for the runtime to finish",
+          runUrl: "https://archestra.test/chat/runs/r1",
+        },
+      },
+      { marker, repoUrl: "", command: "/archestra" },
+    );
+    const header = inProgress.split("\n").slice(1, 4).join("\n");
+    expect(header).toContain("**Archestra is reviewing `aaaaaaa` for @alice…**");
+    expect(header).toContain('<img src="https://github.com/user-attachments/assets/');
+    expect(header).toContain("[View job](https://github.com/acme/widgets/actions/runs/1)");
+    expect(header).toContain("- waiting for the runtime to finish ([run](https://archestra.test/chat/runs/r1))");
+    expect(inProgress.indexOf("Archestra is reviewing")).toBeLessThan(inProgress.indexOf("### Archestra code review"));
+    expect(parseState(inProgress)?.progress?.step).toBe("waiting for the runtime to finish");
+  });
+  it("renders a finished header with the duration, and no spinner", () => {
+    const done = renderSticky(
+      {
+        ...state,
+        last: {
+          did: "reviewed `aaaaaaa`",
+          login: "alice",
+          durationMs: 314_000,
+          workflowRunUrl: "https://github.com/acme/widgets/actions/runs/1",
+          outcome: "ok",
+        },
+      },
+      { marker, repoUrl: "", command: "/archestra" },
+    );
+    expect(done).toContain("**Archestra reviewed `aaaaaaa` for @alice in 5 min 14 s** —— [View job](");
+    expect(done).not.toContain("<img");
+    const unavailable = renderSticky(
+      {
+        ...state,
+        last: { did: "the review", login: "alice", durationMs: 1000, workflowRunUrl: "u", outcome: "unavailable" },
+      },
+      { marker, repoUrl: "", command: "/archestra" },
+    );
+    expect(unavailable).toContain("**Archestra could not finish the review for @alice in 1 s**");
+  });
   it("stays below the GitHub comment limit", () => {
     const big = {
       ...state,

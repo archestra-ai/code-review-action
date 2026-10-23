@@ -57,6 +57,14 @@ export interface FallbackResult<T> {
 
 export const DEFAULT_RETRY_DELAYS_MS: readonly number[] = [30_000, 60_000];
 
+/** Progress callbacks; each may update a comment and must not throw. */
+export interface ProgressReporter {
+  attempt: (runtimeIndex: number, agentId: string) => Promise<void>;
+  running: (runUrl: string) => Promise<void>;
+  retry: (delayMs: number) => Promise<void>;
+  next: () => Promise<void>;
+}
+
 /**
  * Tries the runtimes in order. A retriable failure retries the same runtime
  * (`retries` times, after 30 s then 60 s). A non-retriable failure, or a
@@ -73,6 +81,7 @@ export async function runWithFallback<T>(params: {
   sleep: (ms: number) => Promise<void>;
   log: Logger;
   retryDelaysMs?: readonly number[];
+  progress?: ProgressReporter;
   attempt: (agentId: string, info: { runtimeIndex: number; retry: number }) => Promise<AttemptOutcome<T>>;
 }): Promise<FallbackResult<T>> {
   const delays = params.retryDelaysMs ?? DEFAULT_RETRY_DELAYS_MS;
@@ -88,6 +97,7 @@ export async function runWithFallback<T>(params: {
       params.log.info(
         `Attempt ${attempts.length + 1}: agent ${agentId} (runtime ${runtimeIndex + 1}/${runtimeCount}, retry ${retry}/${params.retries})`,
       );
+      await params.progress?.attempt(runtimeIndex, agentId);
       const outcome = await params.attempt(agentId, { runtimeIndex, retry });
       attempts.push(outcome.record);
       if (outcome.ok) {
@@ -107,11 +117,17 @@ export async function runWithFallback<T>(params: {
       if (classification.class === "fatal") {
         return { ok: false, attempts, fatal: true, deadlineReached: false };
       }
-      if (classification.class === "non_retriable") break;
+      if (classification.class === "non_retriable") {
+        if (runtimeIndex + 1 < runtimeCount) await params.progress?.next();
+        break;
+      }
       if (retry < params.retries) {
         const delay = delays[Math.min(retry, delays.length - 1)] ?? DEFAULT_RETRY_DELAYS_MS[0];
         params.log.info(`Retrying the same runtime in ${Math.round((delay ?? 0) / 1000)} s.`);
+        await params.progress?.retry(delay ?? 0);
         await params.sleep(delay ?? 0);
+      } else if (runtimeIndex + 1 < runtimeCount) {
+        await params.progress?.next();
       }
     }
   }

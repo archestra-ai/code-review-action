@@ -44939,6 +44939,7 @@ async function runWithFallback(params) {
       params.log.info(
         `Attempt ${attempts.length + 1}: agent ${agentId} (runtime ${runtimeIndex + 1}/${runtimeCount}, retry ${retry}/${params.retries})`
       );
+      await params.progress?.attempt(runtimeIndex, agentId);
       const outcome = await params.attempt(agentId, { runtimeIndex, retry });
       attempts.push(outcome.record);
       if (outcome.ok) {
@@ -44958,11 +44959,17 @@ async function runWithFallback(params) {
       if (classification.class === "fatal") {
         return { ok: false, attempts, fatal: true, deadlineReached: false };
       }
-      if (classification.class === "non_retriable") break;
+      if (classification.class === "non_retriable") {
+        if (runtimeIndex + 1 < runtimeCount) await params.progress?.next();
+        break;
+      }
       if (retry < params.retries) {
         const delay = delays[Math.min(retry, delays.length - 1)] ?? DEFAULT_RETRY_DELAYS_MS[0];
         params.log.info(`Retrying the same runtime in ${Math.round((delay ?? 0) / 1e3)} s.`);
+        await params.progress?.retry(delay ?? 0);
         await params.sleep(delay ?? 0);
+      } else if (runtimeIndex + 1 < runtimeCount) {
+        await params.progress?.next();
       }
     }
   }
@@ -45438,6 +45445,7 @@ async function launch(ctx, p) {
     now: ctx.clock.now,
     sleep: ctx.clock.sleep,
     log: ctx.log,
+    progress: p.progress,
     attempt: (agentId) => executeAttempt({
       client: ctx.archestra,
       agentId,
@@ -45445,7 +45453,10 @@ async function launch(ctx, p) {
       deadline,
       clock: ctx.clock,
       log: ctx.log,
-      onLive: ctx.saveLiveRun,
+      onLive: (runId) => {
+        ctx.saveLiveRun(runId);
+        if (runId && p.progress) void p.progress.running(ctx.archestra.runUrl(runId));
+      },
       readResult: (runId) => readContract(ctx.archestra, runId, p.contract.file, p.contract.schema),
       start: async () => {
         if (p.credentialToken) {
@@ -45640,6 +45651,26 @@ var AttemptRecordSchema = external_exports.object({
   source: external_exports.enum(["api", "failure-field", "message-pattern", "state", "timeout", "contract"]).nullable(),
   durationMs: external_exports.number()
 });
+var ProgressSchema = external_exports.object({
+  /** What the job does, in a few words: "reviewing", "applying 2 findings". */
+  doing: external_exports.string().max(200),
+  /** The GitHub login the job acts for. */
+  login: external_exports.string(),
+  startedAt: external_exports.string(),
+  workflowRunUrl: external_exports.string(),
+  /** The current step: "starting a run on agent 1 of 2", "waiting for the run". */
+  step: external_exports.string().max(300).nullable(),
+  runUrl: external_exports.string().nullable()
+});
+var LastJobSchema = external_exports.object({
+  /** What the job did, in a few words: "reviewed", "applied 2 findings". */
+  did: external_exports.string().max(200),
+  login: external_exports.string(),
+  durationMs: external_exports.number(),
+  workflowRunUrl: external_exports.string(),
+  /** "ok", "unavailable" or "error": picks the header's wording. */
+  outcome: external_exports.enum(["ok", "unavailable", "error"])
+});
 var StateSchema = external_exports.object({
   v: external_exports.literal(1),
   status: external_exports.enum(["reviewed", "unavailable"]),
@@ -45670,7 +45701,11 @@ var StateSchema = external_exports.object({
   ),
   triageSha: external_exports.string().nullable(),
   fixPrs: external_exports.array(external_exports.object({ checks: external_exports.array(external_exports.string()), number: external_exports.number(), url: external_exports.string() })),
-  notice: external_exports.string().nullable()
+  notice: external_exports.string().nullable(),
+  /** The job in progress; null when no job runs. Rendered as the header. */
+  progress: ProgressSchema.nullable().default(null),
+  /** The last finished job: the header when nothing is in progress. */
+  last: LastJobSchema.nullable().default(null)
 });
 function emptyState(baseBranch) {
   return {
@@ -45688,7 +45723,9 @@ function emptyState(baseBranch) {
     triage: [],
     triageSha: null,
     fixPrs: [],
-    notice: null
+    notice: null,
+    progress: null,
+    last: null
   };
 }
 var STATE_PATTERN = /<!-- archestra-state:([A-Za-z0-9_-]+) -->/;
@@ -45728,9 +45765,32 @@ function renderSticky(state, context3) {
   }
   return renderBody(fitted, context3);
 }
+var SPINNER = '<img src="https://github.com/user-attachments/assets/5ac382c7-e004-429b-8e35-7feb3e8f9c6f" width="14px" height="14px" style="vertical-align: middle; margin-left: 4px;" />';
+function renderHeader(state) {
+  const { progress, last } = state;
+  if (progress) {
+    const lines = [
+      `**Archestra is ${oneLine(progress.doing, 200)} for @${progress.login}\u2026** ${SPINNER} \u2014\u2014 [View job](${progress.workflowRunUrl})`,
+      ""
+    ];
+    const step = progress.step ? oneLine(progress.step, 300) : null;
+    if (step || progress.runUrl) {
+      lines.push(
+        [step ? `- ${step}` : "- Working.", progress.runUrl ? `([run](${progress.runUrl}))` : ""].join(" ").trim(),
+        ""
+      );
+    }
+    return lines;
+  }
+  if (last) {
+    const verb = last.outcome === "ok" ? `Archestra ${oneLine(last.did, 200)} for @${last.login}` : last.outcome === "unavailable" ? `Archestra could not finish ${oneLine(last.did, 200)} for @${last.login}` : `Archestra stopped ${oneLine(last.did, 200)} for @${last.login} with an error`;
+    return [`**${verb} in ${formatDuration(last.durationMs)}** \u2014\u2014 [View job](${last.workflowRunUrl})`, ""];
+  }
+  return [];
+}
 function renderBody(state, context3) {
   const { command, repoUrl: repoUrl2 } = context3;
-  const out = [serializeMarker(context3.marker), "### Archestra code review", ""];
+  const out = [serializeMarker(context3.marker), ...renderHeader(state), "### Archestra code review", ""];
   if (state.status === "unavailable") {
     out.push("**Review unavailable.** No runtime completed the review. The attempts are listed below.", "");
   } else if (state.verdict) {
@@ -46406,6 +46466,48 @@ async function rerenderSticky(ctx, pr) {
     ctx.log.warning(`Could not reset the boxes: ${errorMessage(error63)}`);
   }
 }
+async function startProgress(ctx, pr, job) {
+  await updateSticky(ctx, pr, (state) => {
+    state.progress = {
+      doing: job.doing,
+      login: job.login,
+      startedAt: new Date(ctx.clock.now()).toISOString(),
+      workflowRunUrl: ctx.workflowRunUrl,
+      step: "preparing the inputs",
+      runUrl: null
+    };
+  });
+}
+async function stepProgress(ctx, pr, step, runUrl = null) {
+  try {
+    await updateSticky(ctx, pr, (state) => {
+      if (!state.progress) return;
+      state.progress.step = step;
+      state.progress.runUrl = runUrl;
+    });
+  } catch (error63) {
+    ctx.log.debug(`Could not update the progress: ${errorMessage(error63)}`);
+  }
+}
+function finishProgress(ctx, state, job) {
+  const startedAt = state.progress ? Date.parse(state.progress.startedAt) : Number.NaN;
+  state.last = {
+    did: job.did,
+    login: job.login,
+    durationMs: Number.isFinite(startedAt) ? Math.max(0, ctx.clock.now() - startedAt) : 0,
+    workflowRunUrl: ctx.workflowRunUrl,
+    outcome: job.outcome
+  };
+  state.progress = null;
+}
+function progressReporter(ctx, pr, total) {
+  return {
+    attempt: (index, agentId) => stepProgress(ctx, pr, `starting a run on agent ${index + 1} of ${total} (\`${agentId.slice(0, 8)}\`)`),
+    running: (runUrl) => stepProgress(ctx, pr, "waiting for the runtime to finish", runUrl),
+    retry: (delayMs) => stepProgress(ctx, pr, `the run failed; trying the same agent again in ${Math.round(delayMs / 1e3)} s`),
+    next: () => stepProgress(ctx, pr, "the run failed; moving to the next agent")
+  };
+}
 function summarize(title, lines, attempts) {
   return [`### ${title}`, "", ...lines, "", attempts.length > 0 ? attemptsTable(attempts) : "", ""].join("\n");
 }
@@ -46485,9 +46587,8 @@ async function runFix(ctx, trigger) {
   });
   const continueFrom = marker.run && marker.agent && order.includes(marker.agent) ? { agentId: marker.agent, runId: marker.run } : null;
   const agents = preferAgent(order, continueFrom?.agentId ?? null);
-  await updateSticky(ctx, pr, (s) => {
-    s.notice = `Applying ${selected.length} finding${selected.length === 1 ? "" : "s"} for @${identity.login}. [Workflow run](${ctx.workflowRunUrl})`;
-  });
+  const doing = `applying ${selected.length} finding${selected.length === 1 ? "" : "s"}`;
+  await startProgress(ctx, pr, { doing, login: identity.login });
   const outcome = await launch(ctx, {
     agents,
     continueFrom,
@@ -46495,11 +46596,13 @@ async function runFix(ctx, trigger) {
     attachments,
     contract: CONTRACTS.fix,
     timeoutMs: inputs.fixTimeoutMs,
-    credentialToken: inputs.fixToken
+    credentialToken: inputs.fixToken,
+    progress: progressReporter(ctx, pr, agents.length)
   });
   if (!outcome.ok || !outcome.value) {
     const reason = outcome.fatal ? fatalReason(outcome.attempts) : "No runtime completed the fix.";
     await updateSticky(ctx, pr, (s) => {
+      finishProgress(ctx, s, { did: doing, login: identity.login, outcome: "unavailable" });
       s.attempts = outcome.attempts;
       s.operation = "fix";
       s.notice = `The fix requested by @${identity.login} did not complete: ${reason}`;
@@ -46540,6 +46643,11 @@ async function runFix(ctx, trigger) {
   log.info(`Applied ${applied.length} finding(s); skipped ${skipped.length}.`);
   await updateFindingThreads(ctx, pr.number, [...appliedIds], skipped);
   await updateSticky(ctx, pr, (s, stickyMarker) => {
+    finishProgress(ctx, s, {
+      did: `applied ${appliedIds.size} of ${selected.length} finding${selected.length === 1 ? "" : "s"}`,
+      login: identity.login,
+      outcome: "ok"
+    });
     Object.assign(stickyMarker, {
       run: runId,
       agent: outcome.agentId ?? stickyMarker.agent,
@@ -46791,21 +46899,23 @@ async function runFixCi(ctx, trigger) {
     random: ctx.random
   });
   const continueFrom = marker?.run && marker.agent && order.includes(marker.agent) ? { agentId: marker.agent, runId: marker.run } : null;
-  await updateSticky(ctx, pr, (s) => {
-    s.notice = `Triaging ${evidence.failures.length} failing check${evidence.failures.length === 1 ? "" : "s"} for @${identity.login}. [Workflow run](${ctx.workflowRunUrl})`;
-  });
+  const doing = `triaging ${evidence.failures.length} failing check${evidence.failures.length === 1 ? "" : "s"}`;
+  await startProgress(ctx, pr, { doing, login: identity.login });
+  const agents = preferAgent(order, continueFrom?.agentId ?? null);
   const outcome = await launch(ctx, {
-    agents: preferAgent(order, continueFrom?.agentId ?? null),
+    agents,
     continueFrom,
     message,
     attachments,
     contract: CONTRACTS["fix-ci"],
     timeoutMs: inputs.fixTimeoutMs,
-    credentialToken: inputs.fixToken
+    credentialToken: inputs.fixToken,
+    progress: progressReporter(ctx, pr, agents.length)
   });
   if (!outcome.ok || !outcome.value) {
     const reason = outcome.fatal ? fatalReason(outcome.attempts) : "No runtime completed the triage.";
     await updateSticky(ctx, pr, (s) => {
+      finishProgress(ctx, s, { did: doing, login: identity.login, outcome: "unavailable" });
       s.attempts = outcome.attempts;
       s.operation = "CI triage";
       s.notice = `The CI triage requested by @${identity.login} did not complete: ${reason}`;
@@ -46848,6 +46958,11 @@ async function runFixCi(ctx, trigger) {
     }
   }
   await updateSticky(ctx, pr, (s, stickyMarker) => {
+    finishProgress(ctx, s, {
+      did: `triaged ${rows.length} failing check${rows.length === 1 ? "" : "s"}`,
+      login: identity.login,
+      outcome: "ok"
+    });
     Object.assign(stickyMarker, {
       run: runId,
       agent: outcome.agentId ?? stickyMarker.agent,
@@ -46947,21 +47062,23 @@ async function runFixCiMain(ctx, trigger) {
     random: ctx.random
   });
   const continueFrom = marker?.run && marker.agent && order.includes(marker.agent) ? { agentId: marker.agent, runId: marker.run } : null;
-  await updateSticky(ctx, pr, (s) => {
-    s.notice = `Preparing a fix PR against ${baseBranch} for ${checks.map((check3) => `\`${check3.replace(/`/g, "'")}\``).join(", ")} for @${identity.login}. [Workflow run](${ctx.workflowRunUrl})`;
-  });
+  const doing = `preparing a fix PR against ${baseBranch} for ${checks.map((check3) => `\`${check3.replace(/`/g, "'")}\``).join(", ")}`;
+  await startProgress(ctx, pr, { doing, login: identity.login });
+  const agents = preferAgent(order, continueFrom?.agentId ?? null);
   const outcome = await launch(ctx, {
-    agents: preferAgent(order, continueFrom?.agentId ?? null),
+    agents,
     continueFrom,
     message,
     attachments,
     contract: CONTRACTS["fix-ci-main"],
     timeoutMs: inputs.fixTimeoutMs,
-    credentialToken: inputs.fixToken
+    credentialToken: inputs.fixToken,
+    progress: progressReporter(ctx, pr, agents.length)
   });
   if (!outcome.ok || !outcome.value) {
     const reason = outcome.fatal ? fatalReason(outcome.attempts) : "No runtime completed the fix.";
     await updateSticky(ctx, pr, (s) => {
+      finishProgress(ctx, s, { did: doing, login: identity.login, outcome: "unavailable" });
       s.attempts = outcome.attempts;
       s.operation = `fix PR against ${baseBranch}`;
       s.notice = `The fix PR requested by @${identity.login} was not prepared: ${reason}`;
@@ -46985,6 +47102,7 @@ async function runFixCiMain(ctx, trigger) {
   if (check2.verified.length === 0 || check2.rejected.length > 0) {
     const problem = check2.rejected.map((entry) => `${shortSha(entry.commit)}: ${entry.reason}`).join("; ") || "no commits";
     await updateSticky(ctx, pr, (s) => {
+      finishProgress(ctx, s, { did: doing, login: identity.login, outcome: "error" });
       s.attempts = outcome.attempts;
       s.notice = `The fix branch \`${result.branch}\` did not pass the commit check (${problem}). No PR was opened.`;
     });
@@ -47028,6 +47146,7 @@ async function runFixCiMain(ctx, trigger) {
     log.warning(`Could not assign the fix PR or request a review: ${errorMessage(error63)}`);
   }
   await updateSticky(ctx, pr, (s) => {
+    finishProgress(ctx, s, { did: `opened fix PR #${fixPr.number}`, login: identity.login, outcome: "ok" });
     s.fixPrs = [...s.fixPrs, { checks, number: fixPr.number, url: fixPr.html_url }];
     s.attempts = outcome.attempts;
     s.operation = `fix PR against ${baseBranch}`;
@@ -47199,6 +47318,7 @@ async function runReview(ctx, prNumber) {
       )
     );
   }
+  await startProgress(ctx, pr, { doing: `reviewing \`${shortSha(pr.headSha)}\``, login: pr.authorLogin });
   const message = renderBrief("review", {
     repo: fullName(repo),
     number: pr.number,
@@ -47216,18 +47336,23 @@ async function runReview(ctx, prNumber) {
     timeoutMs: inputs.timeoutMs,
     // A fix leaves a short-lived App token in the actor's GITHUB_TOKEN; a
     // private repository needs a fresh read-only token for the review.
-    credentialToken: inputs.cloneToken || null
+    credentialToken: inputs.cloneToken || null,
+    progress: progressReporter(ctx, pr, agents.length)
   });
   if (!outcome.ok || !outcome.value) {
     const reason = outcome.fatal ? fatalReason(outcome.attempts) : outcome.deadlineReached ? "The overall time limit was reached." : "All attempts failed.";
-    if (inputs.post !== "none") {
-      await updateSticky(ctx, pr, (state) => {
-        state.status = "unavailable";
-        state.attempts = outcome.attempts;
-        state.operation = `review of ${shortSha(pr.headSha)}`;
-        state.notice = `Review unavailable for \`${shortSha(pr.headSha)}\`: ${reason}`;
+    await updateSticky(ctx, pr, (state) => {
+      finishProgress(ctx, state, {
+        did: `the review of \`${shortSha(pr.headSha)}\``,
+        login: pr.authorLogin,
+        outcome: "unavailable"
       });
-    }
+      if (inputs.post === "none") return;
+      state.status = "unavailable";
+      state.attempts = outcome.attempts;
+      state.operation = `review of ${shortSha(pr.headSha)}`;
+      state.notice = `Review unavailable for \`${shortSha(pr.headSha)}\`: ${reason}`;
+    });
     const failure3 = failureForError(ctx, `The review is unavailable: ${reason}`);
     return makeResult("review", {
       status: outcome.fatal ? "aborted" : "unavailable",
@@ -47254,32 +47379,32 @@ async function runReview(ctx, prNumber) {
   const known = new Set(previousFindings.map((finding) => finding.id));
   const fixedIds = statuses.filter((s) => s.status === "fixed" && known.has(s.id)).map((s) => s.id);
   const regressedIds = statuses.filter((s) => s.status === "regressed" && known.has(s.id)).map((s) => s.id);
-  if (inputs.post !== "none") {
-    await updateSticky(ctx, pr, (state, stickyMarker) => {
-      Object.assign(stickyMarker, {
-        run: runId,
-        agent: agentId,
-        session: runId,
-        sha: pr.headSha
-      });
-      state.status = "reviewed";
-      state.verdict = review.verdict;
-      state.summary = review.summary;
-      state.reviewedSha = pr.headSha;
-      state.baseBranch = pr.baseRef;
-      state.findings = findings;
-      state.attempts = outcome.attempts;
-      state.operation = `review of ${shortSha(pr.headSha)}`;
-      state.skipped = [];
-      state.notice = null;
-      if (state.triageSha !== pr.headSha) {
-        state.triage = [];
-        state.triageSha = null;
-      }
-      state.applied = state.applied.slice(-50);
+  await updateSticky(ctx, pr, (state, stickyMarker) => {
+    finishProgress(ctx, state, { did: `reviewed \`${shortSha(pr.headSha)}\``, login: pr.authorLogin, outcome: "ok" });
+    if (inputs.post === "none") return;
+    Object.assign(stickyMarker, {
+      run: runId,
+      agent: agentId,
+      session: runId,
+      sha: pr.headSha
     });
-    await updatePreviousThreads(ctx, pr.number, fixedIds, regressedIds, pr.headSha);
-  }
+    state.status = "reviewed";
+    state.verdict = review.verdict;
+    state.summary = review.summary;
+    state.reviewedSha = pr.headSha;
+    state.baseBranch = pr.baseRef;
+    state.findings = findings;
+    state.attempts = outcome.attempts;
+    state.operation = `review of ${shortSha(pr.headSha)}`;
+    state.skipped = [];
+    state.notice = null;
+    if (state.triageSha !== pr.headSha) {
+      state.triage = [];
+      state.triageSha = null;
+    }
+    state.applied = state.applied.slice(-50);
+  });
+  if (inputs.post !== "none") await updatePreviousThreads(ctx, pr.number, fixedIds, regressedIds, pr.headSha);
   const count = findings.length;
   const failure2 = inputs.failOn === "findings" && count > 0 ? `The review has ${count} finding${count === 1 ? "" : "s"}.` : null;
   return makeResult("review", {

@@ -86,6 +86,28 @@ const AttemptRecordSchema = z.object({
   durationMs: z.number(),
 });
 
+const ProgressSchema = z.object({
+  /** What the job does, in a few words: "reviewing", "applying 2 findings". */
+  doing: z.string().max(200),
+  /** The GitHub login the job acts for. */
+  login: z.string(),
+  startedAt: z.string(),
+  workflowRunUrl: z.string(),
+  /** The current step: "starting a run on agent 1 of 2", "waiting for the run". */
+  step: z.string().max(300).nullable(),
+  runUrl: z.string().nullable(),
+});
+
+const LastJobSchema = z.object({
+  /** What the job did, in a few words: "reviewed", "applied 2 findings". */
+  did: z.string().max(200),
+  login: z.string(),
+  durationMs: z.number(),
+  workflowRunUrl: z.string(),
+  /** "ok", "unavailable" or "error": picks the header's wording. */
+  outcome: z.enum(["ok", "unavailable", "error"]),
+});
+
 const StateSchema = z.object({
   v: z.literal(1),
   status: z.enum(["reviewed", "unavailable"]),
@@ -117,8 +139,14 @@ const StateSchema = z.object({
   triageSha: z.string().nullable(),
   fixPrs: z.array(z.object({ checks: z.array(z.string()), number: z.number(), url: z.string() })),
   notice: z.string().nullable(),
+  /** The job in progress; null when no job runs. Rendered as the header. */
+  progress: ProgressSchema.nullable().default(null),
+  /** The last finished job: the header when nothing is in progress. */
+  last: LastJobSchema.nullable().default(null),
 });
 export type StickyState = z.infer<typeof StateSchema>;
+export type Progress = z.infer<typeof ProgressSchema>;
+export type LastJob = z.infer<typeof LastJobSchema>;
 export type AppliedEntry = StickyState["applied"][number];
 export type TriageEntry = StickyState["triage"][number];
 
@@ -139,6 +167,8 @@ export function emptyState(baseBranch: string): StickyState {
     triageSha: null,
     fixPrs: [],
     notice: null,
+    progress: null,
+    last: null,
   };
 }
 
@@ -200,9 +230,45 @@ export function renderSticky(state: StickyState, context: RenderContext): string
   return renderBody(fitted, context);
 }
 
+/** The spinner next to the in-progress header; the same picture GitHub bots use. */
+const SPINNER =
+  '<img src="https://github.com/user-attachments/assets/5ac382c7-e004-429b-8e35-7feb3e8f9c6f" width="14px" height="14px" style="vertical-align: middle; margin-left: 4px;" />';
+
+/**
+ * The first line: who the job acts for and where it is. A job in progress
+ * shows a spinner and its current step; a finished job shows its duration.
+ */
+export function renderHeader(state: StickyState): string[] {
+  const { progress, last } = state;
+  if (progress) {
+    const lines = [
+      `**Archestra is ${oneLine(progress.doing, 200)} for @${progress.login}…** ${SPINNER} —— [View job](${progress.workflowRunUrl})`,
+      "",
+    ];
+    const step = progress.step ? oneLine(progress.step, 300) : null;
+    if (step || progress.runUrl) {
+      lines.push(
+        [step ? `- ${step}` : "- Working.", progress.runUrl ? `([run](${progress.runUrl}))` : ""].join(" ").trim(),
+        "",
+      );
+    }
+    return lines;
+  }
+  if (last) {
+    const verb =
+      last.outcome === "ok"
+        ? `Archestra ${oneLine(last.did, 200)} for @${last.login}`
+        : last.outcome === "unavailable"
+          ? `Archestra could not finish ${oneLine(last.did, 200)} for @${last.login}`
+          : `Archestra stopped ${oneLine(last.did, 200)} for @${last.login} with an error`;
+    return [`**${verb} in ${formatDuration(last.durationMs)}** —— [View job](${last.workflowRunUrl})`, ""];
+  }
+  return [];
+}
+
 function renderBody(state: StickyState, context: RenderContext): string {
   const { command, repoUrl } = context;
-  const out: string[] = [serializeMarker(context.marker), "### Archestra code review", ""];
+  const out: string[] = [serializeMarker(context.marker), ...renderHeader(state), "### Archestra code review", ""];
 
   if (state.status === "unavailable") {
     out.push("**Review unavailable.** No runtime completed the review. The attempts are listed below.", "");
