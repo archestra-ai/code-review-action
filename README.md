@@ -53,7 +53,7 @@ Each person who opens pull requests or asks for fixes:
 1. Creates a platform token in Archestra (Personal Settings).
 2. Stores it as an organization or repository secret named `ARCHESTRA_TOKEN_<LOGIN>`: the GitHub login in upper case, with `-` changed to `_`. For example, `octo-cat` uses `ARCHESTRA_TOKEN_OCTO_CAT`.
 
-The reusable workflow [resolve-actor-token.yml](.github/workflows/resolve-actor-token.yml) gives the secret name for the actor of each event. The workflow below passes only that secret to the job that runs the action. A person without a token gets no review, and the job log says why. Optionally, set `fallback-token` to a shared team token: the runs of people without a token then act as the team token's owner, who pays for them. Use `fallback-agents` to leave out agents that need a person's own Claude account.
+The reusable workflow [resolve-actor-token.yml](.github/workflows/resolve-actor-token.yml) gives the secret name for the actor of each event. The workflow below passes only that secret to the job that runs the action. A person without a token gets no review: the job's first step sees the empty secret, writes a notice, and the later steps are skipped, so the check stays green. Optionally, set `fallback-token` to a shared team token: the runs of people without a token then act as the team token's owner, who pays for them. Use `fallback-agents` to leave out agents that need a person's own Claude account.
 
 ### 4. GitHub App for pushes (fix modes only)
 
@@ -144,13 +144,21 @@ jobs:
   run:
     runs-on: ubuntu-latest
     steps:
+      # No token for this actor: skip, do not fail.
+      - id: token
+        env:
+          ARCHESTRA_TOKEN: ${{ secrets.ARCHESTRA_TOKEN }}
+        run: |
+          if [[ -n "$ARCHESTRA_TOKEN" ]]; then echo "available=true" >> "$GITHUB_OUTPUT"
+          else echo "::notice::No Archestra token for this actor. Store their platform token as ARCHESTRA_TOKEN_<LOGIN>."; fi
       - id: app-token
-        if: inputs.kind == 'fix'
-        uses: actions/create-github-app-token@v2
+        if: steps.token.outputs.available == 'true' && inputs.kind == 'fix'
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
         with:
           app-id: ${{ secrets.APP_ID }}
           private-key: ${{ secrets.APP_PRIVATE_KEY }}
-      - uses: archestra-ai/code-review-action@v1
+      - if: steps.token.outputs.available == 'true'
+        uses: archestra-ai/code-review-action@v1
         with:
           archestra-gateway-url: https://archestra.example.com/v1/mcp/code-review
           archestra-token: ${{ secrets.ARCHESTRA_TOKEN }}

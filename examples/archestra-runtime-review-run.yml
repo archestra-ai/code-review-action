@@ -59,8 +59,24 @@ jobs:
       pull-requests: write
       actions: read
     steps:
+      # No token for this actor: skip the review, do not fail the job. The
+      # person creates a platform token and stores it as their secret.
+      - name: Check the actor's Archestra token
+        id: token
+        env:
+          ARCHESTRA_TOKEN: ${{ secrets.ARCHESTRA_TOKEN }}
+          GATEWAY_URL: ${{ inputs.gateway-url }}
+        shell: bash
+        run: |
+          if [[ -z "$ARCHESTRA_TOKEN" ]]; then
+            echo "::notice::No Archestra token for this actor. Store their platform token as ARCHESTRA_TOKEN_<LOGIN> to get reviews."
+          elif [[ -z "$GATEWAY_URL" ]]; then
+            echo "::notice::The ARCHESTRA_REVIEW_GATEWAY_URL variable is not set, so no review runs."
+          else
+            echo "available=true" >> "$GITHUB_OUTPUT"
+          fi
       - name: Mint the push token
-        if: inputs.kind == 'fix'
+        if: steps.token.outputs.available == 'true' && inputs.kind == 'fix'
         id: app-token
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
         with:
@@ -70,7 +86,8 @@ jobs:
           permission-contents: write
           permission-pull-requests: write
           permission-actions: read
-      - uses: archestra-ai/code-review-action@v1 # Pin to a commit SHA: most organizations require it.
+      - if: steps.token.outputs.available == 'true'
+        uses: archestra-ai/code-review-action@v1 # Pin to a commit SHA: most organizations require it.
         with:
           archestra-gateway-url: ${{ inputs.gateway-url }}
           archestra-token: ${{ secrets.ARCHESTRA_TOKEN }}
