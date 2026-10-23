@@ -24,6 +24,8 @@ export interface Inputs {
   mode: Mode | "auto";
   prNumber: number | null;
   fixCommand: string;
+  /** False when no workflow listens to the comment commands: the comments then show none. */
+  fixCommands: boolean;
   fixToken: string;
   /** A read-only GitHub token that review mode stores as CODE_REVIEW_GITHUB_TOKEN; "" for none. */
   cloneToken: string;
@@ -111,7 +113,7 @@ export function readInputs(get: (name: string) => string, readFile: (path: strin
     strategy: oneOf("strategy", value("strategy") || "rotate", ["rotate", "ordered", "random"]),
     retries: integer("retries", value("retries") || "1", 0, 5),
     maxFallbacks,
-    timeoutMs: integer("timeout-minutes", value("timeout-minutes") || "20", 1, 360) * 60_000,
+    timeoutMs: integer("timeout-minutes", value("timeout-minutes") || "30", 1, 360) * 60_000,
     overallTimeoutMs: integer("overall-timeout-minutes", value("overall-timeout-minutes") || "120", 1, 1440) * 60_000,
     instructions,
     githubToken: required("github-token"),
@@ -120,6 +122,7 @@ export function readInputs(get: (name: string) => string, readFile: (path: strin
     mode: oneOf("mode", value("mode") || "auto", ["auto", "review", "fix", "fix-ci", "fix-ci-main"]),
     prNumber: prNumberRaw ? integer("pr-number", prNumberRaw, 1, Number.MAX_SAFE_INTEGER) : null,
     fixCommand: commandPrefix(value("fix-command") || "/archestra"),
+    fixCommands: boolean("fix-commands", value("fix-commands") || "true"),
     fixToken: value("fix-token"),
     cloneToken: value("clone-token"),
     fixTimeoutMs: integer("fix-timeout-minutes", value("fix-timeout-minutes") || "45", 1, 360) * 60_000,

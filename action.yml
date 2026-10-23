@@ -42,8 +42,10 @@ inputs:
     description: How many more agents to try after a permanent failure. Empty means all remaining agents.
     default: ""
   timeout-minutes:
-    description: The time limit for one review attempt, in minutes. A cold start of a node can take 5 minutes.
-    default: "20"
+    description: >-
+      The time limit for one review attempt, in minutes. A cold start of a node can take 5 minutes, and the
+      runtime spends up to 10 minutes on checks of the changed code.
+    default: "30"
   overall-timeout-minutes:
     description: The time limit for all attempts together, in minutes.
     default: "120"
@@ -77,6 +79,11 @@ inputs:
   fix-command:
     description: The comment command prefix.
     default: /archestra
+  fix-commands:
+    description: >-
+      Set to false when no workflow listens to the comment commands (for example, when there is no
+      GitHub App for pushes). The review comment and the inline comments then show no commands.
+    default: "true"
   fix-token:
     description: >-
       A GitHub App installation token for this repository (contents write, pull-requests write, actions read;

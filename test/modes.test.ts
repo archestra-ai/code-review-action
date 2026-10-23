@@ -1,5 +1,6 @@
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { ArchestraClient } from "../src/archestra/client";
+import { MAX_MESSAGE_BYTES } from "../src/briefs";
 import { cancelIfLive } from "../src/cancel";
 import { collectCiEvidence } from "../src/github/ci";
 import { hasWriteAccess } from "../src/github/permissions";
@@ -58,7 +59,7 @@ describe("review mode", () => {
     expect(parseState(sticky)!.findings.map((finding) => finding.commentId)).toEqual([commentId, null]);
     expect(sticky).toContain(`[1](https://github.com/acme/widgets/pull/7#discussion_r${commentId})`);
     expect(harness.archestra.starts[0]!.attachmentNames).toEqual(["pr.json", "pr.diff"]);
-    expect(Buffer.byteLength(harness.archestra.starts[0]!.message)).toBeLessThan(8192);
+    expect(Buffer.byteLength(harness.archestra.starts[0]!.message)).toBeLessThanOrEqual(MAX_MESSAGE_BYTES);
   });
 
   it("skips drafts, [WIP] titles, forks and bot authors", async () => {
@@ -143,6 +144,72 @@ describe("review mode", () => {
     expect(harness.github.graphqlMutations).toEqual([
       { action: "unresolve", threadId: expect.stringMatching(/^thread-/) },
     ]);
+  });
+
+  it("renders what the runtime wrote: coverage, titles, the code of a finding, observations, tests and the verdict", async () => {
+    const harness = setup();
+    harness.archestra.script(AGENT_A, {
+      end: "completed",
+      files: {
+        "review.json": reviewJson([{ ...FINDING_IN_DIFF, title: "Retries without a pause" }], {
+          reviewed: ["The uploader (`src/upload.ts`)"],
+          observations: ["**Loop bound** (`src/upload.ts`): three attempts is a sane default."],
+          tests: [
+            { file: "src/upload.ts", focus: "the retry loop" },
+            { file: "test/other.test.ts", focus: "not in the diff" },
+          ],
+          coverage: "The failure after the last attempt has no test.",
+          limitations: "No lint: the repository defines none.",
+          conclusion: "Fix #1 first.",
+        }),
+      },
+    });
+    await run(harness.context("pull_request", prEvent(harness.github)));
+    const sticky = harness.github.stickyBody()!;
+    expect(sticky).toContain("### Archestra code review: #7 — Add retry to the uploader");
+    expect(sticky).toContain("**Reviewed**\n\n- The uploader (`src/upload.ts`)");
+    expect(sticky).toContain("| Retries without a pause | open |");
+    expect(sticky).toContain("#### 1. Retries without a pause\n\n**File:** [`src/upload.ts:12-14`]");
+    // The code at the lines of the finding, from the patch of the fake pull request.
+    expect(sticky).toContain("```ts\n    send(a);\n  }\n  return a;\n```");
+    expect(sticky).toContain(
+      "### Observations\n\n- **Loop bound** (`src/upload.ts`): three attempts is a sane default.",
+    );
+    expect(sticky).toContain("| [`src/upload.ts`](https://github.com/acme/widgets/pull/7/files#diff-");
+    expect(sticky).toContain(") | +3 −1 | the retry loop |\n| `test/other.test.ts` | - | not in the diff |");
+    expect(sticky).toContain("### Limitations\n\nNo lint: the repository defines none.");
+    expect(sticky).toContain("### Verdict\n\nFix #1 first.");
+    const [comment] = [...harness.github.reviewComments.values()];
+    expect(comment!.body).toContain(
+      `**1. [${FINDING_IN_DIFF.severity}] Retries without a pause**\n\n${FINDING_IN_DIFF.summary}\n\n`,
+    );
+    expect(parseState(sticky)!.findings[0]!.excerpt).toBe("    send(a);\n  }\n  return a;");
+  });
+
+  it("quotes the code of a finding in the diff with post: comment, when no inline comment is posted", async () => {
+    const harness = setup();
+    harness.archestra.script(AGENT_A, { end: "completed", files: { "review.json": reviewJson([FINDING_IN_DIFF]) } });
+    await run(harness.context("pull_request", prEvent(harness.github), { post: "comment" }));
+    expect(harness.github.reviews).toHaveLength(0);
+    const state = parseState(harness.github.stickyBody()!)!;
+    expect(state.findings[0]).toMatchObject({
+      inline: false,
+      commentId: null,
+      excerpt: "    send(a);\n  }\n  return a;",
+    });
+  });
+
+  it("shows no commands when fix-commands is false", async () => {
+    const harness = setup();
+    harness.archestra.script(AGENT_A, { end: "completed", files: { "review.json": reviewJson([FINDING_IN_DIFF]) } });
+    await run(harness.context("pull_request", prEvent(harness.github), { "fix-commands": "false" }));
+    const sticky = harness.github.stickyBody()!;
+    expect(sticky).not.toContain("### Next");
+    expect(sticky).not.toContain("/archestra fix");
+    expect(sticky).not.toContain("Only users with write access");
+    const [comment] = [...harness.github.reviewComments.values()];
+    expect(comment!.body).not.toContain("To implement and push this fix");
+    expect(comment!.body).toContain("<!-- archestra-finding:");
   });
 
   it("rewrites the inline comment of a finding reported before, and posts only the new ones", async () => {
@@ -329,7 +396,7 @@ describe("triage command", () => {
     await run(harness.context("pull_request", prEvent(harness.github, "synchronize")));
     const body = harness.github.stickyBody()!;
     expect(body).toContain("- Comment `/archestra fix-ci` to triage and fix the 2 failing checks.");
-    expect(body).toContain("| Recommendation |");
+    expect(body).toContain("| # | Severity | Location | Finding | Status |");
     expect(body).toContain(FINDING_IN_DIFF.recommendation);
     expect(parseState(body)?.failingChecks).toBe(2);
   });

@@ -15,6 +15,7 @@ import {
   type StickyState,
   writeSticky,
 } from "../github/sticky";
+import type { Inputs } from "../inputs";
 import { errorMessage, fullName } from "../util";
 
 export interface FixTrigger {
@@ -124,6 +125,11 @@ async function acknowledge(ctx: ActionContext, trigger: FixTrigger): Promise<voi
   }
 }
 
+/** The command prefix the comments name; null when no workflow listens to the commands. */
+export function commentCommand(inputs: Pick<Inputs, "fixCommand" | "fixCommands">): string | null {
+  return inputs.fixCommands ? inputs.fixCommand : null;
+}
+
 /**
  * Reads the sticky comment again, changes its state, and writes it. Reading
  * again keeps changes that another workflow run made in the meantime.
@@ -144,7 +150,7 @@ export async function updateSticky(
     sha: null,
   };
   mutate(state, marker);
-  const body = renderSticky(state, { marker, repoUrl: repoUrl(ctx), command: ctx.inputs.fixCommand });
+  const body = renderSticky(state, { marker, repoUrl: repoUrl(ctx), command: commentCommand(ctx.inputs) });
   await writeSticky(ctx.gh, ctx.repo, pr.number, sticky?.id ?? null, body);
 }
 

@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.2.0 (2026-10-23)
+
+- The review comment reads like a reviewer's write-up. New parts, in reading order: the title of the pull request in the heading; **Reviewed**, the areas and files the review covered; an assessment of the change before the diagrams; a section for each finding with its location, severity, a link to its inline comment, the code at its lines quoted from the diff, the problem, the reasoning and the recommendation; **Observations**, what the change does right and what needs no change; **Test coverage**, a table of the test files in the diff with their line counts and what they cover; **Limitations**; and **Verdict**, the closing paragraph with the most actionable finding. The findings table keeps the number, severity, location and status, and shows the title of each finding.
+- `review.json` has new optional fields: `reviewed`, `observations`, `tests`, `coverage`, `limitations`, `conclusion`, and `title` for each finding. The brief asks the runtime for them, and for targeted checks of the changed code (about ten minutes at most) instead of a whole test suite.
+- Inline comments start with the title of the finding, and the sentence that states the problem follows.
+- The default `timeout-minutes` is 30 (was 20): a review attempt now includes up to ten minutes of checks.
+- New input `fix-commands`: `false` when no workflow listens to the comment commands. The review comment and the inline comments then show no commands.
+- The sections of the review comment are `###` headings; a finding is a `####` heading. Locations show the line range of a finding.
+
 ## 0.1.0 (2026-10-23)
 
 - Review mode: start a one-shot review run on one of several Archestra agents with dedicated runtimes. Rotate, ordered or random selection. Retry temporary failures on the same runtime; go to the next runtime after a permanent failure; a finite number of attempts.

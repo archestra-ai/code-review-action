@@ -15,8 +15,13 @@ export const ReviewFindingSchema = z.object({
   line: z.number().int().positive().describe("Line in the head version of the file"),
   end_line: z.number().int().positive().optional().describe("Last line of a multi-line finding"),
   severity: SeveritySchema,
+  title: z.string().min(1).max(120).optional().describe("A short name for the finding, used as its heading"),
   summary: z.string().min(1).max(500).describe("One sentence"),
-  failure_scenario: z.string().min(1).max(4000).describe("Input or state, and the incorrect result"),
+  failure_scenario: z
+    .string()
+    .min(1)
+    .max(4000)
+    .describe("Input or state, the incorrect result, and the reasoning a maintainer needs"),
   recommendation: z
     .string()
     .min(1)
@@ -37,8 +42,32 @@ export const PreviousFindingStatusSchema = z.enum(["fixed", "still_present", "re
 export const ReviewResultSchema = z
   .object({
     verdict: z.enum(["approve", "comment", "request_changes"]),
-    summary: z.string().max(8000),
+    // The brief asks for 8000 characters at most; the contract leaves room for a runtime that overshoots.
+    summary: z.string().max(12_000),
+    reviewed: z
+      .array(z.string().min(1).max(200))
+      .max(12)
+      .optional()
+      .describe("What the review covered, in order: an area and its key files for each entry"),
     findings: z.array(ReviewFindingSchema).max(50),
+    observations: z
+      .array(z.string().min(1).max(600))
+      .max(15)
+      .optional()
+      .describe("What the change does right, and facts a maintainer should know that need no change"),
+    tests: z
+      .array(
+        z.object({
+          file: z.string().min(1).max(500).describe("Path relative to the repository root"),
+          focus: z.string().min(1).max(300).describe("What the file covers, in one line"),
+        }),
+      )
+      .max(30)
+      .optional()
+      .describe("The test files of the change"),
+    coverage: z.string().max(2000).optional().describe("What the tests cover and what they leave out"),
+    limitations: z.string().max(2000).optional().describe("What the review could not do, and why"),
+    conclusion: z.string().max(2000).optional().describe("The closing judgement, naming the most actionable finding"),
     previous: z
       .array(
         z.object({
