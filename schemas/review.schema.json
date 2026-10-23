@@ -18,12 +18,12 @@
     },
     "reviewed": {
       "description": "What the review covered, in order: an area and its key files for each entry",
-      "maxItems": 12,
+      "maxItems": 40,
       "type": "array",
       "items": {
         "type": "string",
         "minLength": 1,
-        "maxLength": 200
+        "maxLength": 1000
       }
     },
     "findings": {
@@ -64,7 +64,7 @@
             "description": "A short name for the finding, used as its heading",
             "type": "string",
             "minLength": 1,
-            "maxLength": 120
+            "maxLength": 300
           },
           "summary": {
             "type": "string",
@@ -108,17 +108,17 @@
     },
     "observations": {
       "description": "What the change does right, and facts a maintainer should know that need no change",
-      "maxItems": 15,
+      "maxItems": 40,
       "type": "array",
       "items": {
         "type": "string",
         "minLength": 1,
-        "maxLength": 600
+        "maxLength": 2000
       }
     },
     "tests": {
       "description": "The test files of the change",
-      "maxItems": 30,
+      "maxItems": 100,
       "type": "array",
       "items": {
         "type": "object",
@@ -132,7 +132,7 @@
           "focus": {
             "type": "string",
             "minLength": 1,
-            "maxLength": 300,
+            "maxLength": 1000,
             "description": "What the file covers, in one line"
           }
         },
@@ -145,17 +145,17 @@
     "coverage": {
       "description": "What the tests cover and what they leave out",
       "type": "string",
-      "maxLength": 2000
+      "maxLength": 6000
     },
     "limitations": {
       "description": "What the review could not do, and why",
       "type": "string",
-      "maxLength": 2000
+      "maxLength": 6000
     },
     "conclusion": {
       "description": "The closing judgement, naming the most actionable finding",
       "type": "string",
-      "maxLength": 2000
+      "maxLength": 6000
     },
     "previous": {
       "maxItems": 100,

@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.2.1 (2026-10-24)
+
+- A review no longer fails the contract when a `reviewed` entry, an observation, a test focus or a closing section is longer than the brief asks for: the limits in `review.json` only stop pathological output, and the comment shortens long texts. The first live review on a large repository lost an attempt to a 201-character `reviewed` entry.
+
 ## 0.2.0 (2026-10-23)
 
 - The review comment reads like a reviewer's write-up. New parts, in reading order: the title of the pull request in the heading; **Reviewed**, the areas and files the review covered; an assessment of the change before the diagrams; a section for each finding with its location, severity, a link to its inline comment, the code at its lines quoted from the diff, the problem, the reasoning and the recommendation; **Observations**, what the change does right and what needs no change; **Test coverage**, a table of the test files in the diff with their line counts and what they cover; **Limitations**; and **Verdict**, the closing paragraph with the most actionable finding. The findings table keeps the number, severity, location and status, and shows the title of each finding.
