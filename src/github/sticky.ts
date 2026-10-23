@@ -523,7 +523,7 @@ function renderBody(state: StickyState, context: RenderContext): string {
   if (state.notice) out.push(`> ${oneLine(state.notice, 1000)}`, "");
   // What the review covered, so that a reader can check that the parts that matter were read.
   if (state.reviewed.length > 0) {
-    out.push("**Reviewed**", "", ...state.reviewed.map((item) => `- ${oneLine(item, 200)}`), "");
+    out.push("**Reviewed**", "", ...state.reviewed.map((item) => `- ${oneLine(item, 400)}`), "");
   }
   // The summary keeps its Markdown; only HTML is disarmed.
   if (state.summary) out.push(paragraphs(state.summary), "");
@@ -546,7 +546,7 @@ function renderBody(state: StickyState, context: RenderContext): string {
   }
 
   if (state.observations.length > 0) {
-    out.push("### Observations", "", ...state.observations.map((item) => `- ${oneLine(item, 600)}`), "");
+    out.push("### Observations", "", ...state.observations.map((item) => `- ${oneLine(item, 1000)}`), "");
   }
 
   if (state.tests.length > 0 || state.coverage) {
@@ -823,7 +823,7 @@ function shrink(state: StickyState, level: number): StickyState {
   return {
     ...state,
     summary: truncate(state.summary, level === 1 ? 6000 : 1000),
-    reviewed: level >= 3 ? [] : state.reviewed,
+    reviewed: level >= 3 ? [] : state.reviewed.map((item) => truncate(item, level === 1 ? 400 : 120)),
     observations: level >= 3 ? [] : state.observations.map((item) => truncate(item, level === 1 ? 600 : 200)),
     tests:
       level >= 3 ? [] : state.tests.map((test) => ({ ...test, focus: truncate(test.focus, level === 1 ? 300 : 100) })),

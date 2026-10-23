@@ -45702,7 +45702,7 @@ var ReviewFindingSchema = external_exports.object({
   line: external_exports.number().int().positive().describe("Line in the head version of the file"),
   end_line: external_exports.number().int().positive().optional().describe("Last line of a multi-line finding"),
   severity: SeveritySchema,
-  title: external_exports.string().min(1).max(120).optional().describe("A short name for the finding, used as its heading"),
+  title: external_exports.string().min(1).max(300).optional().describe("A short name for the finding, used as its heading"),
   summary: external_exports.string().min(1).max(500).describe("One sentence"),
   failure_scenario: external_exports.string().min(1).max(4e3).describe("Input or state, the incorrect result, and the reasoning a maintainer needs"),
   recommendation: external_exports.string().min(1).max(2e3).describe("What to change, in one or two sentences; the fix mode implements it"),
@@ -45714,18 +45714,20 @@ var ReviewResultSchema = external_exports.object({
   verdict: external_exports.enum(["approve", "comment", "request_changes"]),
   // The brief asks for 8000 characters at most; the contract leaves room for a runtime that overshoots.
   summary: external_exports.string().max(12e3),
-  reviewed: external_exports.array(external_exports.string().min(1).max(200)).max(12).optional().describe("What the review covered, in order: an area and its key files for each entry"),
+  // The brief asks for short entries and few of them; the limits here only stop pathological output,
+  // because a review that fails the contract costs a whole attempt. The comment shortens long texts.
+  reviewed: external_exports.array(external_exports.string().min(1).max(1e3)).max(40).optional().describe("What the review covered, in order: an area and its key files for each entry"),
   findings: external_exports.array(ReviewFindingSchema).max(50),
-  observations: external_exports.array(external_exports.string().min(1).max(600)).max(15).optional().describe("What the change does right, and facts a maintainer should know that need no change"),
+  observations: external_exports.array(external_exports.string().min(1).max(2e3)).max(40).optional().describe("What the change does right, and facts a maintainer should know that need no change"),
   tests: external_exports.array(
     external_exports.object({
       file: external_exports.string().min(1).max(500).describe("Path relative to the repository root"),
-      focus: external_exports.string().min(1).max(300).describe("What the file covers, in one line")
+      focus: external_exports.string().min(1).max(1e3).describe("What the file covers, in one line")
     })
-  ).max(30).optional().describe("The test files of the change"),
-  coverage: external_exports.string().max(2e3).optional().describe("What the tests cover and what they leave out"),
-  limitations: external_exports.string().max(2e3).optional().describe("What the review could not do, and why"),
-  conclusion: external_exports.string().max(2e3).optional().describe("The closing judgement, naming the most actionable finding"),
+  ).max(100).optional().describe("The test files of the change"),
+  coverage: external_exports.string().max(6e3).optional().describe("What the tests cover and what they leave out"),
+  limitations: external_exports.string().max(6e3).optional().describe("What the review could not do, and why"),
+  conclusion: external_exports.string().max(6e3).optional().describe("The closing judgement, naming the most actionable finding"),
   previous: external_exports.array(
     external_exports.object({
       id: external_exports.string().min(1).max(100),
@@ -46268,7 +46270,7 @@ function renderBody(state, context3) {
   }
   if (state.notice) out.push(`> ${oneLine(state.notice, 1e3)}`, "");
   if (state.reviewed.length > 0) {
-    out.push("**Reviewed**", "", ...state.reviewed.map((item) => `- ${oneLine(item, 200)}`), "");
+    out.push("**Reviewed**", "", ...state.reviewed.map((item) => `- ${oneLine(item, 400)}`), "");
   }
   if (state.summary) out.push(paragraphs(state.summary), "");
   if (state.findings.length > 0) {
@@ -46284,7 +46286,7 @@ function renderBody(state, context3) {
     for (const finding of state.findings) out.push(...findingSection(state, context3, finding));
   }
   if (state.observations.length > 0) {
-    out.push("### Observations", "", ...state.observations.map((item) => `- ${oneLine(item, 600)}`), "");
+    out.push("### Observations", "", ...state.observations.map((item) => `- ${oneLine(item, 1e3)}`), "");
   }
   if (state.tests.length > 0 || state.coverage) {
     out.push("### Test coverage", "");
@@ -46504,7 +46506,7 @@ function shrink(state, level) {
   return {
     ...state,
     summary: truncate(state.summary, level === 1 ? 6e3 : 1e3),
-    reviewed: level >= 3 ? [] : state.reviewed,
+    reviewed: level >= 3 ? [] : state.reviewed.map((item) => truncate(item, level === 1 ? 400 : 120)),
     observations: level >= 3 ? [] : state.observations.map((item) => truncate(item, level === 1 ? 600 : 200)),
     tests: level >= 3 ? [] : state.tests.map((test) => ({ ...test, focus: truncate(test.focus, level === 1 ? 300 : 100) })),
     coverage: clip(state.coverage, prose),

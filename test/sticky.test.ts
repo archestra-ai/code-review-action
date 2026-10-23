@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import type { AttemptRecord } from "../src/attempts";
+import { ReviewResultSchema } from "../src/contracts";
 import { parseCommand } from "../src/github/commands";
 import { buildDiffIndex, headLines } from "../src/github/diff";
 import { detectTrigger } from "../src/github/event";
@@ -181,6 +182,27 @@ describe("sticky state and rendering", () => {
     expect(codeLanguage("Makefile")).toBe("");
     expect(codeLanguage("x.TSX")).toBe("tsx");
     expect(codeLanguage("lib/foo.constructor")).toBe("");
+  });
+
+  it("accepts long review texts and shortens them in the comment instead of failing the contract", () => {
+    const long = "r".repeat(900);
+    const review = ReviewResultSchema.parse({
+      verdict: "comment",
+      summary: "",
+      reviewed: Array.from({ length: 30 }, () => long),
+      findings: [],
+      observations: Array.from({ length: 30 }, () => "o".repeat(1500)),
+      tests: [{ file: "t.ts", focus: "f".repeat(900) }],
+      coverage: "c".repeat(5000),
+      conclusion: "v".repeat(5000),
+    });
+    expect(review.reviewed).toHaveLength(30);
+    const rendered = renderSticky(
+      { ...state, reviewed: review.reviewed ?? [], observations: review.observations ?? [] },
+      { marker, repoUrl: "", command: null },
+    );
+    expect(rendered).toContain(`- ${"r".repeat(399)}…\n`);
+    expect(rendered).toContain(`- ${"o".repeat(999)}…\n`);
   });
 
   it("shows no commands when no workflow listens to them", () => {
