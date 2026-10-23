@@ -55,7 +55,7 @@ jobs:
     concurrency:
       group: archestra-review-${{ github.event.pull_request.number }}
       cancel-in-progress: true
-    uses: ./.github/workflows/archestra-runtime-review-run.yml
+    uses: $/.github/workflows/archestra-runtime-review-run.yml
     with:
       kind: review
       gateway-url: ${{ vars.ARCHESTRA_REVIEW_GATEWAY_URL }}
@@ -85,7 +85,7 @@ jobs:
     concurrency:
       group: archestra-fix-${{ github.event.issue.number || github.event.pull_request.number }}
       cancel-in-progress: false
-    uses: ./.github/workflows/archestra-runtime-review-run.yml
+    uses: $/.github/workflows/archestra-runtime-review-run.yml
     with:
       kind: fix
       gateway-url: ${{ vars.ARCHESTRA_REVIEW_GATEWAY_URL }}
