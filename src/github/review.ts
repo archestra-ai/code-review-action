@@ -56,6 +56,8 @@ export function inlineBody(finding: StoredFinding, index: DiffIndex): string {
     `**${finding.n}. [${finding.severity}] ${truncate(finding.summary.replace(/\s+/g, " "), 300)}**`,
     "",
     truncate(finding.failure_scenario, 3000).replace(/<!--|-->/g, ""),
+    "",
+    `**Recommendation:** ${truncate(finding.recommendation, 1500).replace(/<!--|-->/g, "")}`,
   ];
   const end = finding.end_line ?? finding.line;
   if (finding.suggestion !== undefined && isRangeInDiff(index, finding.file, finding.line, end)) {

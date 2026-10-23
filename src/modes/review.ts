@@ -10,6 +10,7 @@ import {
   preferAgent,
 } from "../context";
 import { CONTRACTS } from "../contracts";
+import { countFailingChecks } from "../github/ci";
 import { buildDiffIndex } from "../github/diff";
 import { loadChangedFiles, loadDiff, loadPullRequest, prAttachmentData, skipReason } from "../github/pr";
 import { inlineComments, placeFindings, postReview } from "../github/review";
@@ -35,10 +36,11 @@ export async function runReview(ctx: ActionContext, prNumber: number): Promise<A
     return makeResult("review", { status: "skipped", summary: `No review: ${skip}.` });
   }
 
-  const [files, diff, sticky] = await Promise.all([
+  const [files, diff, sticky, failingChecks] = await Promise.all([
     loadChangedFiles(gh, repo, pr.number),
     loadDiff(gh, repo, pr.number),
     findSticky(gh, repo, pr.number),
+    countFailingChecks(gh, repo, pr.headSha, log),
   ]);
   const previous = sticky?.state ?? null;
   const marker = sticky?.marker ?? null;
@@ -70,16 +72,19 @@ export async function runReview(ctx: ActionContext, prNumber: number): Promise<A
     attachments.push(
       jsonAttachment(
         "previous-findings.json",
-        previousFindings.map(({ id, file, line, end_line, severity, summary, failure_scenario, status }) => ({
-          id,
-          file,
-          line,
-          end_line,
-          severity,
-          summary,
-          failure_scenario,
-          status,
-        })),
+        previousFindings.map(
+          ({ id, file, line, end_line, severity, summary, failure_scenario, recommendation, status }) => ({
+            id,
+            file,
+            line,
+            end_line,
+            severity,
+            summary,
+            failure_scenario,
+            recommendation,
+            status,
+          }),
+        ),
       ),
     );
   }
@@ -170,6 +175,7 @@ export async function runReview(ctx: ActionContext, prNumber: number): Promise<A
     state.reviewedSha = pr.headSha;
     state.baseBranch = pr.baseRef;
     state.findings = findings;
+    state.failingChecks = failingChecks;
     state.attempts = outcome.attempts;
     state.operation = `review of ${shortSha(pr.headSha)}`;
     state.skipped = [];

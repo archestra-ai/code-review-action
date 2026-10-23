@@ -52,6 +52,21 @@ const MAX_ANNOTATIONS = 50;
  * the latest result of the same job on the base branch. Non-Actions checks
  * give annotations and the summary only.
  */
+/**
+ * How many check runs fail on `ref`. Cheap: one listing, no logs. A failure
+ * to read the checks counts as zero, so the review still posts; the log
+ * says why the triage box is missing.
+ */
+export async function countFailingChecks(gh: Octokit, repo: RepoRef, ref: string, log: Logger): Promise<number> {
+  try {
+    const checkRuns = await gh.paginate(gh.rest.checks.listForRef, { ...repo, ref, filter: "latest", per_page: 100 });
+    return checkRuns.filter((run) => run.conclusion && FAILING_CONCLUSIONS.has(run.conclusion)).length;
+  } catch (error) {
+    log.warning(`Could not read the checks of ${ref.slice(0, 7)}: ${errorMessage(error)}`);
+    return 0;
+  }
+}
+
 export async function collectCiEvidence(
   gh: Octokit,
   repo: RepoRef,

@@ -72,17 +72,20 @@ export async function runFix(ctx: ActionContext, trigger: FixTriggerInput): Prom
     branch: pr.headRef,
     headSha: pr.headSha,
     author: { login: identity.login, name: identity.name, email: identity.email },
-    findings: selected.map(({ id, n, file, line, end_line, severity, summary, failure_scenario, suggestion }) => ({
-      id,
-      n,
-      file,
-      line,
-      end_line,
-      severity,
-      summary,
-      failure_scenario,
-      suggestion,
-    })),
+    findings: selected.map(
+      ({ id, n, file, line, end_line, severity, summary, failure_scenario, recommendation, suggestion }) => ({
+        id,
+        n,
+        file,
+        line,
+        end_line,
+        severity,
+        summary,
+        failure_scenario,
+        recommendation,
+        suggestion,
+      }),
+    ),
     maintainerNote: trigger.note,
   };
   const attachments = [

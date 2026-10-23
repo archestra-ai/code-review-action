@@ -139,6 +139,8 @@ const StateSchema = z.object({
   triageSha: z.string().nullable(),
   fixPrs: z.array(z.object({ checks: z.array(z.string()), number: z.number(), url: z.string() })),
   notice: z.string().nullable(),
+  /** Failing check runs on the reviewed commit, counted at review time; drives the triage box. */
+  failingChecks: z.number().int().nonnegative().default(0),
   /** The job in progress; null when no job runs. Rendered as the header. */
   progress: ProgressSchema.nullable().default(null),
   /** The last finished job: the header when nothing is in progress. */
@@ -167,6 +169,7 @@ export function emptyState(baseBranch: string): StickyState {
     triageSha: null,
     fixPrs: [],
     notice: null,
+    failingChecks: 0,
     progress: null,
     last: null,
   };
@@ -282,11 +285,16 @@ function renderBody(state: StickyState, context: RenderContext): string {
   if (state.summary) out.push(state.summary.trim(), "");
 
   if (state.findings.length > 0) {
-    out.push("#### Findings", "", "| # | Severity | Location | Finding | Status |", "| --- | --- | --- | --- | --- |");
+    out.push(
+      "#### Findings",
+      "",
+      "| # | Severity | Location | Finding | Recommendation | Status |",
+      "| --- | --- | --- | --- | --- | --- |",
+    );
     for (const finding of state.findings) {
       const location = `\`${cell(finding.file, 120).replace(/`/g, "'")}:${finding.line}\`${finding.inline ? "" : " (outside the diff)"}`;
       out.push(
-        `| ${finding.n} | ${finding.severity} | ${location} | ${cell(finding.summary, 300)} | ${finding.status} |`,
+        `| ${finding.n} | ${finding.severity} | ${location} | ${cell(finding.summary, 300)} | ${cell(finding.recommendation, 400)} | ${finding.status} |`,
       );
     }
     out.push("");
@@ -322,9 +330,14 @@ function renderBody(state: StickyState, context: RenderContext): string {
   // "Next": one-click follow-ups. The boxes are always rendered unticked.
   const next: string[] = [];
   if (state.findings.some((finding) => finding.status === "open" || finding.status === "skipped")) {
-    next.push("- [ ] Apply the findings <!-- archestra-action:fix -->");
+    next.push("- [ ] Implement and push recommendations <!-- archestra-action:fix -->");
   }
-  next.push("- [ ] Triage and fix failing checks <!-- archestra-action:fix-ci -->");
+  // Only when the reviewed commit has failing checks; otherwise the box is noise.
+  if (state.failingChecks > 0) {
+    next.push(
+      `- [ ] Triage and fix ${state.failingChecks} failing check${state.failingChecks === 1 ? "" : "s"} <!-- archestra-action:fix-ci -->`,
+    );
+  }
   const openPreExisting = state.triage
     .map((row, index) => ({ row, index }))
     .filter(({ row }) => row.class === "pre_existing" && !state.fixPrs.some((pr) => pr.checks.includes(row.check)));
@@ -338,14 +351,21 @@ function renderBody(state: StickyState, context: RenderContext): string {
       `- [ ] Open one fix PR against ${state.baseBranch} for all pre-existing failures <!-- archestra-action:fix-ci-main:all -->`,
     );
   }
-  out.push(
-    "#### Next",
-    "",
-    ...next,
-    "",
-    `Or comment \`${command} fix\` (all findings), \`${command} fix 2,5 <note>\` (selected findings), or \`${command} fix-ci\` (failing checks). Reply \`${command} fix\` under an inline finding to apply only that finding. Only users with write access can start a fix.`,
-    "",
-  );
+  if (next.length > 0) {
+    const commands = [
+      `\`${command} fix\` (all recommendations)`,
+      `\`${command} fix 2,5 <note>\` (selected ones)`,
+      ...(state.failingChecks > 0 ? [`\`${command} fix-ci\` (failing checks)`] : []),
+    ];
+    out.push(
+      "#### Next",
+      "",
+      ...next,
+      "",
+      `Or comment ${commands.join(", ")}. Reply \`${command} fix\` under an inline finding to implement only that one. Only users with write access can start a fix.`,
+      "",
+    );
+  }
 
   if (state.fixPrs.length > 0) {
     out.push("#### Fix pull requests", "");
