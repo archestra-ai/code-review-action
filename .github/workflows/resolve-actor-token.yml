@@ -31,11 +31,17 @@ on:
 
 permissions: {}
 
+# One resolution per event: a second event on the same ref replaces it.
+concurrency:
+  group: archestra-actor-${{ github.workflow }}-${{ github.ref }}-${{ github.event.comment.id || github.run_id }}
+  cancel-in-progress: true
+
 jobs:
   resolve:
     name: Resolve the actor
     runs-on: ubuntu-latest
     timeout-minutes: 2
+    permissions: {}
     outputs:
       secret_name: ${{ steps.name.outputs.secret_name }}
       login: ${{ steps.name.outputs.login }}
