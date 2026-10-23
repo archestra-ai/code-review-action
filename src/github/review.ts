@@ -2,7 +2,7 @@ import type { ReviewFinding } from "../contracts";
 import { errorMessage, type Logger, type RepoRef, truncate } from "../util";
 import { type DiffIndex, isRangeInDiff } from "./diff";
 import { httpStatus, type Octokit } from "./octokit";
-import { escapeHtml, findingMarker, type StoredFinding } from "./sticky";
+import { escapeHtml, findingIdFromBody, findingMarker, type StoredFinding } from "./sticky";
 import type { FindingThread } from "./threads";
 
 export interface InlineComment {
@@ -40,6 +40,7 @@ export function placeFindings(
       n: i + 1,
       inline: options.inline && isRangeInDiff(index, finding.file, finding.line, end),
       status: "open" as const,
+      commentId: null,
     };
   });
 }
@@ -156,18 +157,19 @@ export function inlineBody(
 }
 
 /**
- * Posts one review with the inline comments. Returns false when GitHub
+ * Posts one review with the inline comments. `posted` is false when GitHub
  * rejects the comments (for example, a line that is no longer in the diff);
- * the caller then moves those findings into the summary.
+ * the caller then moves those findings into the summary. `reviewId` names
+ * the posted review; null when there was nothing to post.
  */
 export async function postReview(
   gh: Octokit,
   repo: RepoRef,
   params: { pr: number; headSha: string; body: string; comments: InlineComment[]; log: Logger },
-): Promise<boolean> {
-  if (params.comments.length === 0) return true;
+): Promise<{ posted: boolean; reviewId: number | null }> {
+  if (params.comments.length === 0) return { posted: true, reviewId: null };
   try {
-    await gh.rest.pulls.createReview({
+    const { data } = await gh.rest.pulls.createReview({
       ...repo,
       pull_number: params.pr,
       commit_id: params.headSha,
@@ -175,14 +177,36 @@ export async function postReview(
       body: params.body,
       comments: params.comments,
     });
-    return true;
+    return { posted: true, reviewId: data.id };
   } catch (error) {
     if (httpStatus(error) === 422) {
       params.log.warning(
         `GitHub rejected the inline comments; the findings go into the summary: ${errorMessage(error)}`,
       );
-      return false;
+      return { posted: false, reviewId: null };
     }
     throw error;
   }
+}
+
+/** The inline comments of a posted review, by finding id. */
+export async function reviewCommentIds(
+  gh: Octokit,
+  repo: RepoRef,
+  pr: number,
+  reviewId: number,
+): Promise<Map<string, number>> {
+  const result = new Map<string, number>();
+  for await (const page of gh.paginate.iterator(gh.rest.pulls.listCommentsForReview, {
+    ...repo,
+    pull_number: pr,
+    review_id: reviewId,
+    per_page: 100,
+  })) {
+    for (const comment of page.data) {
+      const id = findingIdFromBody(comment.body);
+      if (id) result.set(id, comment.id);
+    }
+  }
+  return result;
 }

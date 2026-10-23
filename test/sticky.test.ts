@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import type { AttemptRecord } from "../src/attempts";
 import { parseCommand } from "../src/github/commands";
@@ -16,6 +17,7 @@ import {
   renderSticky,
   type StickyMarker,
   serializeMarker,
+  stripCode,
 } from "../src/github/sticky";
 import { planThreadUpdates } from "../src/github/threads";
 
@@ -77,6 +79,40 @@ describe("sticky state and checkboxes", () => {
   it("round-trips the state", () => {
     expect(parseState(body)).toEqual(state);
     expect(parseMarker(body)).toEqual(marker);
+  });
+
+  it("links the number to the inline comment, and the location to the diff or to the file", () => {
+    const inDiff = { ...state.findings[0]!, inline: true, commentId: 4360045075, end_line: 5 };
+    const outside = {
+      ...state.findings[0]!,
+      id: "aaaaaaa-2",
+      n: 2,
+      file: "src/b|c.ts",
+      line: 9,
+      inline: false,
+      commentId: null,
+    };
+    const rendered = renderSticky(
+      { ...state, findings: [inDiff, outside] },
+      { marker, repoUrl: "https://github.com/acme/widgets", command: "/archestra" },
+    );
+    const anchor = createHash("sha256").update("src/a.ts").digest("hex");
+    expect(rendered).toContain(
+      `| [1](https://github.com/acme/widgets/pull/7#discussion_r4360045075) | high | [\`src/a.ts:3\`](https://github.com/acme/widgets/pull/7/files#diff-${anchor}R3-R5) |`,
+    );
+    // The pipe is escaped in the table cell, and left alone in the details block below it.
+    expect(rendered).toContain(
+      `| 2 | high | [\`src/b\\|c.ts:9\`](https://github.com/acme/widgets/blob/${"a".repeat(40)}/src/b%7Cc.ts#L9) (outside the diff) |`,
+    );
+    expect(rendered).toContain(
+      `**2. S | pipe** ([\`src/b|c.ts:9\`](https://github.com/acme/widgets/blob/${"a".repeat(40)}/src/b%7Cc.ts#L9))`,
+    );
+  });
+
+  it("keeps a fence indented by up to three spaces as code, as GitHub does", () => {
+    const summary = "### Flows\n\n  ```text\n  client <-- gateway\n  ```\n\nAnd a <b> outside.";
+    expect(escapeHtml(summary)).toBe("### Flows\n\n  ```text\n  client <-- gateway\n  ```\n\nAnd a &lt;b> outside.");
+    expect(stripCode(summary)).toBe("### Flows\n\n \n\nAnd a <b> outside.");
   });
   it("renders the Next boxes unticked, with the recommendation column", () => {
     expect(body).toContain("- [ ] Implement and push recommendations <!-- archestra-action:fix -->");
@@ -189,11 +225,12 @@ describe("sticky state and checkboxes", () => {
     expect(escapeHtml("````\n```\n<a>\n````")).toBe("````\n```\n<a>\n````");
   });
   it("escapes what GitHub would not show as code", () => {
-    // A backtick run without a closer, a span across lines, and an indented fence are plain text.
+    // A backtick run without a closer, a span across lines, and a fence indented by four spaces
+    // (an indented code line, not a fence) are plain text.
     expect(escapeHtml("stray ` <!-- archestra-action:fix -->")).toBe("stray ` &lt;!-- archestra-action:fix -->");
     expect(escapeHtml("`a\n<b>`")).toBe("`a\n&lt;b>`");
     expect(escapeHtml("```a``` <!-- x -->\n<!-- y -->")).toBe("```a``` &lt;!-- x -->\n&lt;!-- y -->");
-    expect(escapeHtml("   ```\n<!-- z -->")).toBe("   ```\n&lt;!-- z -->");
+    expect(escapeHtml("    ```\n<!-- z -->")).toBe("    ```\n&lt;!-- z -->");
     // An unclosed fence gets its closing line, so the rest of the comment renders.
     expect(escapeHtml("```\n<!-- in code -->")).toBe("```\n<!-- in code -->\n```");
     expect(escapeHtml("~~~~\n~~~\n<a>")).toBe("~~~~\n~~~\n<a>\n~~~~");

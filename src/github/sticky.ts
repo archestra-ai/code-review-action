@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { z } from "zod";
 import type { AttemptRecord } from "../attempts";
 import { ReviewFindingSchema, TriageClassSchema } from "../contracts";
@@ -110,11 +111,11 @@ function mapCode(
 }
 
 /**
- * A fenced code block at the left margin: the opening fence line, the content, and the closing fence
+ * A fenced code block indented by at most three spaces: the opening fence line, the content, and the closing fence
  * (at least as long, same character) or the end of the text. A backtick fence's info string has no backtick.
  */
 const FENCED_BLOCK =
-  /^(?:(`{3,})[^`\n]*\n[\s\S]*?(?:^ {0,3}\1`*[ \t]*$|$(?![\s\S]))|(~{3,})[^\n]*\n[\s\S]*?(?:^ {0,3}\2~*[ \t]*$|$(?![\s\S])))/gm;
+  /^ {0,3}(?:(`{3,})[^`\n]*\n[\s\S]*?(?:^ {0,3}\1`*[ \t]*$|$(?![\s\S]))|(~{3,})[^\n]*\n[\s\S]*?(?:^ {0,3}\2~*[ \t]*$|$(?![\s\S])))/gm;
 
 function mapProse(text: string, prose: Mapper, code: Mapper): string {
   return text
@@ -186,11 +187,14 @@ const FindingStatusSchema = z.enum(["open", "applied", "skipped", "fixed"]);
 const StoredFindingSchema = ReviewFindingSchema.extend({
   id: z.string(),
   n: z.number().int(),
+  /** True when the lines of the finding are in the diff of the pull request. */
   inline: z.boolean(),
   status: FindingStatusSchema,
   failure_scenario: z.string().max(4000),
   /** Comments written before recommendations existed have none; keep their findings. */
   recommendation: z.string().max(2000).default(""),
+  /** The inline review comment of the finding; null when it has none (outside the diff, or rejected). */
+  commentId: z.number().int().nullable().default(null),
 });
 export type StoredFinding = z.infer<typeof StoredFindingSchema>;
 
@@ -392,6 +396,45 @@ export interface RenderContext {
 
 const MAX_BODY_CHARS = 65_000;
 
+type Lines = Pick<StoredFinding, "file" | "line" | "end_line">;
+
+/** The "Files changed" view of the pull request at the lines of the finding. GitHub anchors a file by the SHA-256 of its path. */
+export function diffUrl(repoUrl: string, pr: number, finding: Lines): string {
+  const anchor = createHash("sha256").update(finding.file).digest("hex");
+  const end = finding.end_line ?? finding.line;
+  return `${repoUrl}/pull/${pr}/files#diff-${anchor}R${finding.line}${end > finding.line ? `-R${end}` : ""}`;
+}
+
+/** The file at the reviewed commit, at the lines of the finding. */
+export function blobUrl(repoUrl: string, sha: string, finding: Lines): string {
+  const path = finding.file
+    .split("/")
+    .map((segment) => encodeURIComponent(segment).replace(/[()]/g, (char) => (char === "(" ? "%28" : "%29")))
+    .join("/");
+  const end = finding.end_line ?? finding.line;
+  return `${repoUrl}/blob/${sha}/${path}#L${finding.line}${end > finding.line ? `-L${end}` : ""}`;
+}
+
+/** The inline review comment in the conversation of the pull request. */
+export function commentUrl(repoUrl: string, pr: number, commentId: number): string {
+  return `${repoUrl}/pull/${pr}#discussion_r${commentId}`;
+}
+
+/**
+ * `file:line`, linked to the diff when the finding is in it, else to the file at the reviewed
+ * commit. A table cell escapes its pipes; text outside a table must not.
+ */
+function locationLink(state: StickyState, context: RenderContext, finding: StoredFinding, table: boolean): string {
+  const path = (table ? cell(finding.file, 120) : oneLine(finding.file, 200)).replace(/[`[\]]/g, "'");
+  const text = `\`${path}:${finding.line}\``;
+  const url = finding.inline
+    ? diffUrl(context.repoUrl, context.marker.pr, finding)
+    : state.reviewedSha
+      ? blobUrl(context.repoUrl, state.reviewedSha, finding)
+      : null;
+  return url ? `[${text}](${url})` : text;
+}
+
 export function renderSticky(state: StickyState, context: RenderContext): string {
   let fitted = state;
   for (let level = 0; level <= 3; level++) {
@@ -462,18 +505,24 @@ function renderBody(state: StickyState, context: RenderContext): string {
       "| --- | --- | --- | --- | --- | --- |",
     );
     for (const finding of state.findings) {
-      const location = `\`${cell(finding.file, 120).replace(/`/g, "'")}:${finding.line}\`${finding.inline ? "" : " (outside the diff)"}`;
+      // The number opens the inline comment; the location opens the diff.
+      const number =
+        finding.commentId === null
+          ? String(finding.n)
+          : `[${finding.n}](${commentUrl(repoUrl, context.marker.pr, finding.commentId)})`;
+      const location = `${locationLink(state, context, finding, true)}${finding.inline ? "" : " (outside the diff)"}`;
       out.push(
-        `| ${finding.n} | ${finding.severity} | ${location} | ${cell(finding.summary, 300)} | ${cell(finding.recommendation, 400)} | ${finding.status} |`,
+        `| ${number} | ${finding.severity} | ${location} | ${cell(finding.summary, 300)} | ${cell(finding.recommendation, 400)} | ${finding.status} |`,
       );
     }
     out.push("");
-    const outside = state.findings.filter((finding) => !finding.inline && finding.status === "open");
+    // A finding without an inline comment shows its failure scenario here; an inline comment carries it.
+    const outside = state.findings.filter((finding) => finding.commentId === null && finding.status === "open");
     if (outside.length > 0) {
       out.push("<details><summary>Findings outside the diff</summary>", "");
       for (const finding of outside) {
         out.push(
-          `**${finding.n}. ${oneLine(finding.summary, 300)}** (\`${oneLine(finding.file, 200).replace(/`/g, "'")}:${finding.line}\`)`,
+          `**${finding.n}. ${oneLine(finding.summary, 300)}** (${locationLink(state, context, finding, false)})`,
           "",
           quote(finding.failure_scenario),
           "",

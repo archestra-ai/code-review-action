@@ -54,6 +54,9 @@ describe("review mode", () => {
       sha: harness.github.pr.head.sha,
     });
     expect(sticky).toContain("(outside the diff)");
+    const [commentId] = [...harness.github.reviewComments.keys()];
+    expect(parseState(sticky)!.findings.map((finding) => finding.commentId)).toEqual([commentId, null]);
+    expect(sticky).toContain(`[1](https://github.com/acme/widgets/pull/7#discussion_r${commentId})`);
     expect(harness.archestra.starts[0]!.attachmentNames).toEqual(["pr.json", "pr.diff"]);
     expect(Buffer.byteLength(harness.archestra.starts[0]!.message)).toBeLessThan(8192);
   });
@@ -181,6 +184,8 @@ describe("review mode", () => {
       [first.id, 1],
       ["ddddddd-2", 2],
     ]);
+    // The kept finding keeps its comment; the new one gets the comment the review created.
+    expect(state.findings.map((finding) => finding.commentId)).toEqual([...harness.github.reviewComments.keys()]);
   });
 
   it("pairs a repeated finding by file and summary when the runtime gives no previous_id, and posts no review", async () => {
@@ -201,7 +206,7 @@ describe("review mode", () => {
     expect(rewritten).not.toContain("```suggestion");
   });
 
-  it("rewrites the comment of a kept finding whose lines left the diff, and keeps it inline", async () => {
+  it("rewrites the comment of a kept finding whose lines left the diff, and records the comment", async () => {
     const { harness } = await reviewed();
     const first = parseState(harness.github.stickyBody()!)!.findings[0]!;
     harness.github.pr.head.sha = "d".repeat(40);
@@ -216,8 +221,29 @@ describe("review mode", () => {
     await run(harness.context("pull_request", prEvent(harness.github, "synchronize")));
     expect(harness.github.reviews).toHaveLength(1);
     expect(harness.github.reviewCommentUpdates).toHaveLength(1);
+    const sticky = harness.github.stickyBody()!;
+    const finding = parseState(sticky)!.findings[0]!;
+    expect(finding).toMatchObject({ id: first.id, line: 3, inline: false, commentId: first.commentId });
+    // The location links to the file, not to a diff line that does not exist; the comment carries the scenario.
+    expect(sticky).toContain(`/blob/${"d".repeat(40)}/src/upload.ts#L3) (outside the diff)`);
+    expect(sticky).not.toContain("Findings outside the diff");
+  });
+
+  it("posts a new inline comment when a person deleted the old one", async () => {
+    const { harness } = await reviewed();
+    const first = parseState(harness.github.stickyBody()!)!.findings[0]!;
+    harness.github.goneComments.add(first.commentId!);
+    harness.github.pr.head.sha = "d".repeat(40);
+    harness.archestra.script(AGENT_A, {
+      end: "completed",
+      files: { "review.json": reviewJson([{ ...FINDING_IN_DIFF, previous_id: first.id }]) },
+    });
+    await run(harness.context("pull_request", prEvent(harness.github, "synchronize")));
+    expect(harness.github.reviews).toHaveLength(2);
+    expect(harness.github.reviews[1]!.comments).toHaveLength(1);
     const finding = parseState(harness.github.stickyBody()!)!.findings[0]!;
-    expect(finding).toMatchObject({ id: first.id, line: 3, inline: true });
+    expect(finding.id).toBe(first.id);
+    expect(finding.commentId).toBe([...harness.github.reviewComments.keys()][1]);
   });
 
   it("posts a new inline comment when the old one is outdated", async () => {

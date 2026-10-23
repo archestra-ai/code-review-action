@@ -1,7 +1,7 @@
 # Archestra code review action
 
 This GitHub Action reviews pull requests on [Archestra](https://archestra.ai) Agent Runtimes. When a maintainer asks, the same runtime applies the findings, triages failing checks, and prepares a fix pull request for failures that are already on the base branch.
-- **Review.** The action starts a one-shot run on one of your Archestra agents. The agent clones the repository at the head commit, reviews the change and writes `review.json`: for each finding, the failure scenario and a recommendation that says what to change. The action posts a review comment with a findings table and inline comments.
+- **Review.** The action starts a one-shot run on one of your Archestra agents. The agent clones the repository at the head commit, reviews the change and writes `review.json`: for each finding, the failure scenario and a recommendation that says what to change. The action posts a review comment with the review text (what the change does, a plain ASCII architecture diagram and sequence diagrams of the main affected flows, then the sections that matter), a findings table and inline comments.
 - **Your identity, your costs.** Each run acts as the person who caused the event: the pull request author, the pusher, or the maintainer who asked for a fix. The run uses that person's Archestra credentials and Claude account, the cost goes to that person, and only that person can answer a Guardrails review on the run page.
 - **Balancing and fallback.** You give a list of agents. Each agent has a dedicated runtime and its own model provider. The action selects the first agent from the list (rotation by default). It tries the same agent again after a temporary failure and goes to the next agent after a permanent failure. The number of attempts is finite.
 - **Fixes on request.** A maintainer ticks a box in the review comment or writes a command. The action continues the retained workspace of the review. The runtime pushes the fix to the pull request branch. The commits have the maintainer as the author.
@@ -23,6 +23,8 @@ or a ticked box     │          ──► steer_agent_run (same run, next turn)
 ```
 
 The review comment appears as soon as the job starts, with a progress header: who the job acts for, the current step and a link to the run. The same comment is rewritten with the result at the end, with the time the job took. Every later job on the pull request updates that one comment. A collapsed **History** section at the end lists every job on the pull request (the last 20): when it started, the agent, the run and whether it continued an earlier run, the result, and the time each attempt took. A workflow run that fails before the action reaches the comment is not in it; the Actions tab has those.
+
+In the findings table, the number links to the finding's inline comment, and the location to the diff at those lines (to the file at the reviewed commit for a finding outside the diff).
 
 A later review of the same pull request keeps the findings it reported before. The runtime names them with `previous_id` (a finding with the same file and summary counts too); their inline comments are rewritten in place, so the thread, its replies and its resolution stay. Only new findings get new inline comments, and the threads of fixed findings are resolved.
 
