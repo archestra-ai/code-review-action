@@ -148,7 +148,7 @@ export async function runReview(ctx: ActionContext, prNumber: number): Promise<A
       pr: pr.number,
       headSha: pr.headSha,
       body: `Archestra review of \`${shortSha(pr.headSha)}\`: ${findings.length} finding${findings.length === 1 ? "" : "s"}. The summary is in the review comment of this pull request.`,
-      comments: inlineComments(findings, index),
+      comments: inlineComments(findings, index, inputs.fixCommand),
       log,
     });
     if (!posted) findings = findings.map((finding) => ({ ...finding, inline: false }));
