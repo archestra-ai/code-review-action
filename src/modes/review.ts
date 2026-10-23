@@ -12,6 +12,7 @@ import {
 import { CONTRACTS } from "../contracts";
 import { countFailingChecks } from "../github/ci";
 import { buildDiffIndex } from "../github/diff";
+import { httpStatus } from "../github/octokit";
 import { loadChangedFiles, loadDiff, loadPullRequest, prAttachmentData, skipReason } from "../github/pr";
 import {
   coversFinding,
@@ -179,18 +180,25 @@ export async function runReview(ctx: ActionContext, prNumber: number): Promise<A
       if (thread && !thread.isOutdated) kept.push({ finding, thread });
       else if (finding.inline) fresh.add(finding.id);
     }
+    // The inline comment of each finding: the kept thread, or the comment the new review creates.
+    const commentIds = new Map<string, number>();
     for (const { finding, thread } of kept) {
       // A suggestion applies to the lines the comment sits on; it is left out when the finding moved.
       const body = inlineBody(finding, index, inputs.fixCommand, { suggestion: coversFinding(thread, finding) });
       try {
         await updateInlineComment(gh, repo, thread.commentId, body);
+        commentIds.set(finding.id, thread.commentId);
       } catch (error) {
-        log.warning(`Could not update the inline comment of finding ${finding.n}: ${errorMessage(error)}`);
+        if (httpStatus(error) === 404 && finding.inline) {
+          // A person deleted the comment; the finding gets a new one.
+          log.warning(`The inline comment of finding ${finding.n} is gone; a new one is posted.`);
+          fresh.add(finding.id);
+        } else {
+          log.warning(`Could not update the inline comment of finding ${finding.n}: ${errorMessage(error)}`);
+          commentIds.set(finding.id, thread.commentId);
+        }
       }
     }
-    const keptIds = new Set(kept.map((entry) => entry.finding.id));
-    // The inline comment of each finding: the kept thread, or the comment the new review creates.
-    const commentIds = new Map(kept.map((entry) => [entry.finding.id, entry.thread.commentId]));
     const posting = await postReview(gh, repo, {
       pr: pr.number,
       headSha: pr.headSha,
@@ -211,13 +219,12 @@ export async function runReview(ctx: ActionContext, prNumber: number): Promise<A
         log.warning(`Could not read the ids of the new inline comments: ${errorMessage(error)}`);
       }
     }
-    // A kept comment is inline even when its lines left the diff; a rejected new one goes into the summary.
-    findings = findings.map((finding) => {
-      const commentId = commentIds.get(finding.id) ?? null;
-      if (keptIds.has(finding.id)) return { ...finding, inline: true, commentId };
-      if (!posting.posted && fresh.has(finding.id)) return { ...finding, inline: false, commentId: null };
-      return { ...finding, commentId };
-    });
+    // A rejected new comment moves its finding into the summary; every other finding records its comment, if any.
+    findings = findings.map((finding) =>
+      !posting.posted && fresh.has(finding.id)
+        ? { ...finding, inline: false, commentId: null }
+        : { ...finding, commentId: commentIds.get(finding.id) ?? null },
+    );
   }
 
   const statuses = review.previous ?? [];

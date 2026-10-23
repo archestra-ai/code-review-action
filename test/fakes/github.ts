@@ -79,6 +79,8 @@ export class FakeGitHub {
   readonly outdated = new Set<number>();
   /** Review comments rewritten in place, in order. */
   readonly reviewCommentUpdates: number[] = [];
+  /** Review comments a person deleted: still listed as threads, but a PATCH answers 404. */
+  readonly goneComments = new Set<number>();
   readonly graphqlMutations: Array<{ action: "resolve" | "unresolve"; threadId: string }> = [];
   readonly reactions: Array<{ commentId: number; content: string }> = [];
   readonly reruns: number[] = [];
@@ -204,7 +206,7 @@ export class FakeGitHub {
       }),
       http.patch(`${base}/pulls/comments/:id`, async ({ request, params }) => {
         const comment = this.reviewComments.get(Number(params.id));
-        if (!comment) return notFound();
+        if (!comment || this.goneComments.has(comment.id)) return notFound();
         comment.body = ((await request.json()) as { body: string }).body;
         this.reviewCommentUpdates.push(comment.id);
         return HttpResponse.json({ id: comment.id, body: comment.body });

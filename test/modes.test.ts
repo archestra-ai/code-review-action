@@ -206,7 +206,7 @@ describe("review mode", () => {
     expect(rewritten).not.toContain("```suggestion");
   });
 
-  it("rewrites the comment of a kept finding whose lines left the diff, and keeps it inline", async () => {
+  it("rewrites the comment of a kept finding whose lines left the diff, and records the comment", async () => {
     const { harness } = await reviewed();
     const first = parseState(harness.github.stickyBody()!)!.findings[0]!;
     harness.github.pr.head.sha = "d".repeat(40);
@@ -221,8 +221,29 @@ describe("review mode", () => {
     await run(harness.context("pull_request", prEvent(harness.github, "synchronize")));
     expect(harness.github.reviews).toHaveLength(1);
     expect(harness.github.reviewCommentUpdates).toHaveLength(1);
+    const sticky = harness.github.stickyBody()!;
+    const finding = parseState(sticky)!.findings[0]!;
+    expect(finding).toMatchObject({ id: first.id, line: 3, inline: false, commentId: first.commentId });
+    // The location links to the file, not to a diff line that does not exist; the comment carries the scenario.
+    expect(sticky).toContain(`/blob/${"d".repeat(40)}/src/upload.ts#L3) (outside the diff)`);
+    expect(sticky).not.toContain("Findings outside the diff");
+  });
+
+  it("posts a new inline comment when a person deleted the old one", async () => {
+    const { harness } = await reviewed();
+    const first = parseState(harness.github.stickyBody()!)!.findings[0]!;
+    harness.github.goneComments.add(first.commentId!);
+    harness.github.pr.head.sha = "d".repeat(40);
+    harness.archestra.script(AGENT_A, {
+      end: "completed",
+      files: { "review.json": reviewJson([{ ...FINDING_IN_DIFF, previous_id: first.id }]) },
+    });
+    await run(harness.context("pull_request", prEvent(harness.github, "synchronize")));
+    expect(harness.github.reviews).toHaveLength(2);
+    expect(harness.github.reviews[1]!.comments).toHaveLength(1);
     const finding = parseState(harness.github.stickyBody()!)!.findings[0]!;
-    expect(finding).toMatchObject({ id: first.id, line: 3, inline: true });
+    expect(finding.id).toBe(first.id);
+    expect(finding.commentId).toBe([...harness.github.reviewComments.keys()][1]);
   });
 
   it("posts a new inline comment when the old one is outdated", async () => {
