@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import type { AttemptRecord } from "../src/attempts";
 import { parseCommand } from "../src/github/commands";
@@ -77,6 +78,33 @@ describe("sticky state and checkboxes", () => {
   it("round-trips the state", () => {
     expect(parseState(body)).toEqual(state);
     expect(parseMarker(body)).toEqual(marker);
+  });
+
+  it("links the number to the inline comment, and the location to the diff or to the file", () => {
+    const inDiff = { ...state.findings[0]!, inline: true, commentId: 4360045075, end_line: 5 };
+    const outside = {
+      ...state.findings[0]!,
+      id: "aaaaaaa-2",
+      n: 2,
+      file: "src/b c.ts",
+      line: 9,
+      inline: false,
+      commentId: null,
+    };
+    const rendered = renderSticky(
+      { ...state, findings: [inDiff, outside] },
+      { marker, repoUrl: "https://github.com/acme/widgets", command: "/archestra" },
+    );
+    const anchor = createHash("sha256").update("src/a.ts").digest("hex");
+    expect(rendered).toContain(
+      `| [1](https://github.com/acme/widgets/pull/7#discussion_r4360045075) | high | [\`src/a.ts:3\`](https://github.com/acme/widgets/pull/7/files#diff-${anchor}R3-R5) |`,
+    );
+    expect(rendered).toContain(
+      `| 2 | high | [\`src/b c.ts:9\`](https://github.com/acme/widgets/blob/${"a".repeat(40)}/src/b%20c.ts#L9) (outside the diff) |`,
+    );
+    expect(rendered).toContain(
+      `**2. S | pipe** ([\`src/b c.ts:9\`](https://github.com/acme/widgets/blob/${"a".repeat(40)}/src/b%20c.ts#L9))`,
+    );
   });
   it("renders the Next boxes unticked, with the recommendation column", () => {
     expect(body).toContain("- [ ] Implement and push recommendations <!-- archestra-action:fix -->");

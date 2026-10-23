@@ -54,6 +54,9 @@ describe("review mode", () => {
       sha: harness.github.pr.head.sha,
     });
     expect(sticky).toContain("(outside the diff)");
+    const [commentId] = [...harness.github.reviewComments.keys()];
+    expect(parseState(sticky)!.findings.map((finding) => finding.commentId)).toEqual([commentId, null]);
+    expect(sticky).toContain(`[1](https://github.com/acme/widgets/pull/7#discussion_r${commentId})`);
     expect(harness.archestra.starts[0]!.attachmentNames).toEqual(["pr.json", "pr.diff"]);
     expect(Buffer.byteLength(harness.archestra.starts[0]!.message)).toBeLessThan(8192);
   });
@@ -181,6 +184,8 @@ describe("review mode", () => {
       [first.id, 1],
       ["ddddddd-2", 2],
     ]);
+    // The kept finding keeps its comment; the new one gets the comment the review created.
+    expect(state.findings.map((finding) => finding.commentId)).toEqual([...harness.github.reviewComments.keys()]);
   });
 
   it("pairs a repeated finding by file and summary when the runtime gives no previous_id, and posts no review", async () => {

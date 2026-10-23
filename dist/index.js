@@ -45534,6 +45534,9 @@ function parseCommand(body, prefix2) {
   }
 }
 
+// src/github/sticky.ts
+import { createHash } from "node:crypto";
+
 // src/contracts.ts
 var sha = external_exports.string().regex(/^[0-9a-f]{40}$/, "must be a full 40-character lowercase commit SHA");
 var SeveritySchema = external_exports.enum(["critical", "high", "medium", "low", "nit"]);
@@ -45718,7 +45721,9 @@ var StoredFindingSchema = ReviewFindingSchema.extend({
   status: FindingStatusSchema,
   failure_scenario: external_exports.string().max(4e3),
   /** Comments written before recommendations existed have none; keep their findings. */
-  recommendation: external_exports.string().max(2e3).default("")
+  recommendation: external_exports.string().max(2e3).default(""),
+  /** The inline review comment of the finding; null when it has none (outside the diff, or rejected). */
+  commentId: external_exports.number().int().nullable().default(null)
 });
 var AttemptRecordSchema = external_exports.object({
   agentId: external_exports.string(),
@@ -45876,6 +45881,24 @@ function newlyCheckedActions(before, after) {
   return [...actionCheckboxes(after)].filter(([id, checked]) => checked && previous.get(id) !== true).map(([id]) => id);
 }
 var MAX_BODY_CHARS = 65e3;
+function diffUrl(repoUrl2, pr, finding) {
+  const anchor2 = createHash("sha256").update(finding.file).digest("hex");
+  const end = finding.end_line ?? finding.line;
+  return `${repoUrl2}/pull/${pr}/files#diff-${anchor2}R${finding.line}${end > finding.line ? `-R${end}` : ""}`;
+}
+function blobUrl(repoUrl2, sha2, finding) {
+  const path = finding.file.split("/").map((segment) => encodeURIComponent(segment).replace(/[()]/g, (char) => char === "(" ? "%28" : "%29")).join("/");
+  const end = finding.end_line ?? finding.line;
+  return `${repoUrl2}/blob/${sha2}/${path}#L${finding.line}${end > finding.line ? `-L${end}` : ""}`;
+}
+function commentUrl(repoUrl2, pr, commentId) {
+  return `${repoUrl2}/pull/${pr}#discussion_r${commentId}`;
+}
+function locationLink(state, context3, finding) {
+  const text = `\`${cell(finding.file, 120).replace(/[`[\]]/g, "'")}:${finding.line}\``;
+  const url2 = finding.inline ? diffUrl(context3.repoUrl, context3.marker.pr, finding) : state.reviewedSha ? blobUrl(context3.repoUrl, state.reviewedSha, finding) : null;
+  return url2 ? `[${text}](${url2})` : text;
+}
 function renderSticky(state, context3) {
   let fitted = state;
   for (let level = 0; level <= 3; level++) {
@@ -45929,9 +45952,10 @@ function renderBody(state, context3) {
       "| --- | --- | --- | --- | --- | --- |"
     );
     for (const finding of state.findings) {
-      const location = `\`${cell(finding.file, 120).replace(/`/g, "'")}:${finding.line}\`${finding.inline ? "" : " (outside the diff)"}`;
+      const number4 = finding.commentId === null ? String(finding.n) : `[${finding.n}](${commentUrl(repoUrl2, context3.marker.pr, finding.commentId)})`;
+      const location = `${locationLink(state, context3, finding)}${finding.inline ? "" : " (outside the diff)"}`;
       out.push(
-        `| ${finding.n} | ${finding.severity} | ${location} | ${cell(finding.summary, 300)} | ${cell(finding.recommendation, 400)} | ${finding.status} |`
+        `| ${number4} | ${finding.severity} | ${location} | ${cell(finding.summary, 300)} | ${cell(finding.recommendation, 400)} | ${finding.status} |`
       );
     }
     out.push("");
@@ -45940,7 +45964,7 @@ function renderBody(state, context3) {
       out.push("<details><summary>Findings outside the diff</summary>", "");
       for (const finding of outside) {
         out.push(
-          `**${finding.n}. ${oneLine(finding.summary, 300)}** (\`${oneLine(finding.file, 200).replace(/`/g, "'")}:${finding.line}\`)`,
+          `**${finding.n}. ${oneLine(finding.summary, 300)}** (${locationLink(state, context3, finding)})`,
           "",
           quote(finding.failure_scenario),
           ""
@@ -47431,7 +47455,8 @@ function placeFindings(findings, index, options) {
       id: links.get(i) ?? freshId(prefix2, i + 1, used),
       n: i + 1,
       inline: options.inline && isRangeInDiff(index, finding.file, finding.line, end),
-      status: "open"
+      status: "open",
+      commentId: null
     };
   });
 }
@@ -47511,9 +47536,9 @@ function inlineBody(finding, index, command, options = {}) {
   return parts.join("\n");
 }
 async function postReview(gh, repo, params) {
-  if (params.comments.length === 0) return true;
+  if (params.comments.length === 0) return { posted: true, reviewId: null };
   try {
-    await gh.rest.pulls.createReview({
+    const { data } = await gh.rest.pulls.createReview({
       ...repo,
       pull_number: params.pr,
       commit_id: params.headSha,
@@ -47521,16 +47546,31 @@ async function postReview(gh, repo, params) {
       body: params.body,
       comments: params.comments
     });
-    return true;
+    return { posted: true, reviewId: data.id };
   } catch (error63) {
     if (httpStatus(error63) === 422) {
       params.log.warning(
         `GitHub rejected the inline comments; the findings go into the summary: ${errorMessage(error63)}`
       );
-      return false;
+      return { posted: false, reviewId: null };
     }
     throw error63;
   }
+}
+async function reviewCommentIds(gh, repo, pr, reviewId) {
+  const result = /* @__PURE__ */ new Map();
+  for await (const page of gh.paginate.iterator(gh.rest.pulls.listCommentsForReview, {
+    ...repo,
+    pull_number: pr,
+    review_id: reviewId,
+    per_page: 100
+  })) {
+    for (const comment of page.data) {
+      const id = findingIdFromBody(comment.body);
+      if (id) result.set(id, comment.id);
+    }
+  }
+  return result;
 }
 
 // src/modes/review.ts
@@ -47655,7 +47695,8 @@ async function runReview(ctx, prNumber) {
       }
     }
     const keptIds = new Set(kept.map((entry) => entry.finding.id));
-    const posted = await postReview(gh, repo, {
+    const commentIds = new Map(kept.map((entry) => [entry.finding.id, entry.thread.commentId]));
+    const posting = await postReview(gh, repo, {
       pr: pr.number,
       headSha: pr.headSha,
       body: `Archestra review of \`${shortSha(pr.headSha)}\`: ${count} finding${count === 1 ? "" : "s"}${kept.length > 0 ? ` (${fresh.size} new; the others were updated in place)` : ""}. The summary is in the review comment of this pull request.`,
@@ -47666,9 +47707,21 @@ async function runReview(ctx, prNumber) {
       ),
       log
     });
-    findings = findings.map(
-      (finding) => keptIds.has(finding.id) ? { ...finding, inline: true } : !posted && fresh.has(finding.id) ? { ...finding, inline: false } : finding
-    );
+    if (posting.reviewId !== null) {
+      try {
+        for (const [id, commentId] of await reviewCommentIds(gh, repo, pr.number, posting.reviewId)) {
+          commentIds.set(id, commentId);
+        }
+      } catch (error63) {
+        log.warning(`Could not read the ids of the new inline comments: ${errorMessage(error63)}`);
+      }
+    }
+    findings = findings.map((finding) => {
+      const commentId = commentIds.get(finding.id) ?? null;
+      if (keptIds.has(finding.id)) return { ...finding, inline: true, commentId };
+      if (!posting.posted && fresh.has(finding.id)) return { ...finding, inline: false, commentId: null };
+      return { ...finding, commentId };
+    });
   }
   const statuses = review.previous ?? [];
   const known = new Set(previousFindings.map((finding) => finding.id));

@@ -14,6 +14,8 @@ export interface FakeReviewComment extends FakeComment {
   line: number;
   startLine: number | null;
   inReplyTo: number | null;
+  /** The review that created the comment; null for a reply. */
+  reviewId: number | null;
 }
 
 export interface FakeCommit {
@@ -166,6 +168,7 @@ export class FakeGitHub {
           return HttpResponse.json({ message: "Unprocessable Entity: line must be part of the diff" }, { status: 422 });
         }
         this.reviews.push(body);
+        const reviewId = 700 + this.reviews.length;
         for (const comment of body.comments ?? []) {
           const id = ++this.nextId;
           this.reviewComments.set(id, {
@@ -176,10 +179,18 @@ export class FakeGitHub {
             line: comment.line,
             startLine: comment.start_line ?? null,
             inReplyTo: null,
+            reviewId,
           });
         }
-        return HttpResponse.json({ id: this.reviews.length }, { status: 200 });
+        return HttpResponse.json({ id: reviewId }, { status: 200 });
       }),
+      http.get(`${base}/pulls/${this.pr.number}/reviews/:id/comments`, ({ params }) =>
+        HttpResponse.json(
+          [...this.reviewComments.values()]
+            .filter((comment) => comment.reviewId === Number(params.id))
+            .map((comment) => ({ id: comment.id, body: comment.body, path: comment.path, line: comment.line })),
+        ),
+      ),
       http.get(`${base}/pulls/comments/:id`, ({ params }) => {
         const comment = this.reviewComments.get(Number(params.id));
         if (!comment) return notFound();
@@ -210,6 +221,7 @@ export class FakeGitHub {
           line: parent?.line ?? 0,
           startLine: null,
           inReplyTo: Number(params.id),
+          reviewId: null,
         });
         return HttpResponse.json({ id, body }, { status: 201 });
       }),

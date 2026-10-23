@@ -19,6 +19,7 @@ import {
   inlineComments,
   placeFindings,
   postReview,
+  reviewCommentIds,
   updateInlineComment,
 } from "../github/review";
 import { findSticky, type StoredFinding } from "../github/sticky";
@@ -188,7 +189,9 @@ export async function runReview(ctx: ActionContext, prNumber: number): Promise<A
       }
     }
     const keptIds = new Set(kept.map((entry) => entry.finding.id));
-    const posted = await postReview(gh, repo, {
+    // The inline comment of each finding: the kept thread, or the comment the new review creates.
+    const commentIds = new Map(kept.map((entry) => [entry.finding.id, entry.thread.commentId]));
+    const posting = await postReview(gh, repo, {
       pr: pr.number,
       headSha: pr.headSha,
       body: `Archestra review of \`${shortSha(pr.headSha)}\`: ${count} finding${count === 1 ? "" : "s"}${kept.length > 0 ? ` (${fresh.size} new; the others were updated in place)` : ""}. The summary is in the review comment of this pull request.`,
@@ -199,14 +202,22 @@ export async function runReview(ctx: ActionContext, prNumber: number): Promise<A
       ),
       log,
     });
+    if (posting.reviewId !== null) {
+      try {
+        for (const [id, commentId] of await reviewCommentIds(gh, repo, pr.number, posting.reviewId)) {
+          commentIds.set(id, commentId);
+        }
+      } catch (error) {
+        log.warning(`Could not read the ids of the new inline comments: ${errorMessage(error)}`);
+      }
+    }
     // A kept comment is inline even when its lines left the diff; a rejected new one goes into the summary.
-    findings = findings.map((finding) =>
-      keptIds.has(finding.id)
-        ? { ...finding, inline: true }
-        : !posted && fresh.has(finding.id)
-          ? { ...finding, inline: false }
-          : finding,
-    );
+    findings = findings.map((finding) => {
+      const commentId = commentIds.get(finding.id) ?? null;
+      if (keptIds.has(finding.id)) return { ...finding, inline: true, commentId };
+      if (!posting.posted && fresh.has(finding.id)) return { ...finding, inline: false, commentId: null };
+      return { ...finding, commentId };
+    });
   }
 
   const statuses = review.previous ?? [];
