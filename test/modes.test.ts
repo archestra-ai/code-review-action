@@ -102,7 +102,7 @@ describe("review mode", () => {
     expect(harness.archestra.starts).toHaveLength(1);
   });
 
-  it("stores the clone token as the actor's GITHUB_TOKEN before a review, and nothing without it", async () => {
+  it("stores the clone token as the actor's CODE_REVIEW_GITHUB_TOKEN before a review, and nothing without it", async () => {
     const { harness } = await reviewed();
     expect(harness.archestra.credentials).toEqual([]);
     harness.archestra.script(AGENT_A, { end: "completed", files: { "review.json": reviewJson() } });
@@ -111,7 +111,7 @@ describe("review mode", () => {
       harness.context("pull_request", prEvent(harness.github, "synchronize"), { "clone-token": "ghs_read_only" }),
     );
     expect(harness.archestra.credentials).toEqual([
-      { agentId: AGENT_A, key: "GITHUB_TOKEN", valueLength: "ghs_read_only".length },
+      { agentId: AGENT_A, key: "CODE_REVIEW_GITHUB_TOKEN", valueLength: "ghs_read_only".length },
     ]);
   });
 
@@ -278,7 +278,7 @@ describe("identity", () => {
     });
     expect(harness.archestra.starts[1]!.runId).not.toBe(review.runId);
     expect(harness.archestra.credentials).toEqual([
-      { agentId: AGENT_A, key: "GITHUB_TOKEN", valueLength: "ghs_app_token".length },
+      { agentId: AGENT_A, key: "CODE_REVIEW_GITHUB_TOKEN", valueLength: "ghs_app_token".length },
     ]);
   });
 });
@@ -331,7 +331,7 @@ describe("fix mode", () => {
     });
     expect(fixStart.message).toContain('git config user.email "1001+maria@users.noreply.github.com"');
     expect(harness.archestra.credentials).toEqual([
-      { agentId: AGENT_A, key: "GITHUB_TOKEN", valueLength: "ghs_app_token".length },
+      { agentId: AGENT_A, key: "CODE_REVIEW_GITHUB_TOKEN", valueLength: "ghs_app_token".length },
     ]);
 
     expect(result.pushedCommits).toEqual([good]);

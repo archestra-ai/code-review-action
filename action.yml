@@ -85,7 +85,7 @@ inputs:
   clone-token:
     description: >-
       A read-only GitHub token (contents read) for a private repository. Before each review, the action
-      stores it as the actor's GITHUB_TOKEN credential on the agent, so the runtime can clone. Empty: the
+      stores it as the actor's CODE_REVIEW_GITHUB_TOKEN credential on the agent, so the runtime can clone. Empty: the
       review uses the value that is already stored. Public repositories do not need it.
     default: ""
   fix-timeout-minutes:
