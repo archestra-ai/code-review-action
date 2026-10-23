@@ -13,19 +13,35 @@ import { CONTRACTS } from "../contracts";
 import { countFailingChecks } from "../github/ci";
 import { buildDiffIndex } from "../github/diff";
 import { loadChangedFiles, loadDiff, loadPullRequest, prAttachmentData, skipReason } from "../github/pr";
-import { inlineComments, placeFindings, postReview } from "../github/review";
-import { findSticky } from "../github/sticky";
-import { applyThreadUpdate, listFindingThreads, planThreadUpdates, replyToThread } from "../github/threads";
+import {
+  coversFinding,
+  inlineBody,
+  inlineComments,
+  placeFindings,
+  postReview,
+  updateInlineComment,
+} from "../github/review";
+import { findSticky, type StoredFinding } from "../github/sticky";
+import {
+  applyThreadUpdate,
+  type FindingThread,
+  listFindingThreads,
+  planThreadUpdates,
+  replyToThread,
+} from "../github/threads";
 import { errorMessage, fullName, jsonAttachment, shortSha, textAttachment } from "../util";
 import {
   failureForError,
   fatalReason,
   finishProgress,
   progressReporter,
+  recordJob,
   startProgress,
   summarize,
   updateSticky,
 } from "./common";
+
+const VERDICT_WORDS = { approve: "approved", comment: "commented", request_changes: "changes requested" } as const;
 
 export async function runReview(ctx: ActionContext, prNumber: number): Promise<ActionResult> {
   const { gh, repo, inputs, log } = ctx;
@@ -125,8 +141,7 @@ export async function runReview(ctx: ActionContext, prNumber: number): Promise<A
       });
       if (inputs.post === "none") return;
       state.status = "unavailable";
-      state.attempts = outcome.attempts;
-      state.operation = `review of ${shortSha(pr.headSha)}`;
+      recordJob(ctx, state, { label: `review of ${shortSha(pr.headSha)}`, outcome: null, attempts: outcome.attempts });
       state.notice = `Review unavailable for \`${shortSha(pr.headSha)}\`: ${reason}`;
     });
     const failure = failureForError(ctx, `The review is unavailable: ${reason}`);
@@ -141,17 +156,57 @@ export async function runReview(ctx: ActionContext, prNumber: number): Promise<A
   const { result: review, runId } = outcome.value;
   const agentId = outcome.agentId ?? null;
   const index = buildDiffIndex(files);
-  let findings = placeFindings(review.findings, index, { headSha: pr.headSha, inline: inputs.post === "review" });
+  // The threads of the findings reported before: their comments are rewritten in place below, and
+  // the threads of fixed and regressed findings are resolved or reopened at the end.
+  const threads = await findingThreads(ctx, pr.number, inputs.post !== "none" && previousFindings.length > 0);
+  let findings = placeFindings(review.findings, index, {
+    headSha: pr.headSha,
+    inline: inputs.post === "review",
+    previous: previousFindings,
+    reservedIds: threads.keys(),
+  });
+  const count = findings.length;
 
   if (inputs.post === "review") {
+    // A finding reported before keeps its inline comment: the comment is rewritten in place, and
+    // the thread with its replies and its resolution stays. Only new findings get new comments.
+    const previousIds = new Set(previousFindings.map((finding) => finding.id));
+    const kept: Array<{ finding: StoredFinding; thread: FindingThread }> = [];
+    const fresh = new Set<string>();
+    for (const finding of findings) {
+      const thread = previousIds.has(finding.id) ? threads.get(finding.id) : undefined;
+      if (thread && !thread.isOutdated) kept.push({ finding, thread });
+      else if (finding.inline) fresh.add(finding.id);
+    }
+    for (const { finding, thread } of kept) {
+      // A suggestion applies to the lines the comment sits on; it is left out when the finding moved.
+      const body = inlineBody(finding, index, inputs.fixCommand, { suggestion: coversFinding(thread, finding) });
+      try {
+        await updateInlineComment(gh, repo, thread.commentId, body);
+      } catch (error) {
+        log.warning(`Could not update the inline comment of finding ${finding.n}: ${errorMessage(error)}`);
+      }
+    }
+    const keptIds = new Set(kept.map((entry) => entry.finding.id));
     const posted = await postReview(gh, repo, {
       pr: pr.number,
       headSha: pr.headSha,
-      body: `Archestra review of \`${shortSha(pr.headSha)}\`: ${findings.length} finding${findings.length === 1 ? "" : "s"}. The summary is in the review comment of this pull request.`,
-      comments: inlineComments(findings, index, inputs.fixCommand),
+      body: `Archestra review of \`${shortSha(pr.headSha)}\`: ${count} finding${count === 1 ? "" : "s"}${kept.length > 0 ? ` (${fresh.size} new; the others were updated in place)` : ""}. The summary is in the review comment of this pull request.`,
+      comments: inlineComments(
+        findings.filter((finding) => fresh.has(finding.id)),
+        index,
+        inputs.fixCommand,
+      ),
       log,
     });
-    if (!posted) findings = findings.map((finding) => ({ ...finding, inline: false }));
+    // A kept comment is inline even when its lines left the diff; a rejected new one goes into the summary.
+    findings = findings.map((finding) =>
+      keptIds.has(finding.id)
+        ? { ...finding, inline: true }
+        : !posted && fresh.has(finding.id)
+          ? { ...finding, inline: false }
+          : finding,
+    );
   }
 
   const statuses = review.previous ?? [];
@@ -176,8 +231,11 @@ export async function runReview(ctx: ActionContext, prNumber: number): Promise<A
     state.baseBranch = pr.baseRef;
     state.findings = findings;
     state.failingChecks = failingChecks;
-    state.attempts = outcome.attempts;
-    state.operation = `review of ${shortSha(pr.headSha)}`;
+    recordJob(ctx, state, {
+      label: `review of ${shortSha(pr.headSha)}`,
+      outcome: `${VERDICT_WORDS[review.verdict]}, ${findings.length} finding${findings.length === 1 ? "" : "s"}`,
+      attempts: outcome.attempts,
+    });
     state.skipped = [];
     state.notice = null;
     if (state.triageSha !== pr.headSha) {
@@ -186,9 +244,8 @@ export async function runReview(ctx: ActionContext, prNumber: number): Promise<A
     }
     state.applied = state.applied.slice(-50);
   });
-  if (inputs.post !== "none") await updatePreviousThreads(ctx, pr.number, fixedIds, regressedIds, pr.headSha);
+  if (inputs.post !== "none") await updatePreviousThreads(ctx, pr.number, fixedIds, regressedIds, pr.headSha, threads);
 
-  const count = findings.length;
   const failure =
     inputs.failOn === "findings" && count > 0 ? `The review has ${count} finding${count === 1 ? "" : "s"}.` : null;
   return makeResult("review", {
@@ -207,6 +264,22 @@ export async function runReview(ctx: ActionContext, prNumber: number): Promise<A
   });
 }
 
+/**
+ * The review threads of the findings reported before. When the list fails, the review still goes
+ * on: every finding gets a new inline comment, and no thread is resolved or reopened.
+ */
+async function findingThreads(ctx: ActionContext, pr: number, wanted: boolean): Promise<Map<string, FindingThread>> {
+  if (!wanted) return new Map();
+  try {
+    return await listFindingThreads(ctx.gh, ctx.repo, pr);
+  } catch (error) {
+    ctx.log.warning(
+      `Could not list the review threads; the findings get new inline comments, and no thread is resolved or reopened: ${errorMessage(error)}`,
+    );
+    return new Map();
+  }
+}
+
 /** Resolves the threads of fixed findings and reopens the threads of regressed ones. */
 async function updatePreviousThreads(
   ctx: ActionContext,
@@ -214,11 +287,11 @@ async function updatePreviousThreads(
   fixedIds: string[],
   regressedIds: string[],
   headSha: string,
+  threads: Map<string, FindingThread>,
 ): Promise<void> {
   if (fixedIds.length === 0 && regressedIds.length === 0) return;
   const gh = ctx.ghFix ?? ctx.gh;
   try {
-    const threads = await listFindingThreads(gh, ctx.repo, pr);
     for (const update of planThreadUpdates(threads, { resolve: fixedIds, unresolve: regressedIds })) {
       await applyThreadUpdate(gh, update);
       if (update.action === "unresolve") {

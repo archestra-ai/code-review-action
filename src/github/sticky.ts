@@ -198,11 +198,29 @@ const AttemptRecordSchema = z.object({
   agentId: z.string(),
   runId: z.string().nullable(),
   runUrl: z.string().nullable(),
+  /** True when the attempt continued the run of an earlier job. Records written before this field have false. */
+  continued: z.boolean().default(false),
   result: z.enum(["completed", "retriable", "non_retriable", "fatal"]),
   reason: z.string(),
   source: z.enum(["api", "failure-field", "message-pattern", "state", "timeout", "contract"]).nullable(),
   durationMs: z.number(),
 });
+
+/** One job of the action on the pull request: a workflow run and its attempts. */
+const JobRecordSchema = z.object({
+  /** What the job did: "review of 1234567", "fix", "CI triage". */
+  label: z.string().max(200),
+  /** ISO time; null for a job recorded before this field existed. */
+  startedAt: z.string().nullable(),
+  workflowRunUrl: z.string().nullable(),
+  /** The result in a few words ("changes requested, 5 findings"); null when the job did not complete. */
+  outcome: z.string().max(200).nullable(),
+  attempts: z.array(AttemptRecordSchema),
+});
+export type JobRecord = z.infer<typeof JobRecordSchema>;
+
+/** The comment keeps this many jobs; the oldest are dropped. */
+export const MAX_JOBS = 20;
 
 const ProgressSchema = z.object({
   /** What the job does, in a few words: "reviewing", "applying 2 findings". */
@@ -221,6 +239,8 @@ const LastJobSchema = z.object({
   did: z.string().max(200),
   login: z.string(),
   durationMs: z.number(),
+  /** ISO time of the start; null in comments written before this field existed. */
+  startedAt: z.string().nullable().default(null),
   workflowRunUrl: z.string(),
   /** "ok", "unavailable" or "error": picks the header's wording. */
   outcome: z.enum(["ok", "unavailable", "error"]),
@@ -234,8 +254,8 @@ const StateSchema = z.object({
   reviewedSha: z.string().nullable(),
   baseBranch: z.string(),
   findings: z.array(StoredFindingSchema),
-  attempts: z.array(AttemptRecordSchema),
-  operation: z.string().nullable(),
+  /** Every job of the action on this pull request, oldest first; at most MAX_JOBS. */
+  jobs: z.array(JobRecordSchema).default([]),
   applied: z.array(
     z.object({
       finding: z.string().nullable(),
@@ -279,8 +299,7 @@ export function emptyState(baseBranch: string): StickyState {
     reviewedSha: null,
     baseBranch,
     findings: [],
-    attempts: [],
-    operation: null,
+    jobs: [],
     applied: [],
     skipped: [],
     triage: [],
@@ -302,10 +321,41 @@ export function parseState(body: string): StickyState | null {
   try {
     const json = JSON.parse(Buffer.from(match[1] as string, "base64url").toString("utf8"));
     const parsed = StateSchema.safeParse(json);
-    return parsed.success ? parsed.data : null;
+    return parsed.success ? withLegacyAttempts(parsed.data, json) : null;
   } catch {
     return null;
   }
+}
+
+/** Comments written before the job history held the attempts of the last job only. */
+const LegacyAttemptsSchema = z.object({
+  attempts: z.array(AttemptRecordSchema).default([]),
+  operation: z.string().nullable().default(null),
+});
+
+/** Turns the attempts of a comment written before the job history into its one job. */
+function withLegacyAttempts(state: StickyState, json: unknown): StickyState {
+  if (state.jobs.length > 0) return state;
+  const legacy = LegacyAttemptsSchema.safeParse(json);
+  if (!legacy.success || legacy.data.attempts.length === 0) return state;
+  const job: JobRecord = {
+    label: legacy.data.operation ?? "earlier job",
+    startedAt: null,
+    workflowRunUrl: state.last?.workflowRunUrl ?? null,
+    outcome: null,
+    attempts: legacy.data.attempts,
+  };
+  return { ...state, jobs: [job] };
+}
+
+/** Appends a job to the history; the oldest jobs beyond MAX_JOBS are dropped. Texts are bounded so the state parses. */
+export function addJob(state: StickyState, job: JobRecord): void {
+  const bounded = {
+    ...job,
+    label: truncate(job.label, 200),
+    outcome: job.outcome === null ? null : truncate(job.outcome, 200),
+  };
+  state.jobs = [...state.jobs, bounded].slice(-MAX_JOBS);
 }
 
 function encodeState(state: StickyState): string {
@@ -518,11 +568,13 @@ function renderBody(state: StickyState, context: RenderContext): string {
     out.push("", "</details>", "");
   }
 
-  if (state.attempts.length > 0) {
+  if (state.jobs.length > 0) {
+    const attempts = state.jobs.reduce((count, job) => count + job.attempts.length, 0);
+    const jobs = `${state.jobs.length} job${state.jobs.length === 1 ? "" : "s"}`;
     out.push(
-      `<details><summary>Attempts${state.operation ? ` (${state.operation})` : ""}: ${state.attempts.length}</summary>`,
+      `<details><summary>History: ${jobs}${attempts > state.jobs.length ? ` (${attempts} attempts)` : ""}</summary>`,
       "",
-      attemptsTable(state.attempts),
+      historyTable(state.jobs),
       "",
       "</details>",
       "",
@@ -532,12 +584,53 @@ function renderBody(state: StickyState, context: RenderContext): string {
   return out.join("\n");
 }
 
+/** Every attempt of every job, oldest first: the history in the review comment. */
+export function historyTable(jobs: JobRecord[]): string {
+  const rows: string[] = [];
+  for (const job of jobs) {
+    const label = cell(job.label, 120);
+    for (const [index, attempt] of job.attempts.entries()) {
+      // The label is runtime-free text, but it may hold a branch name; it stays outside the link.
+      const what =
+        index > 0 ? `attempt ${index + 1}` : job.workflowRunUrl ? `${label} ([job](${job.workflowRunUrl}))` : label;
+      const outcome = attempt.result === "completed" && job.outcome ? ` · ${cell(job.outcome, 200)}` : "";
+      rows.push(
+        `| ${rows.length + 1} | ${formatTime(job.startedAt)} | ${what} | \`${attempt.agentId.slice(0, 8)}\` | ${runCell(attempt)} | ${attemptResult(attempt)}${outcome} | ${formatDuration(attempt.durationMs)} |`,
+      );
+    }
+  }
+  return [
+    "| # | Started (UTC) | Job | Agent | Run | Result | Duration |",
+    "| --- | --- | --- | --- | --- | --- | --- |",
+    ...rows,
+  ].join("\n");
+}
+
+/** The attempts of one job: the step summary of the workflow run. */
 export function attemptsTable(attempts: AttemptRecord[]): string {
   const rows = attempts.map(
     (attempt, index) =>
-      `| ${index + 1} | \`${attempt.agentId.slice(0, 8)}\` | ${attempt.runUrl ? `[run](${attempt.runUrl})` : "-"} | ${attempt.result}${attempt.source ? ` (${attempt.source})` : ""}: ${cell(attempt.reason, 300)} | ${formatDuration(attempt.durationMs)} |`,
+      `| ${index + 1} | \`${attempt.agentId.slice(0, 8)}\` | ${runCell(attempt)} | ${attemptResult(attempt)} | ${formatDuration(attempt.durationMs)} |`,
   );
   return ["| # | Agent | Run | Result | Duration |", "| --- | --- | --- | --- | --- |", ...rows].join("\n");
+}
+
+function runCell(attempt: AttemptRecord): string {
+  if (!attempt.runUrl) return "-";
+  return `[run](${attempt.runUrl})${attempt.continued ? " (continued)" : ""}`;
+}
+
+/** "completed", or the failure class, where it was classified from, and the reason. */
+function attemptResult(attempt: AttemptRecord): string {
+  if (attempt.result === "completed") return "completed";
+  return `${attempt.result}${attempt.source ? ` (${attempt.source})` : ""}: ${cell(attempt.reason, 300)}`;
+}
+
+/** "2026-10-23 13:27" in UTC, or "-" when the time is unknown. */
+function formatTime(iso: string | null): string {
+  const time = iso ? Date.parse(iso) : Number.NaN;
+  if (!Number.isFinite(time)) return "-";
+  return new Date(time).toISOString().slice(0, 16).replace("T", " ");
 }
 
 function findingNumber(state: StickyState, id: string): string {
@@ -559,7 +652,7 @@ function shrink(state: StickyState, level: number): StickyState {
         summary: truncate(finding.summary, Math.max(limit, 120)),
       };
     }),
-    attempts: state.attempts.slice(-10),
+    jobs: state.jobs.slice(level === 1 ? -10 : level === 2 ? -5 : -2),
     applied: state.applied.slice(-50),
     skipped: state.skipped.slice(-20),
   };

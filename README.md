@@ -22,7 +22,9 @@ or a ticked box     │          ──► steer_agent_run (same run, next turn)
                     └──► verify commits (compare API) ──► resolve threads, update the review comment
 ```
 
-The review comment appears as soon as the job starts, with a progress header: who the job acts for, the current step and a link to the run. The same comment is rewritten with the result at the end, with the time the job took. Every later job on the pull request updates that one comment.
+The review comment appears as soon as the job starts, with a progress header: who the job acts for, the current step and a link to the run. The same comment is rewritten with the result at the end, with the time the job took. Every later job on the pull request updates that one comment. A collapsed **History** section at the end lists every job on the pull request (the last 20): when it started, the agent, the run and whether it continued an earlier run, the result, and the time each attempt took. A workflow run that fails before the action reaches the comment is not in it; the Actions tab has those.
+
+A later review of the same pull request keeps the findings it reported before. The runtime names them with `previous_id` (a finding with the same file and summary counts too); their inline comments are rewritten in place, so the thread, its replies and its resolution stay. Only new findings get new inline comments, and the threads of fixed findings are resolved.
 
 The review comment keeps the state between workflow runs. A hidden marker line holds the run (its ID is also the workspace ID), the agent and the reviewed commit:
 

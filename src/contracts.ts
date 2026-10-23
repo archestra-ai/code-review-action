@@ -23,6 +23,12 @@ export const ReviewFindingSchema = z.object({
     .max(2000)
     .describe("What to change, in one or two sentences; the fix mode implements it"),
   suggestion: z.string().max(4000).optional().describe("Full replacement text for lines line..end_line"),
+  previous_id: z
+    .string()
+    .min(1)
+    .max(100)
+    .optional()
+    .describe("The id from previous-findings.json when this finding was reported before"),
 });
 export type ReviewFinding = z.infer<typeof ReviewFindingSchema>;
 

@@ -34,6 +34,7 @@ function scripted(results: Array<"ok" | "retriable" | "non_retriable" | "fatal">
       agentId,
       runId: null,
       runUrl: null,
+      continued: false,
       result: result === "ok" ? ("completed" as const) : result,
       reason: result,
       source: null,

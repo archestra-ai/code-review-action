@@ -141,6 +141,131 @@ describe("review mode", () => {
       { action: "unresolve", threadId: expect.stringMatching(/^thread-/) },
     ]);
   });
+
+  it("rewrites the inline comment of a finding reported before, and posts only the new ones", async () => {
+    const { harness } = await reviewed();
+    const first = parseState(harness.github.stickyBody()!)!.findings[0]!;
+    const [commentId] = [...harness.github.reviewComments.keys()];
+    harness.github.pr.head.sha = "d".repeat(40);
+    harness.archestra.script(AGENT_A, {
+      end: "completed",
+      files: {
+        "review.json": reviewJson(
+          [
+            { ...FINDING_IN_DIFF, severity: "medium", previous_id: first.id },
+            {
+              ...FINDING_IN_DIFF,
+              line: 13,
+              end_line: 13,
+              summary: "The loop never ends on a 500.",
+              suggestion: undefined,
+            },
+          ],
+          { previous: [{ id: first.id, status: "still_present" }] },
+        ),
+      },
+    });
+    await run(harness.context("pull_request", prEvent(harness.github, "synchronize")));
+    expect(harness.github.reviewCommentUpdates).toEqual([commentId]);
+    const rewritten = harness.github.reviewComments.get(commentId!)!.body;
+    expect(rewritten).toContain("**1. [medium] Retries do not wait between attempts.**");
+    expect(rewritten).toContain(`<!-- archestra-finding:${first.id} -->`);
+    // The thread sits on lines 12-14, the finding's lines: the suggestion applies and stays.
+    expect(rewritten).toContain("```suggestion");
+    expect(harness.github.reviews).toHaveLength(2);
+    expect(harness.github.reviews[1]!.comments).toHaveLength(1);
+    expect(harness.github.reviews[1]!.body).toContain("2 findings (1 new; the others were updated in place)");
+    expect(harness.github.reviewComments.size).toBe(2);
+    const state = parseState(harness.github.stickyBody()!)!;
+    expect(state.findings.map((finding) => [finding.id, finding.n])).toEqual([
+      [first.id, 1],
+      ["ddddddd-2", 2],
+    ]);
+  });
+
+  it("pairs a repeated finding by file and summary when the runtime gives no previous_id, and posts no review", async () => {
+    const { harness } = await reviewed();
+    const ids = parseState(harness.github.stickyBody()!)!.findings.map((finding) => finding.id);
+    harness.github.pr.head.sha = "d".repeat(40);
+    harness.archestra.script(AGENT_A, {
+      end: "completed",
+      files: { "review.json": reviewJson([{ ...FINDING_IN_DIFF, end_line: 13 }, FINDING_OUTSIDE]) },
+    });
+    await run(harness.context("pull_request", prEvent(harness.github, "synchronize")));
+    expect(harness.github.reviews).toHaveLength(1);
+    expect(harness.github.reviewCommentUpdates).toHaveLength(1);
+    expect(parseState(harness.github.stickyBody()!)!.findings.map((finding) => finding.id)).toEqual(ids);
+    // The finding now ends on line 13 while the comment sits on 12-14: the suggestion would land wrong.
+    const rewritten = [...harness.github.reviewComments.values()][0]!.body;
+    expect(rewritten).toContain(`<!-- archestra-finding:${ids[0]} -->`);
+    expect(rewritten).not.toContain("```suggestion");
+  });
+
+  it("rewrites the comment of a kept finding whose lines left the diff, and keeps it inline", async () => {
+    const { harness } = await reviewed();
+    const first = parseState(harness.github.stickyBody()!)!.findings[0]!;
+    harness.github.pr.head.sha = "d".repeat(40);
+    harness.archestra.script(AGENT_A, {
+      end: "completed",
+      files: {
+        "review.json": reviewJson([
+          { ...FINDING_IN_DIFF, line: 3, end_line: 3, suggestion: undefined, previous_id: first.id },
+        ]),
+      },
+    });
+    await run(harness.context("pull_request", prEvent(harness.github, "synchronize")));
+    expect(harness.github.reviews).toHaveLength(1);
+    expect(harness.github.reviewCommentUpdates).toHaveLength(1);
+    const finding = parseState(harness.github.stickyBody()!)!.findings[0]!;
+    expect(finding).toMatchObject({ id: first.id, line: 3, inline: true });
+  });
+
+  it("posts a new inline comment when the old one is outdated", async () => {
+    const { harness } = await reviewed();
+    const first = parseState(harness.github.stickyBody()!)!.findings[0]!;
+    harness.github.outdated.add([...harness.github.reviewComments.keys()][0]!);
+    harness.github.pr.head.sha = "d".repeat(40);
+    harness.archestra.script(AGENT_A, {
+      end: "completed",
+      files: { "review.json": reviewJson([{ ...FINDING_IN_DIFF, previous_id: first.id }]) },
+    });
+    await run(harness.context("pull_request", prEvent(harness.github, "synchronize")));
+    expect(harness.github.reviewCommentUpdates).toEqual([]);
+    expect(harness.github.reviews).toHaveLength(2);
+    expect(harness.github.reviews[1]!.comments[0]).toMatchObject({ body: expect.stringContaining(first.id) });
+  });
+
+  it("keeps every job of the pull request in the review comment", async () => {
+    const harness = setup();
+    harness.archestra.script(AGENT_A, { end: "failed", statusReason: "Budget exceeded" });
+    harness.archestra.script(AGENT_B, { end: "completed", files: { "review.json": reviewJson([FINDING_IN_DIFF]) } });
+    await run(harness.context("pull_request", prEvent(harness.github)));
+    harness.github.pr.head.sha = "d".repeat(40);
+    harness.archestra.script(AGENT_B, { end: "completed", files: { "review.json": reviewJson([FINDING_IN_DIFF]) } });
+    await run(harness.context("pull_request", prEvent(harness.github, "synchronize")));
+    const sticky = harness.github.stickyBody()!;
+    const state = parseState(sticky)!;
+    expect(
+      state.jobs.map((job) => [
+        job.label,
+        job.outcome,
+        job.attempts.map((attempt) => [attempt.agentId, attempt.result, attempt.continued]),
+      ]),
+    ).toEqual([
+      [
+        "review of aaaaaaa",
+        "changes requested, 1 finding",
+        [
+          [AGENT_A, "non_retriable", false],
+          [AGENT_B, "completed", false],
+        ],
+      ],
+      ["review of ddddddd", "changes requested, 1 finding", [[AGENT_B, "completed", true]]],
+    ]);
+    expect(state.jobs.every((job) => job.startedAt && job.workflowRunUrl)).toBe(true);
+    expect(sticky).toContain("History: 2 jobs (3 attempts)");
+    expect(sticky).not.toContain("completed: completed");
+  });
 });
 
 describe("triage box", () => {

@@ -24,6 +24,7 @@ import {
   isResult,
   prepareFix,
   progressReporter,
+  recordJob,
   reply,
   startProgress,
   summarize,
@@ -131,9 +132,8 @@ export async function runFix(ctx: ActionContext, trigger: FixTriggerInput): Prom
   if (!outcome.ok || !outcome.value) {
     const reason = outcome.fatal ? fatalReason(outcome.attempts) : "No runtime completed the fix.";
     await updateSticky(ctx, pr, (s) => {
+      recordJob(ctx, s, { label: "fix", outcome: null, attempts: outcome.attempts });
       finishProgress(ctx, s, { did: doing, login: identity.login, outcome: "unavailable" });
-      s.attempts = outcome.attempts;
-      s.operation = "fix";
       s.notice = `The fix requested by @${identity.login} did not complete: ${reason}`;
     });
     await reply(ctx, trigger, `The fix did not complete: ${reason} The review comment lists the attempts.`);
@@ -204,8 +204,11 @@ export async function runFix(ctx: ActionContext, trigger: FixTriggerInput): Prom
       })),
     ].slice(-50);
     s.skipped = skipped;
-    s.attempts = outcome.attempts;
-    s.operation = "fix";
+    recordJob(ctx, s, {
+      label: "fix",
+      outcome: `applied ${appliedIds.size} of ${selected.length}`,
+      attempts: outcome.attempts,
+    });
     s.notice = null;
   });
 

@@ -34,6 +34,8 @@ export interface AttemptRecord {
   agentId: string;
   runId: string | null;
   runUrl: string | null;
+  /** True when the attempt continued the run of an earlier job instead of starting one. */
+  continued: boolean;
   result: "completed" | FailureClass;
   reason: string;
   source: ClassificationSource | null;

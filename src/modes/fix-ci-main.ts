@@ -21,6 +21,7 @@ import {
   isResult,
   prepareFix,
   progressReporter,
+  recordJob,
   reply,
   startProgress,
   summarize,
@@ -114,9 +115,8 @@ export async function runFixCiMain(
   if (!outcome.ok || !outcome.value) {
     const reason = outcome.fatal ? fatalReason(outcome.attempts) : "No runtime completed the fix.";
     await updateSticky(ctx, pr, (s) => {
+      recordJob(ctx, s, { label: `fix PR against ${baseBranch}`, outcome: null, attempts: outcome.attempts });
       finishProgress(ctx, s, { did: doing, login: identity.login, outcome: "unavailable" });
-      s.attempts = outcome.attempts;
-      s.operation = `fix PR against ${baseBranch}`;
       s.notice = `The fix PR requested by @${identity.login} was not prepared: ${reason}`;
     });
     await reply(ctx, trigger, `The fix PR was not prepared: ${reason}`);
@@ -140,8 +140,12 @@ export async function runFixCiMain(
     const problem =
       check.rejected.map((entry) => `${shortSha(entry.commit)}: ${entry.reason}`).join("; ") || "no commits";
     await updateSticky(ctx, pr, (s) => {
+      recordJob(ctx, s, {
+        label: `fix PR against ${baseBranch}`,
+        outcome: "commit check failed",
+        attempts: outcome.attempts,
+      });
       finishProgress(ctx, s, { did: doing, login: identity.login, outcome: "error" });
-      s.attempts = outcome.attempts;
       s.notice = `The fix branch \`${result.branch}\` did not pass the commit check (${problem}). No PR was opened.`;
     });
     await reply(
@@ -187,10 +191,13 @@ export async function runFixCiMain(
   }
 
   await updateSticky(ctx, pr, (s) => {
+    recordJob(ctx, s, {
+      label: `fix PR against ${baseBranch}`,
+      outcome: `opened fix PR #${fixPr.number}`,
+      attempts: outcome.attempts,
+    });
     finishProgress(ctx, s, { did: `opened fix PR #${fixPr.number}`, login: identity.login, outcome: "ok" });
     s.fixPrs = [...s.fixPrs, { checks, number: fixPr.number, url: fixPr.html_url }];
-    s.attempts = outcome.attempts;
-    s.operation = `fix PR against ${baseBranch}`;
     s.notice = null;
   });
   await reply(
