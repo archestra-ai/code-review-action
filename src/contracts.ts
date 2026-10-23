@@ -17,6 +17,11 @@ export const ReviewFindingSchema = z.object({
   severity: SeveritySchema,
   summary: z.string().min(1).max(500).describe("One sentence"),
   failure_scenario: z.string().min(1).max(4000).describe("Input or state, and the incorrect result"),
+  recommendation: z
+    .string()
+    .min(1)
+    .max(2000)
+    .describe("What to change, in one or two sentences; the fix mode implements it"),
   suggestion: z.string().max(4000).optional().describe("Full replacement text for lines line..end_line"),
 });
 export type ReviewFinding = z.infer<typeof ReviewFindingSchema>;

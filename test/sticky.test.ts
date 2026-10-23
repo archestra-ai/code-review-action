@@ -52,11 +52,21 @@ describe("sticky state and checkboxes", () => {
     verdict: "request_changes",
     reviewedSha: "a".repeat(40),
     findings: placeFindings(
-      [{ file: "src/a.ts", line: 3, severity: "high" as const, summary: "S | pipe", failure_scenario: "x -> y" }],
+      [
+        {
+          file: "src/a.ts",
+          line: 3,
+          severity: "high" as const,
+          summary: "S | pipe",
+          recommendation: "Fix it.",
+          failure_scenario: "x -> y",
+        },
+      ],
       buildDiffIndex([]),
       { headSha: "a".repeat(40), inline: true },
     ),
     triage: [{ check: "lint", class: "pre_existing" as const, rootCause: "main is broken", commits: [] }],
+    failingChecks: 1,
   };
   const body = renderSticky(state, { marker, repoUrl: "https://github.com/acme/widgets", command: "/archestra" });
 
@@ -64,14 +74,28 @@ describe("sticky state and checkboxes", () => {
     expect(parseState(body)).toEqual(state);
     expect(parseMarker(body)).toEqual(marker);
   });
-  it("renders the Next boxes unticked", () => {
-    expect(body).toContain("- [ ] Apply the findings <!-- archestra-action:fix -->");
-    expect(body).toContain("- [ ] Triage and fix failing checks <!-- archestra-action:fix-ci -->");
+  it("renders the Next boxes unticked, with the recommendation column", () => {
+    expect(body).toContain("- [ ] Implement and push recommendations <!-- archestra-action:fix -->");
+    expect(body).toContain("- [ ] Triage and fix 1 failing check <!-- archestra-action:fix-ci -->");
     expect(body).toContain("- [ ] Open a fix PR against main for `lint` <!-- archestra-action:fix-ci-main:0 -->");
+    expect(body).toContain("| # | Severity | Location | Finding | Recommendation | Status |");
+    expect(body).toContain("| Fix it. | open |");
     expect(body).toContain("S \\| pipe");
   });
+  it("shows the triage box and its command only when checks fail", () => {
+    const clean = renderSticky(
+      { ...state, failingChecks: 0, triage: [] },
+      { marker, repoUrl: "", command: "/archestra" },
+    );
+    expect(clean).not.toContain("archestra-action:fix-ci -->");
+    expect(clean).not.toContain("`/archestra fix-ci`");
+    expect(clean).toContain("- [ ] Implement and push recommendations <!-- archestra-action:fix -->");
+    const three = renderSticky({ ...state, failingChecks: 3 }, { marker, repoUrl: "", command: "/archestra" });
+    expect(three).toContain("- [ ] Triage and fix 3 failing checks <!-- archestra-action:fix-ci -->");
+    expect(three).toContain("`/archestra fix-ci` (failing checks)");
+  });
   it("detects a box that changed from unticked to ticked", () => {
-    const ticked = body.replace("- [ ] Apply the findings", "- [x] Apply the findings");
+    const ticked = body.replace("- [ ] Implement and push recommendations", "- [x] Implement and push recommendations");
     expect(newlyCheckedActions(body, ticked)).toEqual(["fix"]);
     expect(newlyCheckedActions(ticked, ticked)).toEqual([]);
     expect(newlyCheckedActions(ticked, body)).toEqual([]);
@@ -169,7 +193,7 @@ describe("detectTrigger", () => {
     {
       ...emptyState("main"),
       findings: placeFindings(
-        [{ file: "a", line: 1, severity: "low", summary: "s", failure_scenario: "f" }],
+        [{ file: "a", line: 1, severity: "low", summary: "s", recommendation: "Fix it.", failure_scenario: "f" }],
         new Map(),
         { headSha: "a".repeat(40), inline: false },
       ),
@@ -185,8 +209,8 @@ describe("detectTrigger", () => {
   });
   const opts = { command: "/archestra", mode: "auto" as const, prNumber: null };
 
-  it("starts a fix when a person ticks Apply the findings", () => {
-    const ticked = sticky.replace("- [ ] Apply", "- [x] Apply");
+  it("starts a fix when a person ticks Implement and push recommendations", () => {
+    const ticked = sticky.replace("- [ ] Implement", "- [x] Implement");
     expect(detectTrigger("issue_comment", edited(sticky, ticked), opts)).toMatchObject({
       kind: "fix",
       findings: "all",
@@ -194,11 +218,11 @@ describe("detectTrigger", () => {
     });
   });
   it("ignores the action's own rewrite (github-actions[bot])", () => {
-    const ticked = sticky.replace("- [ ] Apply", "- [x] Apply");
+    const ticked = sticky.replace("- [ ] Implement", "- [x] Implement");
     expect(detectTrigger("issue_comment", edited(sticky, ticked, bot), opts).kind).toBe("skip");
   });
   it("ignores boxes in a comment that a person wrote", () => {
-    const ticked = sticky.replace("- [ ] Apply", "- [x] Apply");
+    const ticked = sticky.replace("- [ ] Implement", "- [x] Implement");
     expect(detectTrigger("issue_comment", edited(sticky, ticked, sender, sender), opts).kind).toBe("skip");
   });
   it("selects the finding of the parent comment for an inline reply", () => {
@@ -245,11 +269,19 @@ describe("diff and inline placement", () => {
           end_line: 13,
           severity: "high",
           summary: "s",
+          recommendation: "Fix it.",
           failure_scenario: "f",
           suggestion: "x",
         },
-        { file: "src/u.ts", line: 40, severity: "low", summary: "s", failure_scenario: "f" },
-        { file: "src/other.ts", line: 1, severity: "low", summary: "s", failure_scenario: "f" },
+        { file: "src/u.ts", line: 40, severity: "low", summary: "s", recommendation: "Fix it.", failure_scenario: "f" },
+        {
+          file: "src/other.ts",
+          line: 1,
+          severity: "low",
+          summary: "s",
+          recommendation: "Fix it.",
+          failure_scenario: "f",
+        },
       ],
       index,
       { headSha: "c".repeat(40), inline: true },

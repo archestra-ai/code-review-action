@@ -62,6 +62,12 @@
             "maxLength": 4000,
             "description": "Input or state, and the incorrect result"
           },
+          "recommendation": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 2000,
+            "description": "What to change, in one or two sentences; the fix mode implements it"
+          },
           "suggestion": {
             "description": "Full replacement text for lines line..end_line",
             "type": "string",
@@ -73,7 +79,8 @@
           "line",
           "severity",
           "summary",
-          "failure_scenario"
+          "failure_scenario",
+          "recommendation"
         ]
       }
     },

@@ -143,6 +143,47 @@ describe("review mode", () => {
   });
 });
 
+describe("triage box", () => {
+  it("appears only when the reviewed commit has failing checks", async () => {
+    const { harness } = await reviewed();
+    expect(harness.github.stickyBody()).not.toContain("archestra-action:fix-ci -->");
+    harness.github.checkRuns = [
+      {
+        id: 301,
+        name: "test",
+        app: "github-actions",
+        conclusion: "failure",
+        log: "FAIL\n",
+        baseBranchConclusion: "success",
+      },
+      {
+        id: 302,
+        name: "lint",
+        app: "github-actions",
+        conclusion: "timed_out",
+        log: "",
+        baseBranchConclusion: "success",
+      },
+      {
+        id: 303,
+        name: "build",
+        app: "github-actions",
+        conclusion: "success",
+        log: "",
+        baseBranchConclusion: "success",
+      },
+    ];
+    harness.github.pr.head.sha = "d".repeat(40);
+    harness.archestra.script(AGENT_A, { end: "completed", files: { "review.json": reviewJson([FINDING_IN_DIFF]) } });
+    await run(harness.context("pull_request", prEvent(harness.github, "synchronize")));
+    const body = harness.github.stickyBody()!;
+    expect(body).toContain("- [ ] Triage and fix 2 failing checks <!-- archestra-action:fix-ci -->");
+    expect(body).toContain("| Recommendation |");
+    expect(body).toContain(FINDING_IN_DIFF.recommendation);
+    expect(parseState(body)?.failingChecks).toBe(2);
+  });
+});
+
 describe("progress comment", () => {
   it("posts the sticky comment at start with a spinner, updates the step, and ends with the duration", async () => {
     const { harness, result } = await reviewed();

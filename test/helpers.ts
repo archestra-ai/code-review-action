@@ -129,6 +129,7 @@ export const FINDING_IN_DIFF = {
   severity: "high",
   summary: "Retries do not wait between attempts.",
   failure_scenario: "A 503 from the server -> three requests in one millisecond -> rate limit.",
+  recommendation: "Wait before each retry, for example 100 ms times the attempt number.",
   suggestion: "  for (let i = 0; i < 3; i++) {\n    await sleep(100 * i);\n    send(a);",
 };
 
@@ -138,4 +139,5 @@ export const FINDING_OUTSIDE = {
   severity: "medium",
   summary: "The timeout is not configurable.",
   failure_scenario: "A slow network -> every upload fails after 1 s.",
+  recommendation: "Take the timeout as an option with a 1 s default.",
 };

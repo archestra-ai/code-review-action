@@ -43,7 +43,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           PR: ${{ inputs.pr }}
         run: |
-          gh api "repos/$GH_REPO/issues/$PR/comments" -f body=$'<!-- spike-sticky -->\nSpike\n\n- [ ] Apply <!-- archestra-action:fix -->' --jq .id
+          gh api "repos/$GH_REPO/issues/$PR/comments" -f body=$'<!-- spike-sticky -->\nSpike\n\n- [ ] Implement and push recommendations <!-- archestra-action:fix -->' --jq .id
           head=$(gh api "repos/$GH_REPO/pulls/$PR" --jq .head.sha)
           file=$(gh api "repos/$GH_REPO/pulls/$PR/files" --jq '.[0].filename')
           line=$(gh api "repos/$GH_REPO/pulls/$PR/files" --jq '.[0].patch' | awk '/^@@/{split($3,a,/[+,]/); print a[2]; exit}')
