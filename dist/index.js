@@ -45632,6 +45632,9 @@ function markerPrefix(repo, pr) {
 function findingMarker(id) {
   return `<!-- archestra-finding:${id} -->`;
 }
+function escapeHtml(text) {
+  return text.replace(/&(?!(?:[a-z]+|#\d+|#x[0-9a-f]+);)/gi, "&amp;").replace(/</g, "&lt;");
+}
 function findingIdFromBody(body) {
   return /<!-- archestra-finding:([\w.-]{1,100}) -->/.exec(body)?.[1] ?? null;
 }
@@ -45641,7 +45644,9 @@ var StoredFindingSchema = ReviewFindingSchema.extend({
   n: external_exports.number().int(),
   inline: external_exports.boolean(),
   status: FindingStatusSchema,
-  failure_scenario: external_exports.string().max(4e3)
+  failure_scenario: external_exports.string().max(4e3),
+  /** Comments written before recommendations existed have none; keep their findings. */
+  recommendation: external_exports.string().max(2e3).default("")
 });
 var AttemptRecordSchema = external_exports.object({
   agentId: external_exports.string(),
@@ -45804,7 +45809,7 @@ function renderBody(state, context3) {
     );
   }
   if (state.notice) out.push(`> ${oneLine(state.notice, 1e3)}`, "");
-  if (state.summary) out.push(state.summary.trim(), "");
+  if (state.summary) out.push(escapeHtml(state.summary).trim(), "");
   if (state.findings.length > 0) {
     out.push(
       "#### Findings",
@@ -45940,6 +45945,7 @@ function shrink(state, level) {
       return {
         ...rest,
         failure_scenario: truncate(finding.failure_scenario, limit),
+        recommendation: truncate(finding.recommendation, Math.max(limit, 120)),
         summary: truncate(finding.summary, Math.max(limit, 120))
       };
     }),
@@ -45955,13 +45961,10 @@ function cell(text, max) {
   return oneLine(text, max).replace(/\|/g, "\\|");
 }
 function oneLine(text, max) {
-  return truncate(
-    text.replace(/\s+/g, " ").replace(/<!--|-->/g, "").trim(),
-    max
-  );
+  return truncate(escapeHtml(text).replace(/\s+/g, " ").trim(), max);
 }
 function quote(text) {
-  return truncate(text, 2e3).replace(/<!--|-->/g, "").split("\n").map((line) => `> ${line}`).join("\n");
+  return escapeHtml(truncate(text, 2e3)).split("\n").map((line) => `> ${line}`).join("\n");
 }
 function formatDuration(ms) {
   const seconds = Math.round(ms / 1e3);
@@ -47268,11 +47271,11 @@ function inlineComments(findings, index, command) {
 }
 function inlineBody(finding, index, command) {
   const parts = [
-    `**${finding.n}. [${finding.severity}] ${truncate(finding.summary.replace(/\s+/g, " "), 300)}**`,
+    `**${finding.n}. [${finding.severity}] ${truncate(escapeHtml(finding.summary).replace(/\s+/g, " "), 300)}**`,
     "",
-    truncate(finding.failure_scenario, 3e3).replace(/<!--|-->/g, ""),
+    escapeHtml(truncate(finding.failure_scenario, 3e3)),
     "",
-    `**Recommendation:** ${truncate(finding.recommendation, 1500).replace(/<!--|-->/g, "")}`,
+    `**Recommendation:** ${escapeHtml(truncate(finding.recommendation, 1500))}`,
     "",
     `To implement and push this fix, reply \`${command} fix\` to this comment. For all findings, tick the box in the review summary.`
   ];
