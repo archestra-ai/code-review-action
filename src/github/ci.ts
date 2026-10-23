@@ -55,7 +55,7 @@ const MAX_ANNOTATIONS = 50;
 /**
  * How many check runs fail on `ref`. Cheap: one listing, no logs. A failure
  * to read the checks counts as zero, so the review still posts; the log
- * says why the triage box is missing.
+ * says why the triage command is missing.
  */
 export async function countFailingChecks(gh: Octokit, repo: RepoRef, ref: string, log: Logger): Promise<number> {
   try {

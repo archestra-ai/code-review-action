@@ -53,7 +53,6 @@ export async function prepareFix(ctx: ActionContext, trigger: FixTrigger): Promi
       `@${trigger.sender.login} only users with write access to this repository can start a fix.`,
       true,
     );
-    if (trigger.source.type === "checkbox") await rerenderSticky(ctx, pr);
     return makeResult(trigger.kind, {
       status: "unauthorized",
       summary: `${trigger.sender.login} has no write access.`,
@@ -64,7 +63,6 @@ export async function prepareFix(ctx: ActionContext, trigger: FixTrigger): Promi
     const message =
       'The fix cannot push: the workflow does not give the "fix-token" input (a GitHub App installation token).';
     await reply(ctx, trigger, message, true);
-    if (trigger.source.type === "checkbox") await rerenderSticky(ctx, pr);
     return makeResult(trigger.kind, { status: "error", failure: message, summary: message });
   }
   const identity = await userIdentity(ctx.gh, trigger.sender.login);
@@ -78,8 +76,8 @@ export function isResult(value: FixPreparation | ActionResult): value is ActionR
 
 /**
  * Answers at the place of the trigger: a reply in the review thread, or a
- * PR comment. A ticked box gets no extra comment (the sticky comment shows
- * the result), unless `important` is set.
+ * PR comment. A dispatch gets no comment (the sticky comment shows the
+ * result), unless `important` is set.
  */
 export async function reply(
   ctx: ActionContext,
@@ -148,16 +146,6 @@ export async function updateSticky(
   mutate(state, marker);
   const body = renderSticky(state, { marker, repoUrl: repoUrl(ctx), command: ctx.inputs.fixCommand });
   await writeSticky(ctx.gh, ctx.repo, pr.number, sticky?.id ?? null, body);
-}
-
-/** Renders the sticky comment again without changes; this unticks the boxes. */
-async function rerenderSticky(ctx: ActionContext, pr: PullRequestInfo): Promise<void> {
-  try {
-    const sticky = await findSticky(ctx.gh, ctx.repo, pr.number);
-    if (sticky?.state) await updateSticky(ctx, pr, () => {});
-  } catch (error) {
-    ctx.log.warning(`Could not reset the boxes: ${errorMessage(error)}`);
-  }
 }
 
 /**

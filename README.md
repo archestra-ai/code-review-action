@@ -4,7 +4,7 @@ This GitHub Action reviews pull requests on [Archestra](https://archestra.ai) Ag
 - **Review.** The action starts a one-shot run on one of your Archestra agents. The agent clones the repository at the head commit, reviews the change and writes `review.json`: for each finding, the failure scenario and a recommendation that says what to change. The action posts a review comment with the review text (what the change does, a plain ASCII architecture diagram and sequence diagrams of the main affected flows, then the sections that matter), a findings table and inline comments.
 - **Your identity, your costs.** Each run acts as the person who caused the event: the pull request author, the pusher, or the maintainer who asked for a fix. The run uses that person's Archestra credentials and Claude account, the cost goes to that person, and only that person can answer a Guardrails review on the run page.
 - **Balancing and fallback.** You give a list of agents. Each agent has a dedicated runtime and its own model provider. The action selects the first agent from the list (rotation by default). It tries the same agent again after a temporary failure and goes to the next agent after a permanent failure. The number of attempts is finite.
-- **Fixes on request.** A maintainer ticks a box in the review comment or writes a command. The action continues the retained workspace of the review. The runtime pushes the fix to the pull request branch. The commits have the maintainer as the author.
+- **Fixes on request.** A maintainer writes a command in a pull request comment. The action continues the retained workspace of the review. The runtime pushes the fix to the pull request branch. The commits have the maintainer as the author.
 - **No GitHub write token in the review.** The runtime never posts to GitHub. The action posts with the job token. Only the fix modes give the runtime a short-lived GitHub App token for pushes.
 
 ## How it works
@@ -18,7 +18,7 @@ pull_request ──► action ──► start_agent_run (pr.json, pr.diff) ─�
                    └──► review comment (sticky) + inline comments
 
 /archestra fix  ──► action ──► transfer_credential CODE_REVIEW_GITHUB_TOKEN ──► write_workspace_file (inputs)
-or a ticked box     │          ──► steer_agent_run (same run, next turn)  runtime commits and pushes
+                    │          ──► steer_agent_run (same run, next turn)  runtime commits and pushes
                     └──► verify commits (compare API) ──► resolve threads, update the review comment
 ```
 
@@ -85,7 +85,7 @@ on:
   pull_request:
     types: [opened, synchronize, ready_for_review, reopened]
   issue_comment:
-    types: [created, edited]
+    types: [created]
   pull_request_review_comment:
     types: [created]
 
@@ -178,19 +178,18 @@ jobs:
 
 The job workflow gets its `GITHUB_TOKEN` permissions from the calling job, so a review gets no `actions` permission. See [examples/archestra-runtime-review.yml](examples/archestra-runtime-review.yml) for a complete workflow with filters.
 
-## Commands and boxes
+## Commands
 
-Only users with **write**, **maintain** or **admin** access can start a fix. The action checks this with the collaborator permission API. It ignores comments and edits by bots (also its own edits of the review comment), and it never starts a fix without a person.
+Only users with **write**, **maintain** or **admin** access can start a fix. The action checks this with the collaborator permission API. It ignores comments by bots, and it never starts a fix without a person.
 
-| You do                                                                                                 | The action does                                                                                                                                                                                                |
-| ------------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Tick **Implement and push recommendations** in the review comment                                      | Implements the recommendation of every open finding and pushes the commits.                                                                                                                                    |
-| Comment `/archestra fix`                                                                               | Implements the recommendation of every open finding.                                                                                                                                                           |
-| Comment `/archestra fix 2,5 <note>`                                                                    | Implements the recommendations of findings 2 and 5. The note (1000 characters maximum) goes to the runtime as data.                                                                                            |
-| Reply `/archestra fix` under an inline finding (each inline comment says so)                           | Implements that recommendation only.                                                                                                                                                                           |
-| Tick **Triage and fix N failing checks** (shown only when checks fail), or comment `/archestra fix-ci` | Collects the failing checks of the head commit, and gives the runtime the log tails and annotations. The runtime classifies each failure and fixes the ones that the pull request causes.                      |
-| Tick **Open a fix PR against main for &lt;job&gt;**, or comment `/archestra fix-ci-main [n]`           | For a failure that also occurs on the base branch: the runtime fixes it on a new `archestra/fix-ci-<slug>` branch, and the action opens a pull request. Queue the fix PR first, then rebase your pull request. |
-| Click **Commit suggestion** on an inline comment                                                       | GitHub applies a small fix directly. No runtime is used.                                                                                                                                                       |
+| You do                                                                                                            | The action does                                                                                                                                                                                                |
+| ----------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Comment `/archestra fix`                                                                                          | Implements the recommendation of every open finding.                                                                                                                                                           |
+| Comment `/archestra fix 2,5 <note>`                                                                               | Implements the recommendations of findings 2 and 5. The note (1000 characters maximum) goes to the runtime as data.                                                                                            |
+| Reply `/archestra fix` under an inline finding (each inline comment says so)                                      | Implements that recommendation only.                                                                                                                                                                           |
+| Comment `/archestra fix-ci`                                                                                       | Collects the failing checks of the head commit, and gives the runtime the log tails and annotations. The runtime classifies each failure and fixes the ones that the pull request causes.                      |
+| Comment `/archestra fix-ci-main n` (`n` is the row of the CI triage table; omit it for all pre-existing failures) | For a failure that also occurs on the base branch: the runtime fixes it on a new `archestra/fix-ci-<slug>` branch, and the action opens a pull request. Queue the fix PR first, then rebase your pull request. |
+| Click **Commit suggestion** on an inline comment                                                                  | GitHub applies a small fix directly. No runtime is used.                                                                                                                                                       |
 
 After a fix, the action checks each reported commit: it must be on the branch and its author email must be the noreply address of the person who asked. Only verified commits are shown as applied. The threads of applied findings are resolved. Skipped findings get a reply with the reason. A later review that finds a resolved problem again reopens its thread.
 
