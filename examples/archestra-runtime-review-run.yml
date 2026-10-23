@@ -37,22 +37,32 @@ on:
         description: The private key of that GitHub App. Fix jobs only.
         required: false
 
+# The caller's job carries the concurrency group. This group only stops two
+# copies of the same event from running at once.
+concurrency:
+  group: archestra-review-run-${{ github.workflow }}-${{ github.ref }}-${{ inputs.kind }}-${{ github.event.comment.id || github.run_id }}
+  cancel-in-progress: false
+
+permissions: {}
+
 jobs:
   run:
     name: Archestra ${{ inputs.kind }}
     runs-on: ubuntu-latest
     timeout-minutes: ${{ inputs.timeout-minutes }}
+    # The job token posts the review and, for fixes, reads the failing checks.
+    # A called job cannot ask for more than its caller grants, so the review
+    # caller grants contents: read and pull-requests: write, and the fix
+    # caller also grants actions: read.
+    permissions:
+      contents: read
+      pull-requests: write
+      actions: read
     steps:
-      # The repository's wrapper around actions/create-github-app-token.
-      - if: inputs.kind == 'fix'
-        uses: actions/checkout@v5
-        with:
-          sparse-checkout: .github/actions/github-app-token
-          persist-credentials: false
       - name: Mint the push token
         if: inputs.kind == 'fix'
         id: app-token
-        uses: ./.github/actions/github-app-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
         with:
           app-id: ${{ secrets.APP_ID }}
           private-key: ${{ secrets.APP_PRIVATE_KEY }}
@@ -60,7 +70,7 @@ jobs:
           permission-contents: write
           permission-pull-requests: write
           permission-actions: read
-      - uses: archestra-ai/code-review-action@v1 # Pin to a commit SHA after the first release.
+      - uses: archestra-ai/code-review-action@v1 # Pin to a commit SHA: most organizations require it.
         with:
           archestra-gateway-url: ${{ inputs.gateway-url }}
           archestra-token: ${{ secrets.ARCHESTRA_TOKEN }}

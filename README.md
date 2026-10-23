@@ -67,7 +67,7 @@ The App pushes the commits, but the commit author is the person who asked for th
 
 ### 5. Workflow
 
-Use two workflow files. The entry workflow finds the actor's token secret and calls a reusable job workflow in the same repository. Each call passes only the one token that the job needs, so no job gets the whole secrets context. Keep the job workflow in your repository, not in this one: a reusable workflow cannot find its own commit, so it could not pin this action to the same version.
+Use two workflow files. The entry workflow finds the actor's token secret and calls a reusable job workflow in the same repository. Each call passes only the one token that the job needs, so no job gets the whole secrets context. Keep the job workflow in your repository, not in this one: a reusable workflow cannot find its own commit, so it could not pin this action to the same version. Pin `archestra-ai/code-review-action` and its reusable workflow to a commit SHA when your organization requires it; the tag `v1` moves with releases.
 
 `.github/workflows/archestra-review.yml`:
 
