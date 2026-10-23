@@ -47253,7 +47253,7 @@ function placeFindings(findings, index, options) {
     };
   });
 }
-function inlineComments(findings, index) {
+function inlineComments(findings, index, command) {
   return findings.filter((finding) => finding.inline).map((finding) => {
     const end = finding.end_line ?? finding.line;
     const multiLine = end > finding.line;
@@ -47262,17 +47262,19 @@ function inlineComments(findings, index) {
       line: end,
       side: "RIGHT",
       ...multiLine ? { start_line: finding.line, start_side: "RIGHT" } : {},
-      body: inlineBody(finding, index)
+      body: inlineBody(finding, index, command)
     };
   });
 }
-function inlineBody(finding, index) {
+function inlineBody(finding, index, command) {
   const parts = [
     `**${finding.n}. [${finding.severity}] ${truncate(finding.summary.replace(/\s+/g, " "), 300)}**`,
     "",
     truncate(finding.failure_scenario, 3e3).replace(/<!--|-->/g, ""),
     "",
-    `**Recommendation:** ${truncate(finding.recommendation, 1500).replace(/<!--|-->/g, "")}`
+    `**Recommendation:** ${truncate(finding.recommendation, 1500).replace(/<!--|-->/g, "")}`,
+    "",
+    `To implement and push this fix, reply \`${command} fix\` to this comment. For all findings, tick the box in the review summary.`
   ];
   const end = finding.end_line ?? finding.line;
   if (finding.suggestion !== void 0 && isRangeInDiff(index, finding.file, finding.line, end)) {
@@ -47408,7 +47410,7 @@ async function runReview(ctx, prNumber) {
       pr: pr.number,
       headSha: pr.headSha,
       body: `Archestra review of \`${shortSha(pr.headSha)}\`: ${findings.length} finding${findings.length === 1 ? "" : "s"}. The summary is in the review comment of this pull request.`,
-      comments: inlineComments(findings, index),
+      comments: inlineComments(findings, index, inputs.fixCommand),
       log
     });
     if (!posted) findings = findings.map((finding) => ({ ...finding, inline: false }));
