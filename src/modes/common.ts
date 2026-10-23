@@ -1,4 +1,4 @@
-import type { AttemptRecord } from "../attempts";
+import type { AttemptRecord, ProgressReporter } from "../attempts";
 import { type ActionContext, type ActionResult, makeResult, repoUrl } from "../context";
 import { type AuthorIdentity, userIdentity } from "../github/commits";
 import type { Sender, TriggerSource } from "../github/event";
@@ -157,6 +157,79 @@ async function rerenderSticky(ctx: ActionContext, pr: PullRequestInfo): Promise<
   } catch (error) {
     ctx.log.warning(`Could not reset the boxes: ${errorMessage(error)}`);
   }
+}
+
+/**
+ * Posts the sticky comment at once with a progress header, so the pull
+ * request shows who the job acts for and where it is while the runtime
+ * works. The same comment is rewritten with the result at the end.
+ */
+export async function startProgress(
+  ctx: ActionContext,
+  pr: PullRequestInfo,
+  job: { doing: string; login: string },
+): Promise<void> {
+  await updateSticky(ctx, pr, (state) => {
+    state.progress = {
+      doing: job.doing,
+      login: job.login,
+      startedAt: new Date(ctx.clock.now()).toISOString(),
+      workflowRunUrl: ctx.workflowRunUrl,
+      step: "preparing the inputs",
+      runUrl: null,
+    };
+  });
+}
+
+/**
+ * Updates the current step of the job in progress. Errors never stop the
+ * job: the comment is a progress view, not the result.
+ */
+export async function stepProgress(
+  ctx: ActionContext,
+  pr: PullRequestInfo,
+  step: string,
+  /** The run the step belongs to; null drops the previous run's link. */
+  runUrl: string | null = null,
+): Promise<void> {
+  try {
+    await updateSticky(ctx, pr, (state) => {
+      if (!state.progress) return;
+      state.progress.step = step;
+      state.progress.runUrl = runUrl;
+    });
+  } catch (error) {
+    ctx.log.debug(`Could not update the progress: ${errorMessage(error)}`);
+  }
+}
+
+/** Turns the progress header into the finished header; call it inside the final updateSticky. */
+export function finishProgress(
+  ctx: ActionContext,
+  state: StickyState,
+  job: { did: string; login: string; outcome: "ok" | "unavailable" | "error" },
+): void {
+  const startedAt = state.progress ? Date.parse(state.progress.startedAt) : Number.NaN;
+  state.last = {
+    did: job.did,
+    login: job.login,
+    durationMs: Number.isFinite(startedAt) ? Math.max(0, ctx.clock.now() - startedAt) : 0,
+    workflowRunUrl: ctx.workflowRunUrl,
+    outcome: job.outcome,
+  };
+  state.progress = null;
+}
+
+/** A step reporter for the attempt runner: each run start and state change updates the comment. */
+export function progressReporter(ctx: ActionContext, pr: PullRequestInfo, total: number): ProgressReporter {
+  return {
+    attempt: (index, agentId) =>
+      stepProgress(ctx, pr, `starting a run on agent ${index + 1} of ${total} (\`${agentId.slice(0, 8)}\`)`),
+    running: (runUrl) => stepProgress(ctx, pr, "waiting for the runtime to finish", runUrl),
+    retry: (delayMs) =>
+      stepProgress(ctx, pr, `the run failed; trying the same agent again in ${Math.round(delayMs / 1000)} s`),
+    next: () => stepProgress(ctx, pr, "the run failed; moving to the next agent"),
+  };
 }
 
 export function summarize(title: string, lines: string[], attempts: AttemptRecord[]): string {

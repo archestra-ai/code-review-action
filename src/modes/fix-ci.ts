@@ -15,7 +15,18 @@ import { verifyCommits } from "../github/commits";
 import type { Sender, TriggerSource } from "../github/event";
 import { loadChangedFiles, loadDiff, loadPullRequest, prAttachmentData } from "../github/pr";
 import { errorMessage, fullName, jsonAttachment, shortSha, textAttachment } from "../util";
-import { failureForError, fatalReason, isResult, prepareFix, reply, summarize, updateSticky } from "./common";
+import {
+  failureForError,
+  fatalReason,
+  finishProgress,
+  isResult,
+  prepareFix,
+  progressReporter,
+  reply,
+  startProgress,
+  summarize,
+  updateSticky,
+} from "./common";
 
 export async function runFixCi(
   ctx: ActionContext,
@@ -80,23 +91,25 @@ export async function runFixCi(
   const continueFrom =
     marker?.run && marker.agent && order.includes(marker.agent) ? { agentId: marker.agent, runId: marker.run } : null;
 
-  await updateSticky(ctx, pr, (s) => {
-    s.notice = `Triaging ${evidence.failures.length} failing check${evidence.failures.length === 1 ? "" : "s"} for @${identity.login}. [Workflow run](${ctx.workflowRunUrl})`;
-  });
+  const doing = `triaging ${evidence.failures.length} failing check${evidence.failures.length === 1 ? "" : "s"}`;
+  await startProgress(ctx, pr, { doing, login: identity.login });
+  const agents = preferAgent(order, continueFrom?.agentId ?? null);
 
   const outcome = await launch(ctx, {
-    agents: preferAgent(order, continueFrom?.agentId ?? null),
+    agents,
     continueFrom,
     message,
     attachments,
     contract: CONTRACTS["fix-ci"],
     timeoutMs: inputs.fixTimeoutMs,
     credentialToken: inputs.fixToken,
+    progress: progressReporter(ctx, pr, agents.length),
   });
 
   if (!outcome.ok || !outcome.value) {
     const reason = outcome.fatal ? fatalReason(outcome.attempts) : "No runtime completed the triage.";
     await updateSticky(ctx, pr, (s) => {
+      finishProgress(ctx, s, { did: doing, login: identity.login, outcome: "unavailable" });
       s.attempts = outcome.attempts;
       s.operation = "CI triage";
       s.notice = `The CI triage requested by @${identity.login} did not complete: ${reason}`;
@@ -145,6 +158,11 @@ export async function runFixCi(
   }
 
   await updateSticky(ctx, pr, (s, stickyMarker) => {
+    finishProgress(ctx, s, {
+      did: `triaged ${rows.length} failing check${rows.length === 1 ? "" : "s"}`,
+      login: identity.login,
+      outcome: "ok",
+    });
     Object.assign(stickyMarker, {
       run: runId,
       agent: outcome.agentId ?? stickyMarker.agent,

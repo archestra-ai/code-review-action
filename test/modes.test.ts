@@ -143,6 +143,58 @@ describe("review mode", () => {
   });
 });
 
+describe("progress comment", () => {
+  it("posts the sticky comment at start with a spinner, updates the step, and ends with the duration", async () => {
+    const { harness, result } = await reviewed();
+    const history = harness.github.stickyHistory;
+    expect(history.length).toBeGreaterThanOrEqual(3);
+    expect(history[0]).toContain("**Archestra is reviewing `");
+    expect(history[0]).toContain("for @alice…**");
+    expect(history[0]).toContain('<img src="https://github.com/user-attachments/assets/');
+    expect(history[0]).toContain("- preparing the inputs");
+    expect(history.some((body) => body.includes("- starting a run on agent 1 of 3"))).toBe(true);
+    expect(
+      history.some((body) =>
+        body.includes("- waiting for the runtime to finish ([run](https://archestra.test/chat/runs/"),
+      ),
+    ).toBe(true);
+    const last = history.at(-1)!;
+    expect(last).toMatch(
+      /\*\*Archestra reviewed `[0-9a-f]{7}` for @alice in [0-9]+ (s|min [0-9]+ s)\*\* —— \[View job\]\(https:\/\/github\.com\/acme\/widgets\/actions\/runs\/1\)/,
+    );
+    expect(last).not.toContain("<img");
+    expect(parseState(last)?.progress).toBeNull();
+    expect(result.status).toBe("success");
+    // One comment throughout: created once, then updated.
+    expect(harness.github.comments.size).toBe(1);
+  });
+
+  it("shows the fallback steps when the first agent fails", async () => {
+    const harness = setup();
+    harness.archestra.script(AGENT_A, { end: "failed", statusReason: "Budget exceeded" });
+    harness.archestra.script(AGENT_B, { end: "completed", files: { "review.json": reviewJson() } });
+    await run(harness.context("pull_request", prEvent(harness.github)));
+    const steps = harness.github.stickyHistory.map((body) => body.split("\n")[3] ?? "");
+    expect(steps).toContain("- starting a run on agent 1 of 3 (`11111111`)");
+    expect(steps).toContain("- the run failed; moving to the next agent");
+    expect(steps).toContain("- starting a run on agent 2 of 3 (`22222222`)");
+    // The failed run's link does not stick to the next agent's steps.
+    expect(steps.filter((step) => step.includes("[run]")).length).toBe(2);
+  });
+
+  it("uses the requester's login and the fix wording for a fix", async () => {
+    const { harness } = await reviewed();
+    harness.archestra.script(AGENT_A, {
+      end: "completed",
+      files: { "fix-result.json": { applied: [], skipped: [], notes: "" } },
+    });
+    await run(harness.context("issue_comment", issueCommentEvent(harness.github, "/archestra fix")));
+    const history = harness.github.stickyHistory;
+    expect(history.some((body) => body.includes("**Archestra is applying 2 findings for @maria…**"))).toBe(true);
+    expect(history.at(-1)).toContain("**Archestra applied 0 of 2 findings for @maria in ");
+  });
+});
+
 describe("identity", () => {
   it("skips with a warning when the actor has no token and there is no fallback", async () => {
     const harness = setup();

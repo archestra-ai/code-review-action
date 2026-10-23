@@ -17,7 +17,18 @@ import { loadChangedFiles, loadDiff, loadPullRequest, prAttachmentData } from ".
 import { findingIdFromBody, type StoredFinding } from "../github/sticky";
 import { applyThreadUpdate, listFindingThreads, planThreadUpdates, replyToThread } from "../github/threads";
 import { errorMessage, fullName, jsonAttachment, shortSha, textAttachment } from "../util";
-import { failureForError, fatalReason, isResult, prepareFix, reply, summarize, updateSticky } from "./common";
+import {
+  failureForError,
+  fatalReason,
+  finishProgress,
+  isResult,
+  prepareFix,
+  progressReporter,
+  reply,
+  startProgress,
+  summarize,
+  updateSticky,
+} from "./common";
 
 export interface FixTriggerInput {
   kind: "fix";
@@ -100,9 +111,8 @@ export async function runFix(ctx: ActionContext, trigger: FixTriggerInput): Prom
     marker.run && marker.agent && order.includes(marker.agent) ? { agentId: marker.agent, runId: marker.run } : null;
   const agents = preferAgent(order, continueFrom?.agentId ?? null);
 
-  await updateSticky(ctx, pr, (s) => {
-    s.notice = `Applying ${selected.length} finding${selected.length === 1 ? "" : "s"} for @${identity.login}. [Workflow run](${ctx.workflowRunUrl})`;
-  });
+  const doing = `applying ${selected.length} finding${selected.length === 1 ? "" : "s"}`;
+  await startProgress(ctx, pr, { doing, login: identity.login });
 
   const outcome = await launch(ctx, {
     agents,
@@ -112,11 +122,13 @@ export async function runFix(ctx: ActionContext, trigger: FixTriggerInput): Prom
     contract: CONTRACTS.fix,
     timeoutMs: inputs.fixTimeoutMs,
     credentialToken: inputs.fixToken,
+    progress: progressReporter(ctx, pr, agents.length),
   });
 
   if (!outcome.ok || !outcome.value) {
     const reason = outcome.fatal ? fatalReason(outcome.attempts) : "No runtime completed the fix.";
     await updateSticky(ctx, pr, (s) => {
+      finishProgress(ctx, s, { did: doing, login: identity.login, outcome: "unavailable" });
       s.attempts = outcome.attempts;
       s.operation = "fix";
       s.notice = `The fix requested by @${identity.login} did not complete: ${reason}`;
@@ -161,6 +173,11 @@ export async function runFix(ctx: ActionContext, trigger: FixTriggerInput): Prom
 
   await updateFindingThreads(ctx, pr.number, [...appliedIds], skipped);
   await updateSticky(ctx, pr, (s, stickyMarker) => {
+    finishProgress(ctx, s, {
+      did: `applied ${appliedIds.size} of ${selected.length} finding${selected.length === 1 ? "" : "s"}`,
+      login: identity.login,
+      outcome: "ok",
+    });
     Object.assign(stickyMarker, {
       run: runId,
       agent: outcome.agentId ?? stickyMarker.agent,
