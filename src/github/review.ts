@@ -2,7 +2,7 @@ import type { ReviewFinding } from "../contracts";
 import { errorMessage, type Logger, type RepoRef, truncate } from "../util";
 import { type DiffIndex, isRangeInDiff } from "./diff";
 import { httpStatus, type Octokit } from "./octokit";
-import { findingMarker, type StoredFinding } from "./sticky";
+import { escapeHtml, findingMarker, type StoredFinding } from "./sticky";
 
 export interface InlineComment {
   path: string;
@@ -59,11 +59,11 @@ export function inlineComments(findings: StoredFinding[], index: DiffIndex, comm
  */
 export function inlineBody(finding: StoredFinding, index: DiffIndex, command: string): string {
   const parts = [
-    `**${finding.n}. [${finding.severity}] ${truncate(finding.summary.replace(/\s+/g, " "), 300)}**`,
+    `**${finding.n}. [${finding.severity}] ${truncate(escapeHtml(finding.summary).replace(/\s+/g, " "), 300)}**`,
     "",
-    truncate(finding.failure_scenario, 3000).replace(/<!--|-->/g, ""),
+    escapeHtml(truncate(finding.failure_scenario, 3000)),
     "",
-    `**Recommendation:** ${truncate(finding.recommendation, 1500).replace(/<!--|-->/g, "")}`,
+    `**Recommendation:** ${escapeHtml(truncate(finding.recommendation, 1500))}`,
     "",
     `To implement and push this fix, reply \`${command} fix\` to this comment. For all findings, tick the box in the review summary.`,
   ];

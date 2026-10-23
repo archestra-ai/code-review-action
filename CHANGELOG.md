@@ -3,6 +3,7 @@
 ## 0.1.0 (not released)
 
 - Review mode: start a one-shot review run on one of several Archestra agents with dedicated runtimes. Rotate, ordered or random selection. Retry temporary failures on the same runtime; go to the next runtime after a permanent failure; a finite number of attempts.
+- Text the runtime wrote (summaries, findings, recommendations, reasons) is HTML-escaped in the comment instead of having comment markers stripped, so no `archestra-action` or `archestra-finding` marker can be smuggled in through a crafted diff. Comments written before the recommendation field existed still parse. Long recommendations are budgeted when a comment is shrunk to GitHub's size limit.
 - Each inline comment ends with how to have its fix implemented: reply `/archestra fix` to the comment, or tick the box in the summary for all findings.
 - Each finding carries a recommendation: what to change, in one or two sentences. It is a column of the findings table, a line of the inline comment, and what the fix mode implements.
 - Progress in the review comment: the comment is posted when the job starts, with a header that names the person the job acts for, the current step (preparing inputs, starting a run on agent n of m, waiting for the runtime, retrying, moving to the next agent) with a link to the run, and a spinner. The final write turns it into a finished header with the duration. The same comment is used by every later job.
