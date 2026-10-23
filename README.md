@@ -77,6 +77,8 @@ The App pushes the commits, but the commit author is the person who asked for th
 
 Use two workflow files. The entry workflow finds the actor's token secret and calls a reusable job workflow in the same repository. Each call passes only the one token that the job needs, so no job gets the whole secrets context. Keep the job workflow in your repository, not in this one: a reusable workflow cannot find its own commit, so it could not pin this action to the same version. Pin `archestra-ai/code-review-action` and its reusable workflow to a commit SHA when your organization requires it; the tag `v1` moves with releases.
 
+Pin both references to the commit of a release tag and name the tag in the comment, for example `@0032e4a2d91e85fab60a6fdb9625cc1c785a5456 # v0.1.0`. Each release is a tag `vX.Y.Z` that never moves; `v1` points to the latest release and moves with it, so a pin whose comment says `# v1` fails zizmor's `stale-action-refs` and `ref-version-mismatch` audits after the next release.
+
 `.github/workflows/archestra-review.yml`:
 
 ```yaml

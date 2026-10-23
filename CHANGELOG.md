@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.1.0 (not released)
+## 0.1.0 (2026-10-23)
 
 - Review mode: start a one-shot review run on one of several Archestra agents with dedicated runtimes. Rotate, ordered or random selection. Retry temporary failures on the same runtime; go to the next runtime after a permanent failure; a finite number of attempts.
 - Text the runtime wrote (summaries, findings, recommendations, reasons) is HTML-escaped in the comment instead of having comment markers stripped, so no `archestra-finding` or state marker can be smuggled in through a crafted diff. Comments written before the recommendation field existed still parse. Long recommendations are budgeted when a comment is shrunk to GitHub's size limit.
