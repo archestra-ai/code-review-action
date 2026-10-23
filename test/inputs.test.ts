@@ -61,4 +61,11 @@ describe("readInputs", () => {
       /fallback-agents/,
     );
   });
+
+  it("reads fix-commands, and rejects a value that is not a boolean", () => {
+    expect(read({}).fixCommands).toBe(true);
+    expect(read({ "fix-commands": "false" }).fixCommands).toBe(false);
+    expect(read({ "fix-commands": "true" }).fixCommands).toBe(true);
+    expect(() => read({ "fix-commands": "maybe" })).toThrow(InputError);
+  });
 });

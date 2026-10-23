@@ -14,7 +14,17 @@
     },
     "summary": {
       "type": "string",
-      "maxLength": 8000
+      "maxLength": 12000
+    },
+    "reviewed": {
+      "description": "What the review covered, in order: an area and its key files for each entry",
+      "maxItems": 12,
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 200
+      }
     },
     "findings": {
       "maxItems": 50,
@@ -50,6 +60,12 @@
               "nit"
             ]
           },
+          "title": {
+            "description": "A short name for the finding, used as its heading",
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 120
+          },
           "summary": {
             "type": "string",
             "minLength": 1,
@@ -60,7 +76,7 @@
             "type": "string",
             "minLength": 1,
             "maxLength": 4000,
-            "description": "Input or state, and the incorrect result"
+            "description": "Input or state, the incorrect result, and the reasoning a maintainer needs"
           },
           "recommendation": {
             "type": "string",
@@ -89,6 +105,57 @@
           "recommendation"
         ]
       }
+    },
+    "observations": {
+      "description": "What the change does right, and facts a maintainer should know that need no change",
+      "maxItems": 15,
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 600
+      }
+    },
+    "tests": {
+      "description": "The test files of the change",
+      "maxItems": 30,
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "file": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 500,
+            "description": "Path relative to the repository root"
+          },
+          "focus": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 300,
+            "description": "What the file covers, in one line"
+          }
+        },
+        "required": [
+          "file",
+          "focus"
+        ]
+      }
+    },
+    "coverage": {
+      "description": "What the tests cover and what they leave out",
+      "type": "string",
+      "maxLength": 2000
+    },
+    "limitations": {
+      "description": "What the review could not do, and why",
+      "type": "string",
+      "maxLength": 2000
+    },
+    "conclusion": {
+      "description": "The closing judgement, naming the most actionable finding",
+      "type": "string",
+      "maxLength": 2000
     },
     "previous": {
       "maxItems": 100,

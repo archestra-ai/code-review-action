@@ -112,10 +112,18 @@ function mapCode(
 
 /**
  * A fenced code block indented by at most three spaces: the opening fence line, the content, and the closing fence
- * (at least as long, same character) or the end of the text. A backtick fence's info string has no backtick.
+ * (at least as long, same character) or the end of the text. A backtick fence's info string has no backtick. An
+ * opening fence that ends the text is a block too: the renderer puts more lines after each field, so the reader
+ * would see a fence where the escaper saw prose; the escaper closes it instead.
  */
 const FENCED_BLOCK =
-  /^ {0,3}(?:(`{3,})[^`\n]*\n[\s\S]*?(?:^ {0,3}\1`*[ \t]*$|$(?![\s\S]))|(~{3,})[^\n]*\n[\s\S]*?(?:^ {0,3}\2~*[ \t]*$|$(?![\s\S])))/gm;
+  /^ {0,3}(?:(`{3,})[^`\n]*(?:\n|$(?![\s\S]))[\s\S]*?(?:^ {0,3}\1`*[ \t]*$|$(?![\s\S]))|(~{3,})[^\n]*(?:\n|$(?![\s\S]))[\s\S]*?(?:^ {0,3}\2~*[ \t]*$|$(?![\s\S])))/gm;
+
+/** A fence longer than any backtick run in the text, so that the text cannot close the block. */
+export function fenceFor(text: string): string {
+  const longest = Math.max(2, ...[...text.matchAll(/`+/g)].map((run) => run[0].length));
+  return "`".repeat(longest + 1);
+}
 
 function mapProse(text: string, prose: Mapper, code: Mapper): string {
   return text
@@ -195,6 +203,8 @@ const StoredFindingSchema = ReviewFindingSchema.extend({
   recommendation: z.string().max(2000).default(""),
   /** The inline review comment of the finding; null when it has none (outside the diff, or rejected). */
   commentId: z.number().int().nullable().default(null),
+  /** The head-side lines of the finding, from the diff; null when they are not in it. */
+  excerpt: z.string().max(2000).nullable().default(null),
 });
 export type StoredFinding = z.infer<typeof StoredFindingSchema>;
 
@@ -250,11 +260,31 @@ const LastJobSchema = z.object({
   outcome: z.enum(["ok", "unavailable", "error"]),
 });
 
+const TestFileSchema = z.object({
+  file: z.string(),
+  /** Lines added and deleted in the pull request; null when the file is not in the diff. */
+  additions: z.number().int().nullable(),
+  deletions: z.number().int().nullable(),
+  focus: z.string(),
+});
+export type TestFile = z.infer<typeof TestFileSchema>;
+
 const StateSchema = z.object({
   v: z.literal(1),
   status: z.enum(["reviewed", "unavailable"]),
   verdict: z.string().nullable(),
+  /** The title of the pull request at review time; null before the first review. */
+  title: z.string().nullable().default(null),
   summary: z.string(),
+  /** What the review covered, in order. */
+  reviewed: z.array(z.string()).default([]),
+  /** What the change does right, and facts that need no change. */
+  observations: z.array(z.string()).default([]),
+  tests: z.array(TestFileSchema).default([]),
+  coverage: z.string().default(""),
+  limitations: z.string().default(""),
+  /** The closing judgement; rendered as the Verdict section. */
+  conclusion: z.string().default(""),
   reviewedSha: z.string().nullable(),
   baseBranch: z.string(),
   findings: z.array(StoredFindingSchema),
@@ -299,7 +329,14 @@ export function emptyState(baseBranch: string): StickyState {
     v: 1,
     status: "reviewed",
     verdict: null,
+    title: null,
     summary: "",
+    reviewed: [],
+    observations: [],
+    tests: [],
+    coverage: "",
+    limitations: "",
+    conclusion: "",
     reviewedSha: null,
     baseBranch,
     findings: [],
@@ -371,18 +408,23 @@ function encodeState(state: StickyState): string {
 export interface RenderContext {
   marker: StickyMarker;
   repoUrl: string;
-  command: string;
+  /** The command prefix; null when no workflow listens to the commands, so the comment shows none. */
+  command: string | null;
 }
 
 const MAX_BODY_CHARS = 65_000;
 
 type Lines = Pick<StoredFinding, "file" | "line" | "end_line">;
 
-/** The "Files changed" view of the pull request at the lines of the finding. GitHub anchors a file by the SHA-256 of its path. */
+/** The "Files changed" view of the pull request at a file. GitHub anchors a file by the SHA-256 of its path. */
+export function fileUrl(repoUrl: string, pr: number, file: string): string {
+  return `${repoUrl}/pull/${pr}/files#diff-${createHash("sha256").update(file).digest("hex")}`;
+}
+
+/** The "Files changed" view of the pull request at the lines of the finding. */
 export function diffUrl(repoUrl: string, pr: number, finding: Lines): string {
-  const anchor = createHash("sha256").update(finding.file).digest("hex");
   const end = finding.end_line ?? finding.line;
-  return `${repoUrl}/pull/${pr}/files#diff-${anchor}R${finding.line}${end > finding.line ? `-R${end}` : ""}`;
+  return `${fileUrl(repoUrl, pr, finding.file)}R${finding.line}${end > finding.line ? `-R${end}` : ""}`;
 }
 
 /** The file at the reviewed commit, at the lines of the finding. */
@@ -401,12 +443,13 @@ export function commentUrl(repoUrl: string, pr: number, commentId: number): stri
 }
 
 /**
- * `file:line`, linked to the diff when the finding is in it, else to the file at the reviewed
- * commit. A table cell escapes its pipes; text outside a table must not.
+ * `file:line` or `file:line-end`, linked to the diff when the finding is in it, else to the file
+ * at the reviewed commit. A table cell escapes its pipes; text outside a table must not.
  */
 function locationLink(state: StickyState, context: RenderContext, finding: StoredFinding, table: boolean): string {
-  const path = (table ? cell(finding.file, 120) : oneLine(finding.file, 200)).replace(/[`[\]]/g, "'");
-  const text = `\`${path}:${finding.line}\``;
+  const path = table ? pathCell(finding.file) : oneLine(finding.file, 200).replace(/[`[\]]/g, "'");
+  const end = finding.end_line ?? finding.line;
+  const text = `\`${path}:${finding.line}${end > finding.line ? `-${end}` : ""}\``;
   const url = finding.inline
     ? diffUrl(context.repoUrl, context.marker.pr, finding)
     : state.reviewedSha
@@ -463,59 +506,72 @@ export function renderHeader(state: StickyState): string[] {
 
 function renderBody(state: StickyState, context: RenderContext): string {
   const { command, repoUrl } = context;
-  const out: string[] = [serializeMarker(context.marker), ...renderHeader(state), "### Archestra code review", ""];
+  const pr = context.marker.pr;
+  const heading = state.title
+    ? `### Archestra code review: #${pr} — ${oneLine(state.title, 200)}`
+    : "### Archestra code review";
+  const out: string[] = [serializeMarker(context.marker), ...renderHeader(state), heading, ""];
 
   if (state.status === "unavailable") {
     out.push("**Review unavailable.** No runtime completed the review. The attempts are listed below.", "");
   } else if (state.verdict) {
     out.push(
-      `**Verdict: ${verdictLabel(state.verdict)}** · reviewed \`${shortSha(state.reviewedSha)}\` · ${state.findings.length} finding${state.findings.length === 1 ? "" : "s"}`,
+      `**${verdictLabel(state.verdict)}** · reviewed \`${shortSha(state.reviewedSha)}\` · ${state.findings.length} finding${state.findings.length === 1 ? "" : "s"}`,
       "",
     );
   }
   if (state.notice) out.push(`> ${oneLine(state.notice, 1000)}`, "");
+  // What the review covered, so that a reader can check that the parts that matter were read.
+  if (state.reviewed.length > 0) {
+    out.push("**Reviewed**", "", ...state.reviewed.map((item) => `- ${oneLine(item, 200)}`), "");
+  }
   // The summary keeps its Markdown; only HTML is disarmed.
-  if (state.summary) out.push(escapeHtml(state.summary).trim(), "");
+  if (state.summary) out.push(paragraphs(state.summary), "");
 
   if (state.findings.length > 0) {
-    out.push(
-      "#### Findings",
-      "",
-      "| # | Severity | Location | Finding | Recommendation | Status |",
-      "| --- | --- | --- | --- | --- | --- |",
-    );
+    out.push("### Findings", "", "| # | Severity | Location | Finding | Status |", "| --- | --- | --- | --- | --- |");
     for (const finding of state.findings) {
       // The number opens the inline comment; the location opens the diff.
       const number =
         finding.commentId === null
           ? String(finding.n)
-          : `[${finding.n}](${commentUrl(repoUrl, context.marker.pr, finding.commentId)})`;
+          : `[${finding.n}](${commentUrl(repoUrl, pr, finding.commentId)})`;
       const location = `${locationLink(state, context, finding, true)}${finding.inline ? "" : " (outside the diff)"}`;
       out.push(
-        `| ${number} | ${finding.severity} | ${location} | ${cell(finding.summary, 300)} | ${cell(finding.recommendation, 400)} | ${finding.status} |`,
+        `| ${number} | ${finding.severity} | ${location} | ${cell(findingTitle(finding), HEADING_MAX)} | ${finding.status} |`,
       );
     }
     out.push("");
-    // A finding without an inline comment shows its failure scenario here; an inline comment carries it.
-    const outside = state.findings.filter((finding) => finding.commentId === null && finding.status === "open");
-    if (outside.length > 0) {
-      out.push("<details><summary>Findings outside the diff</summary>", "");
-      for (const finding of outside) {
-        out.push(
-          `**${finding.n}. ${oneLine(finding.summary, 300)}** (${locationLink(state, context, finding, false)})`,
-          "",
-          quote(finding.failure_scenario),
-          "",
-        );
-      }
-      out.push("</details>", "");
-    }
+    for (const finding of state.findings) out.push(...findingSection(state, context, finding));
   }
+
+  if (state.observations.length > 0) {
+    out.push("### Observations", "", ...state.observations.map((item) => `- ${oneLine(item, 600)}`), "");
+  }
+
+  if (state.tests.length > 0 || state.coverage) {
+    out.push("### Test coverage", "");
+    if (state.tests.length > 0) {
+      out.push("| File | Lines | Focus |", "| --- | --- | --- |");
+      for (const test of state.tests) {
+        const path = `\`${pathCell(test.file)}\``;
+        // A file in the diff links to it; its line counts come from the pull request.
+        const file = test.additions === null ? path : `[${path}](${fileUrl(repoUrl, pr, test.file)})`;
+        const lines = test.additions === null ? "-" : `+${test.additions} −${test.deletions ?? 0}`;
+        out.push(`| ${file} | ${lines} | ${cell(test.focus, 300)} |`);
+      }
+      out.push("");
+    }
+    if (state.coverage) out.push(paragraphs(state.coverage), "");
+  }
+
+  if (state.limitations) out.push("### Limitations", "", paragraphs(state.limitations), "");
+  if (state.conclusion) out.push("### Verdict", "", paragraphs(state.conclusion), "");
 
   const triageRows = state.triage;
   if (triageRows.length > 0) {
     out.push(
-      `#### CI triage (\`${shortSha(state.triageSha)}\`)`,
+      `### CI triage (\`${shortSha(state.triageSha)}\`)`,
       "",
       "| # | Check | Class | Root cause |",
       "| --- | --- | --- | --- |",
@@ -527,38 +583,41 @@ function renderBody(state: StickyState, context: RenderContext): string {
     out.push("");
   }
 
-  // "Next": the commands a maintainer can write, only the ones that apply now.
+  // "Next": the commands a maintainer can write, only the ones that apply now,
+  // and only when a workflow listens to them.
   const next: string[] = [];
-  if (state.findings.some((finding) => finding.status === "open" || finding.status === "skipped")) {
-    next.push(
-      `- Comment \`${command} fix\` to implement and push every open recommendation, or \`${command} fix 2,5 <note>\` for selected findings. Reply \`${command} fix\` under an inline finding to implement only that one.`,
-    );
-  }
-  // Only when the reviewed commit has failing checks; otherwise the line is noise.
-  if (state.failingChecks > 0) {
-    next.push(
-      `- Comment \`${command} fix-ci\` to triage and fix the ${state.failingChecks} failing check${state.failingChecks === 1 ? "" : "s"}.`,
-    );
-  }
-  const openPreExisting = state.triage
-    .map((row, index) => ({ row, index }))
-    .filter(({ row }) => row.class === "pre_existing" && !state.fixPrs.some((pr) => pr.checks.includes(row.check)));
-  for (const { row, index } of openPreExisting) {
-    next.push(
-      `- Comment \`${command} fix-ci-main ${index + 1}\` to open a fix PR against ${state.baseBranch} for \`${oneLine(row.check, 120).replace(/`/g, "'")}\`.`,
-    );
-  }
-  if (openPreExisting.length > 1) {
-    next.push(
-      `- Comment \`${command} fix-ci-main\` to open one fix PR against ${state.baseBranch} for all pre-existing failures.`,
-    );
+  if (command !== null) {
+    if (state.findings.some((finding) => finding.status === "open" || finding.status === "skipped")) {
+      next.push(
+        `- Comment \`${command} fix\` to implement and push every open recommendation, or \`${command} fix 2,5 <note>\` for selected findings. Reply \`${command} fix\` under an inline finding to implement only that one.`,
+      );
+    }
+    // Only when the reviewed commit has failing checks; otherwise the line is noise.
+    if (state.failingChecks > 0) {
+      next.push(
+        `- Comment \`${command} fix-ci\` to triage and fix the ${state.failingChecks} failing check${state.failingChecks === 1 ? "" : "s"}.`,
+      );
+    }
+    const openPreExisting = state.triage
+      .map((row, index) => ({ row, index }))
+      .filter(({ row }) => row.class === "pre_existing" && !state.fixPrs.some((pr) => pr.checks.includes(row.check)));
+    for (const { row, index } of openPreExisting) {
+      next.push(
+        `- Comment \`${command} fix-ci-main ${index + 1}\` to open a fix PR against ${state.baseBranch} for \`${oneLine(row.check, 120).replace(/`/g, "'")}\`.`,
+      );
+    }
+    if (openPreExisting.length > 1) {
+      next.push(
+        `- Comment \`${command} fix-ci-main\` to open one fix PR against ${state.baseBranch} for all pre-existing failures.`,
+      );
+    }
   }
   if (next.length > 0) {
-    out.push("#### Next", "", ...next, "", "Only users with write access can start a fix.", "");
+    out.push("### Next", "", ...next, "", "Only users with write access can start a fix.", "");
   }
 
   if (state.fixPrs.length > 0) {
-    out.push("#### Fix pull requests", "");
+    out.push("### Fix pull requests", "");
     for (const pr of state.fixPrs) {
       out.push(
         `- [#${pr.number}](${pr.url}) for ${pr.checks.map((check) => `\`${oneLine(check, 120).replace(/`/g, "'")}\``).join(", ")}. Queue the fix PR first, then rebase this pull request.`,
@@ -568,7 +627,7 @@ function renderBody(state: StickyState, context: RenderContext): string {
   }
 
   if (state.applied.length > 0) {
-    out.push("#### Applied", "");
+    out.push("### Applied", "");
     for (const entry of state.applied) {
       const what = entry.finding
         ? `finding ${findingNumber(state, entry.finding)}`
@@ -602,6 +661,104 @@ function renderBody(state: StickyState, context: RenderContext): string {
   }
   out.push(encodeState(state));
   return out.join("\n");
+}
+
+/** The heading of a finding: its title, or its one-sentence summary for findings written without one. */
+export function findingTitle(finding: Pick<StoredFinding, "title" | "summary">): string {
+  return finding.title ?? finding.summary;
+}
+
+/** A heading or a table cell shows this much of a title. */
+const HEADING_MAX = 160;
+
+/**
+ * The section of one finding: where it is, the code at those lines, the
+ * problem, and what to change. The inline comment on the diff says the same.
+ */
+function findingSection(state: StickyState, context: RenderContext, finding: StoredFinding): string[] {
+  const meta = [
+    `**File:** ${locationLink(state, context, finding, false)}${finding.inline ? "" : " (outside the diff)"}`,
+    `**Severity:** ${finding.severity}`,
+  ];
+  if (finding.commentId !== null) {
+    meta.push(`[inline comment](${commentUrl(context.repoUrl, context.marker.pr, finding.commentId)})`);
+  }
+  if (finding.status !== "open") meta.push(`**Status:** ${finding.status}`);
+  const lines = [`#### ${finding.n}. ${oneLine(findingTitle(finding), HEADING_MAX)}`, "", meta.join(" · "), ""];
+  if (finding.excerpt) {
+    // The code comes from the diff: the fence keeps the block intact, and the marker reader strips
+    // the block before it looks for markers.
+    const fence = fenceFor(finding.excerpt);
+    lines.push(`${fence}${codeLanguage(finding.file)}`, finding.excerpt, fence, "");
+  }
+  // With a title in the heading, the one-sentence summary opens the text; so does a summary the heading cut.
+  if (finding.title || finding.summary.length > HEADING_MAX) lines.push(marginLine(finding.summary, 500), "");
+  lines.push(
+    paragraphs(finding.failure_scenario),
+    "",
+    // Its own paragraph at the margin, so the escaper and the marker reader see the same fences.
+    "**Recommendation:**",
+    "",
+    paragraphs(finding.recommendation),
+    "",
+  );
+  return lines;
+}
+
+/**
+ * A text placed at the margin as its own paragraphs: trimmed before it is escaped, so that the
+ * escaper and the marker reader see the same fences (an indented fence is prose for both).
+ */
+function paragraphs(text: string): string {
+  return escapeHtml(text.trim());
+}
+
+/**
+ * One line placed at the margin. A fence run at its start would open a code block for the marker
+ * reader but not for the escaper, so stray backtick runs and a leading tilde run become apostrophes.
+ */
+export function marginLine(text: string, max: number): string {
+  const line = balanceBackticks(text.replace(/\s+/g, " ").trim()).replace(/^~{3,}/, (run) => "'".repeat(run.length));
+  return oneLine(line, max);
+}
+
+const LANGUAGES: Record<string, string> = {
+  c: "c",
+  cc: "cpp",
+  cpp: "cpp",
+  cs: "csharp",
+  css: "css",
+  go: "go",
+  h: "c",
+  hpp: "cpp",
+  html: "html",
+  java: "java",
+  js: "js",
+  json: "json",
+  jsx: "jsx",
+  kt: "kotlin",
+  md: "markdown",
+  mjs: "js",
+  php: "php",
+  py: "python",
+  rb: "ruby",
+  rs: "rust",
+  scss: "scss",
+  sh: "sh",
+  sql: "sql",
+  swift: "swift",
+  tf: "hcl",
+  toml: "toml",
+  ts: "ts",
+  tsx: "tsx",
+  yaml: "yaml",
+  yml: "yaml",
+};
+
+/** The info string of a code block, from the file extension; empty when unknown. */
+export function codeLanguage(file: string): string {
+  const extension = /\.([a-z0-9]+)$/i.exec(file)?.[1]?.toLowerCase();
+  return extension && Object.hasOwn(LANGUAGES, extension) ? (LANGUAGES[extension] as string) : "";
 }
 
 /** Every attempt of every job, oldest first: the history in the review comment. */
@@ -660,13 +817,25 @@ function findingNumber(state: StickyState, id: string): string {
 
 function shrink(state: StickyState, level: number): StickyState {
   const limit = level === 1 ? 1000 : level === 2 ? 300 : 80;
+  // The sections after the findings: shortened first, dropped at the last level.
+  const prose = level === 1 ? 2000 : level === 2 ? 500 : 0;
+  const clip = (text: string, max: number) => (max === 0 ? "" : truncate(text, max));
   return {
     ...state,
-    summary: truncate(state.summary, level === 1 ? 4000 : 1000),
+    summary: truncate(state.summary, level === 1 ? 6000 : 1000),
+    reviewed: level >= 3 ? [] : state.reviewed,
+    observations: level >= 3 ? [] : state.observations.map((item) => truncate(item, level === 1 ? 600 : 200)),
+    tests:
+      level >= 3 ? [] : state.tests.map((test) => ({ ...test, focus: truncate(test.focus, level === 1 ? 300 : 100) })),
+    coverage: clip(state.coverage, prose),
+    limitations: clip(state.limitations, prose),
+    conclusion: clip(state.conclusion, level === 3 ? 300 : prose),
     findings: state.findings.map((finding) => {
       const { suggestion: _drop, ...rest } = finding;
       return {
         ...rest,
+        // The code keeps its first lines at the first level and goes at the next.
+        excerpt: level === 1 && finding.excerpt ? shortExcerpt(finding.excerpt) : null,
         failure_scenario: truncate(finding.failure_scenario, limit),
         recommendation: truncate(finding.recommendation, Math.max(limit, 120)),
         summary: truncate(finding.summary, Math.max(limit, 120)),
@@ -676,6 +845,14 @@ function shrink(state: StickyState, level: number): StickyState {
     applied: state.applied.slice(-50),
     skipped: state.skipped.slice(-20),
   };
+}
+
+/** The first lines of an excerpt, for a comment that is too long. */
+function shortExcerpt(excerpt: string): string {
+  const lines = excerpt.split("\n");
+  const kept = lines.slice(0, 4);
+  if (lines.length > kept.length) kept.push("…");
+  return truncate(kept.join("\n"), 400);
 }
 
 function verdictLabel(verdict: string): string {
@@ -688,6 +865,11 @@ function verdictLabel(verdict: string): string {
   );
 }
 
+/** A file path in a table cell, inside a code span: no backtick or bracket can end the span or the link text. */
+function pathCell(file: string): string {
+  return cell(file, 120).replace(/[`[\]]/g, "'");
+}
+
 /** A table cell: one line, no stray backtick, pipes escaped. */
 function cell(text: string, max: number): string {
   const line = balanceBackticks(truncate(text.replace(/\s+/g, " ").trim(), max));
@@ -696,14 +878,6 @@ function cell(text: string, max: number): string {
 
 function oneLine(text: string, max: number): string {
   return escapeHtml(truncate(text.replace(/\s+/g, " ").trim(), max));
-}
-
-function quote(text: string): string {
-  // Quoted lines no longer start at the margin, so a fence is prose here.
-  return escapeHtml(truncate(text, 2000), { fences: false })
-    .split("\n")
-    .map((line) => `> ${line}`)
-    .join("\n");
 }
 
 function formatDuration(ms: number): string {

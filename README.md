@@ -1,7 +1,7 @@
 # Archestra code review action
 
 This GitHub Action reviews pull requests on [Archestra](https://archestra.ai) Agent Runtimes. When a maintainer asks, the same runtime applies the findings, triages failing checks, and prepares a fix pull request for failures that are already on the base branch.
-- **Review.** The action starts a one-shot run on one of your Archestra agents. The agent clones the repository at the head commit, reviews the change and writes `review.json`: for each finding, the failure scenario and a recommendation that says what to change. The action posts a review comment with the review text (what the change does, a plain ASCII architecture diagram and sequence diagrams of the main affected flows, then the sections that matter), a findings table and inline comments.
+- **Review.** The action starts a one-shot run on one of your Archestra agents. The agent clones the repository at the head commit, reviews the change and writes `review.json`: what it covered, an assessment of the change, and for each finding a title, the failure scenario and a recommendation that says what to change. The action posts a review comment that reads like a reviewer's write-up: what was reviewed, the assessment with a plain ASCII architecture diagram and sequence diagrams of the main affected flows, a findings table and a section for each finding with the code it quotes from the diff, observations on what the change does right, a test coverage table, limitations and a closing verdict. Findings inside the diff also get inline comments.
 - **Your identity, your costs.** Each run acts as the person who caused the event: the pull request author, the pusher, or the maintainer who asked for a fix. The run uses that person's Archestra credentials and Claude account, the cost goes to that person, and only that person can answer a Guardrails review on the run page.
 - **Balancing and fallback.** You give a list of agents. Each agent has a dedicated runtime and its own model provider. The action selects the first agent from the list (rotation by default). It tries the same agent again after a temporary failure and goes to the next agent after a permanent failure. The number of attempts is finite.
 - **Fixes on request.** A maintainer writes a command in a pull request comment. The action continues the retained workspace of the review. The runtime pushes the fix to the pull request branch. The commits have the maintainer as the author.
@@ -24,7 +24,7 @@ pull_request ──► action ──► start_agent_run (pr.json, pr.diff) ─�
 
 The review comment appears as soon as the job starts, with a progress header: who the job acts for, the current step and a link to the run. The same comment is rewritten with the result at the end, with the time the job took. Every later job on the pull request updates that one comment. A collapsed **History** section at the end lists every job on the pull request (the last 20): when it started, the agent, the run and whether it continued an earlier run, the result, and the time each attempt took. A workflow run that fails before the action reaches the comment is not in it; the Actions tab has those.
 
-In the findings table, the number links to the finding's inline comment, and the location to the diff at those lines (to the file at the reviewed commit for a finding outside the diff).
+The review comment has these parts, in this order: the header with the person and the duration; the title of the pull request; the verdict line; **Reviewed**, the areas and files the review covered; the assessment with the architecture and flow diagrams; **Findings**, a table (number, severity, location, title, status) followed by a section for each finding with its location, severity, the code at those lines quoted from the diff, the problem, the reasoning and the recommendation; **Observations**, what the change does right and what needs no change; **Test coverage**, a table of the test files in the diff with their line counts and what they cover, and what has no test; **Limitations**, what the review could not do; **Verdict**, the closing paragraph with the most actionable finding; **Next**, the commands that apply; and the collapsed **History**. In the findings table, the number links to the finding's inline comment, and the location to the diff at those lines (to the file at the reviewed commit for a finding outside the diff).
 
 A later review of the same pull request keeps the findings it reported before. The runtime names them with `previous_id` (a finding with the same file and summary counts too); their inline comments are rewritten in place, so the thread, its replies and its resolution stay. Only new findings get new inline comments, and the threads of fixed findings are resolved.
 
@@ -217,7 +217,7 @@ CI triage classes:
 | `strategy`                          | `rotate`       | `rotate`: (PR number + run attempt) mod N. `ordered`: the list order. `random`.                 |
 | `retries`                           | `1`            | Attempts on the same agent after a temporary failure (after 30 s, then 60 s).                   |
 | `max-fallbacks`                     | all            | More agents to try after a permanent failure.                                                   |
-| `timeout-minutes`                   | `20`           | Time limit for one review attempt.                                                              |
+| `timeout-minutes`                   | `30`           | Time limit for one review attempt, checks of the changed code included.                         |
 | `overall-timeout-minutes`           | `120`          | Time limit for all attempts.                                                                    |
 | `instructions`, `instructions-file` | none           | More review rules, given to the runtime as `instructions.md`.                                   |
 | `github-token`                      | `github.token` | Posts the review. Needs `pull-requests: write`.                                                 |
@@ -225,6 +225,7 @@ CI triage classes:
 | `fail-on`                           | `never`        | `never`, `findings` or `error`.                                                                 |
 | `mode`                              | `auto`         | `auto`, `review`, `fix`, `fix-ci`, `fix-ci-main`. Use with `pr-number` for `workflow_dispatch`. |
 | `fix-command`                       | `/archestra`   | The command prefix.                                                                             |
+| `fix-commands`                      | `true`         | `false` when no workflow listens to the commands: the comments then show none.                  |
 | `fix-token`                         | none           | GitHub App installation token for the fix modes.                                                |
 | `clone-token`                       | none           | Read-only GitHub token for reviews of a private repository.                                     |
 | `fix-timeout-minutes`               | `45`           | Time limit for one fix or triage attempt.                                                       |
@@ -258,7 +259,7 @@ The `post` step cancels the live run when the job is canceled (for example by `c
 
 ## Limits
 
-- The message to the runtime is less than 8 KB. The diff (5 MB maximum), the pull request data, CI logs (200 KB tail for each job, 15 jobs maximum) and other inputs go as attachments (20 maximum). A continuation cannot take attachments, so the action writes the same files into the workspace (4 MiB each) and lists their paths in the message.
+- The message to the runtime is less than 12 KB. The diff (5 MB maximum), the pull request data, CI logs (200 KB tail for each job, 15 jobs maximum) and other inputs go as attachments (20 maximum). A continuation cannot take attachments, so the action writes the same files into the workspace (4 MiB each) and lists their paths in the message.
 - 50 findings for each review. GitHub limits a comment to 65,536 characters; the action shortens long texts in the review comment.
 - No fixes for pull requests from forks. No reviews of drafts, `[WIP]` titles, forks or pull requests opened by bots.
 - Commits made by the runtime are not signed.

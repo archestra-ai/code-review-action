@@ -96,14 +96,14 @@ jobs:
           permission-pull-requests: write
           permission-actions: read
       - if: steps.token.outputs.available == 'true'
-        uses: archestra-ai/code-review-action@v1 # Pin to the commit of a release tag, for example @<sha> # v0.1.0.
+        uses: archestra-ai/code-review-action@v1 # Pin to the commit of a release tag, for example @<sha> # v0.2.0.
         with:
           archestra-gateway-url: ${{ inputs.gateway-url }}
           archestra-token: ${{ secrets.ARCHESTRA_TOKEN }}
           agents: ${{ inputs.agents }}
           strategy: rotate
           retries: 1
-          timeout-minutes: 20
+          timeout-minutes: 30
           fail-on: never
           # Private repository: the runtime clones with this token. Mint one
           # that can only read contents (the step above with

@@ -2,7 +2,15 @@ import type { ReviewFinding } from "../contracts";
 import { errorMessage, type Logger, type RepoRef, truncate } from "../util";
 import { type DiffIndex, isRangeInDiff } from "./diff";
 import { httpStatus, type Octokit } from "./octokit";
-import { escapeHtml, findingIdFromBody, findingMarker, type StoredFinding } from "./sticky";
+import {
+  escapeHtml,
+  fenceFor,
+  findingIdFromBody,
+  findingMarker,
+  findingTitle,
+  marginLine,
+  type StoredFinding,
+} from "./sticky";
 import type { FindingThread } from "./threads";
 
 export interface InlineComment {
@@ -41,6 +49,7 @@ export function placeFindings(
       inline: options.inline && isRangeInDiff(index, finding.file, finding.line, end),
       status: "open" as const,
       commentId: null,
+      excerpt: null,
     };
   });
 }
@@ -49,7 +58,7 @@ export function placeFindings(
  * Pairs each finding with the finding of the last review that it repeats,
  * so that it keeps that id and its inline comment: by `previous_id` when
  * the runtime set it and the file agrees, else by the same file and the
- * same summary.
+ * same summary, else by the same file and the same title.
  */
 export function linkPrevious(findings: ReviewFinding[], previous: StoredFinding[]): Map<number, string> {
   const links = new Map<number, string>();
@@ -63,17 +72,25 @@ export function linkPrevious(findings: ReviewFinding[], previous: StoredFinding[
       taken.add(id);
     }
   }
-  for (const [i, finding] of findings.entries()) {
-    if (links.has(i)) continue;
-    const match = previous.find(
-      (candidate) =>
-        !taken.has(candidate.id) && candidate.file === finding.file && sameText(candidate.summary, finding.summary),
-    );
-    if (match) {
-      links.set(i, match.id);
-      taken.add(match.id);
+  const same = (pick: (finding: Pick<ReviewFinding, "title" | "summary">) => string | undefined) => {
+    for (const [i, finding] of findings.entries()) {
+      if (links.has(i)) continue;
+      const text = pick(finding);
+      if (text === undefined) continue;
+      const match = previous.find((candidate) => {
+        const other = pick(candidate);
+        return (
+          !taken.has(candidate.id) && candidate.file === finding.file && other !== undefined && sameText(other, text)
+        );
+      });
+      if (match) {
+        links.set(i, match.id);
+        taken.add(match.id);
+      }
     }
-  }
+  };
+  same((finding) => finding.summary);
+  same((finding) => finding.title);
   return links;
 }
 
@@ -101,7 +118,7 @@ export async function updateInlineComment(gh: Octokit, repo: RepoRef, commentId:
   await gh.rest.pulls.updateReviewComment({ ...repo, comment_id: commentId, body });
 }
 
-export function inlineComments(findings: StoredFinding[], index: DiffIndex, command: string): InlineComment[] {
+export function inlineComments(findings: StoredFinding[], index: DiffIndex, command: string | null): InlineComment[] {
   return findings
     .filter((finding) => finding.inline)
     .map((finding) => {
@@ -119,35 +136,43 @@ export function inlineComments(findings: StoredFinding[], index: DiffIndex, comm
 
 /**
  * One inline comment: the finding, why it fails, what to change, and how to
- * have it implemented (a reply with the fix command).
+ * have it implemented (a reply with the fix command, when a workflow listens
+ * to it).
  */
 export function inlineBody(
   finding: StoredFinding,
   index: DiffIndex,
-  command: string,
+  command: string | null,
   options: { suggestion?: boolean } = {},
 ): string {
+  const heading = findingTitle(finding);
   const parts = [
-    `**${finding.n}. [${finding.severity}] ${escapeHtml(truncate(finding.summary.replace(/\s+/g, " "), 300))}**`,
+    `**${finding.n}. [${finding.severity}] ${escapeHtml(truncate(heading.replace(/\s+/g, " "), 300))}**`,
     "",
+  ];
+  // With a title in the heading, the one-sentence summary opens the text.
+  if (finding.title) parts.push(marginLine(finding.summary, 500), "");
+  parts.push(
     escapeHtml(truncate(finding.failure_scenario, 3000)),
     "",
     // Its own paragraph at the margin, so the escaper and the marker reader see the same fences.
     "**Recommendation:**",
     "",
     escapeHtml(truncate(finding.recommendation, 1500)),
-    "",
-    `To implement and push this fix, reply \`${command} fix\` to this comment. For all findings, comment \`${command} fix\` on the pull request.`,
-  ];
+  );
+  if (command !== null) {
+    parts.push(
+      "",
+      `To implement and push this fix, reply \`${command} fix\` to this comment. For all findings, comment \`${command} fix\` on the pull request.`,
+    );
+  }
   const end = finding.end_line ?? finding.line;
   if (
     options.suggestion !== false &&
     finding.suggestion !== undefined &&
     isRangeInDiff(index, finding.file, finding.line, end)
   ) {
-    // A fence longer than any backtick run in the text keeps the block intact.
-    const longest = Math.max(2, ...[...finding.suggestion.matchAll(/`+/g)].map((m) => m[0].length));
-    const fence = "`".repeat(longest + 1);
+    const fence = fenceFor(finding.suggestion);
     parts.push("", `${fence}suggestion`, finding.suggestion.replace(/\n$/, ""), fence);
   }
   parts.push("", findingMarker(finding.id));

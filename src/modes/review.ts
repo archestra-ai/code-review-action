@@ -11,7 +11,7 @@ import {
 } from "../context";
 import { CONTRACTS } from "../contracts";
 import { countFailingChecks } from "../github/ci";
-import { buildDiffIndex } from "../github/diff";
+import { buildDiffIndex, excerptFor } from "../github/diff";
 import { httpStatus } from "../github/octokit";
 import { loadChangedFiles, loadDiff, loadPullRequest, prAttachmentData, skipReason } from "../github/pr";
 import {
@@ -33,6 +33,7 @@ import {
 } from "../github/threads";
 import { errorMessage, fullName, jsonAttachment, shortSha, textAttachment } from "../util";
 import {
+  commentCommand,
   failureForError,
   fatalReason,
   finishProgress,
@@ -91,12 +92,13 @@ export async function runReview(ctx: ActionContext, prNumber: number): Promise<A
       jsonAttachment(
         "previous-findings.json",
         previousFindings.map(
-          ({ id, file, line, end_line, severity, summary, failure_scenario, recommendation, status }) => ({
+          ({ id, file, line, end_line, severity, title, summary, failure_scenario, recommendation, status }) => ({
             id,
             file,
             line,
             end_line,
             severity,
+            title,
             summary,
             failure_scenario,
             recommendation,
@@ -161,12 +163,14 @@ export async function runReview(ctx: ActionContext, prNumber: number): Promise<A
   // The threads of the findings reported before: their comments are rewritten in place below, and
   // the threads of fixed and regressed findings are resolved or reopened at the end.
   const threads = await findingThreads(ctx, pr.number, inputs.post !== "none" && previousFindings.length > 0);
+  const command = commentCommand(inputs);
+  // A finding whose lines are in the diff quotes them in the review comment.
   let findings = placeFindings(review.findings, index, {
     headSha: pr.headSha,
     inline: inputs.post === "review",
     previous: previousFindings,
     reservedIds: threads.keys(),
-  });
+  }).map((finding) => ({ ...finding, excerpt: excerptFor(index, finding) }));
   const count = findings.length;
 
   if (inputs.post === "review") {
@@ -184,7 +188,7 @@ export async function runReview(ctx: ActionContext, prNumber: number): Promise<A
     const commentIds = new Map<string, number>();
     for (const { finding, thread } of kept) {
       // A suggestion applies to the lines the comment sits on; it is left out when the finding moved.
-      const body = inlineBody(finding, index, inputs.fixCommand, { suggestion: coversFinding(thread, finding) });
+      const body = inlineBody(finding, index, command, { suggestion: coversFinding(thread, finding) });
       try {
         await updateInlineComment(gh, repo, thread.commentId, body);
         commentIds.set(finding.id, thread.commentId);
@@ -206,7 +210,7 @@ export async function runReview(ctx: ActionContext, prNumber: number): Promise<A
       comments: inlineComments(
         findings.filter((finding) => fresh.has(finding.id)),
         index,
-        inputs.fixCommand,
+        command,
       ),
       log,
     });
@@ -244,7 +248,23 @@ export async function runReview(ctx: ActionContext, prNumber: number): Promise<A
     });
     state.status = "reviewed";
     state.verdict = review.verdict;
+    state.title = pr.title;
     state.summary = review.summary;
+    state.reviewed = review.reviewed ?? [];
+    state.observations = review.observations ?? [];
+    // The line counts of a test file come from the pull request; a file outside the diff has none.
+    state.tests = (review.tests ?? []).map((test) => {
+      const file = files.find((candidate) => candidate.filename === test.file);
+      return {
+        file: test.file,
+        additions: file?.additions ?? null,
+        deletions: file?.deletions ?? null,
+        focus: test.focus,
+      };
+    });
+    state.coverage = review.coverage ?? "";
+    state.limitations = review.limitations ?? "";
+    state.conclusion = review.conclusion ?? "";
     state.reviewedSha = pr.headSha;
     state.baseBranch = pr.baseRef;
     state.findings = findings;
