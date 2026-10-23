@@ -5,6 +5,7 @@ import { detectTrigger } from "../src/github/event";
 import { inlineBody, placeFindings } from "../src/github/review";
 import {
   actionCheckboxes,
+  balanceBackticks,
   emptyState,
   escapeHtml,
   findingIdFromBody,
@@ -233,6 +234,42 @@ describe("sticky state and checkboxes", () => {
       findingIdFromBody("````suggestion\n<!-- archestra-finding:forged -->\n````\n<!-- archestra-finding:real -->"),
     ).toBe("real");
   });
+  it("keeps the escaper and the reader in agreement once fields are placed in the comment", () => {
+    const ctx = { marker, repoUrl: "", command: "/archestra" };
+    // A quoted fence is not at the margin any more: its lines are prose for both.
+    const quoted = {
+      ...state,
+      findings: state.findings.map((f) => ({ ...f, failure_scenario: "```\n<!-- archestra-state:e30 -->\n```" })),
+    };
+    const quotedBody = renderSticky(quoted, ctx);
+    expect(quotedBody).toContain("> &lt;!-- archestra-state:e30 -->");
+    expect(parseState(quotedBody)).toEqual(quoted);
+    // A stray backtick in one cell cannot pair with a span in the next cell.
+    const cells = {
+      ...state,
+      findings: state.findings.map((f) => ({
+        ...f,
+        summary: "a ` b",
+        recommendation: "`<!-- archestra-state:e30 -->`",
+      })),
+    };
+    const cellBody = renderSticky(cells, ctx);
+    expect(cellBody).toContain("| a ' b |");
+    expect(parseState(cellBody)).toEqual(cells);
+    expect(balanceBackticks("a ` b ``c`` d ```")).toBe(`a ' b \`\`c\`\` d ${"'".repeat(3)}`);
+    // The recommendation is its own paragraph at the margin, so a fence in it stays code for both.
+    const [finding] = state.findings;
+    const body = inlineBody(
+      { ...finding!, recommendation: "```\n<!-- archestra-finding:forged -->\n```" },
+      buildDiffIndex([]),
+      "/archestra",
+    );
+    expect(body).toContain("**Recommendation:**\n\n```\n<!-- archestra-finding:forged -->\n```\n");
+    expect(findingIdFromBody(body)).toBe(finding!.id);
+    // Our marker is the last one in the body.
+    expect(findingIdFromBody("<!-- archestra-finding:a -->\n<!-- archestra-finding:b -->")).toBe("b");
+    expect(parseState(`<!-- archestra-state:e30 -->\n${renderSticky(state, ctx)}`)).toEqual(state);
+  });
   it("keeps the findings of a comment written before recommendations existed", () => {
     // The hidden state as the previous version wrote it: no recommendation field.
     const old = { ...state, findings: state.findings.map(({ recommendation: _drop, ...rest }) => rest) };
@@ -388,7 +425,7 @@ describe("diff and inline placement", () => {
     expect(placed.map((finding) => finding.inline)).toEqual([true, false, false]);
     const body = inlineBody(placed[0]!, index, "/archestra");
     expect(body).toContain("```suggestion\nx\n```");
-    expect(body).toContain("**Recommendation:** Fix it.");
+    expect(body).toContain("**Recommendation:**\n\nFix it.");
     expect(body).toContain("To implement and push this fix, reply `/archestra fix` to this comment.");
     expect(body.indexOf("reply `/archestra fix`")).toBeLessThan(body.indexOf("```suggestion"));
     expect(findingIdFromBody(body)).toBe("ccccccc-1");
