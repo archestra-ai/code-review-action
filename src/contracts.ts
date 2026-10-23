@@ -52,6 +52,17 @@ export const ReviewResultSchema = z
       .optional()
       .describe("What the review covered, in order: an area and its key files for each entry"),
     findings: z.array(ReviewFindingSchema).max(50),
+    changes: z
+      .array(
+        z.object({
+          file: z.string().min(1).max(500).describe("Path relative to the repository root"),
+          line: z.number().int().positive().optional().describe("The line that matters, when one does"),
+          what: z.string().min(1).max(300).describe("What changed there, in one line"),
+        }),
+      )
+      .max(60)
+      .optional()
+      .describe("The places a rule of the change reached, for the change map"),
     observations: z
       .array(z.string().min(1).max(2000))
       .max(40)

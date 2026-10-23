@@ -106,6 +106,38 @@
         ]
       }
     },
+    "changes": {
+      "description": "The places a rule of the change reached, for the change map",
+      "maxItems": 60,
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "file": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 500,
+            "description": "Path relative to the repository root"
+          },
+          "line": {
+            "description": "The line that matters, when one does",
+            "type": "integer",
+            "exclusiveMinimum": 0,
+            "maximum": 9007199254740991
+          },
+          "what": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 300,
+            "description": "What changed there, in one line"
+          }
+        },
+        "required": [
+          "file",
+          "what"
+        ]
+      }
+    },
     "observations": {
       "description": "What the change does right, and facts a maintainer should know that need no change",
       "maxItems": 40,

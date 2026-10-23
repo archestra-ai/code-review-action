@@ -260,6 +260,16 @@ const LastJobSchema = z.object({
   outcome: z.enum(["ok", "unavailable", "error"]),
 });
 
+/** One row of the change map: a place the change reached. */
+const ChangeSchema = z.object({
+  file: z.string(),
+  line: z.number().int().nullable(),
+  what: z.string(),
+  /** Where the row links: the line in the diff, the file in the diff, or nowhere. */
+  link: z.enum(["line", "file", "none"]).default("none"),
+});
+export type ChangeEntry = z.infer<typeof ChangeSchema>;
+
 const TestFileSchema = z.object({
   file: z.string(),
   /** Lines added and deleted in the pull request; null when the file is not in the diff. */
@@ -278,6 +288,8 @@ const StateSchema = z.object({
   summary: z.string(),
   /** What the review covered, in order. */
   reviewed: z.array(z.string()).default([]),
+  /** The places the change reached, for the change map; empty when the runtime wrote none. */
+  changes: z.array(ChangeSchema).default([]),
   /** What the change does right, and facts that need no change. */
   observations: z.array(z.string()).default([]),
   tests: z.array(TestFileSchema).default([]),
@@ -332,6 +344,7 @@ export function emptyState(baseBranch: string): StickyState {
     title: null,
     summary: "",
     reviewed: [],
+    changes: [],
     observations: [],
     tests: [],
     coverage: "",
@@ -468,19 +481,23 @@ export function renderSticky(state: StickyState, context: RenderContext): string
   return renderBody(fitted, context);
 }
 
-/** The spinner next to the in-progress header; the same picture GitHub bots use. */
-const SPINNER =
-  '<img src="https://github.com/user-attachments/assets/5ac382c7-e004-429b-8e35-7feb3e8f9c6f" width="14px" height="14px" style="vertical-align: middle; margin-left: 4px;" />';
+/**
+ * The picture next to the in-progress header: the Archestra logo. The action does not know which
+ * model an agent runs (agent ids are opaque, and the run reports only its state), so it shows no
+ * provider's logo.
+ */
+const PROGRESS_LOGO =
+  '<img src="https://avatars.githubusercontent.com/u/216022683?s=28&amp;v=4" width="14px" height="14px" alt="Archestra" style="vertical-align: middle; margin-left: 4px;" />';
 
 /**
  * The first line: who the job acts for and where it is. A job in progress
- * shows a spinner and its current step; a finished job shows its duration.
+ * shows the Archestra logo and its current step; a finished job shows its duration.
  */
 export function renderHeader(state: StickyState): string[] {
   const { progress, last } = state;
   if (progress) {
     const lines = [
-      `**Archestra is ${oneLine(progress.doing, 200)} for @${progress.login}…** ${SPINNER} —— [View job](${progress.workflowRunUrl})`,
+      `**Archestra is ${oneLine(progress.doing, 200)} for @${progress.login}…** ${PROGRESS_LOGO} —— [View job](${progress.workflowRunUrl})`,
       "",
     ];
     const step = progress.step ? oneLine(progress.step, 300) : null;
@@ -523,10 +540,27 @@ function renderBody(state: StickyState, context: RenderContext): string {
   if (state.notice) out.push(`> ${oneLine(state.notice, 1000)}`, "");
   // What the review covered, so that a reader can check that the parts that matter were read.
   if (state.reviewed.length > 0) {
-    out.push("**Reviewed**", "", ...state.reviewed.map((item) => `- ${oneLine(item, 400)}`), "");
+    out.push("**Reviewed**", "", ...state.reviewed.map((item) => `- ${oneLine(item, 200)}`), "");
   }
   // The summary keeps its Markdown; only HTML is disarmed.
   if (state.summary) out.push(paragraphs(state.summary), "");
+
+  // The change map: every place a rule of the change reached, so a reader sees it reached all of them.
+  if (state.changes.length > 0) {
+    out.push("### Change map", "", "| File | What changed |", "| --- | --- |");
+    for (const change of state.changes) {
+      const text = `\`${pathCell(change.file)}${change.line === null ? "" : `:${change.line}`}\``;
+      const url =
+        change.link === "line" && change.line !== null
+          ? diffUrl(repoUrl, pr, { file: change.file, line: change.line })
+          : change.link === "file"
+            ? fileUrl(repoUrl, pr, change.file)
+            : null;
+      const file = url ? `[${text}](${url})` : text;
+      out.push(`| ${file} | ${cell(change.what, 160)} |`);
+    }
+    out.push("");
+  }
 
   if (state.findings.length > 0) {
     out.push("### Findings", "", "| # | Severity | Location | Finding | Status |", "| --- | --- | --- | --- | --- |");
@@ -546,7 +580,7 @@ function renderBody(state: StickyState, context: RenderContext): string {
   }
 
   if (state.observations.length > 0) {
-    out.push("### Observations", "", ...state.observations.map((item) => `- ${oneLine(item, 1000)}`), "");
+    out.push("### Observations", "", ...state.observations.map((item) => `- ${oneLine(item, 600)}`), "");
   }
 
   if (state.tests.length > 0 || state.coverage) {
@@ -558,7 +592,7 @@ function renderBody(state: StickyState, context: RenderContext): string {
         // A file in the diff links to it; its line counts come from the pull request.
         const file = test.additions === null ? path : `[${path}](${fileUrl(repoUrl, pr, test.file)})`;
         const lines = test.additions === null ? "-" : `+${test.additions} −${test.deletions ?? 0}`;
-        out.push(`| ${file} | ${lines} | ${cell(test.focus, 300)} |`);
+        out.push(`| ${file} | ${lines} | ${cell(test.focus, 160)} |`);
       }
       out.push("");
     }
@@ -823,10 +857,12 @@ function shrink(state: StickyState, level: number): StickyState {
   return {
     ...state,
     summary: truncate(state.summary, level === 1 ? 6000 : 1000),
-    reviewed: level >= 3 ? [] : state.reviewed.map((item) => truncate(item, level === 1 ? 400 : 120)),
-    observations: level >= 3 ? [] : state.observations.map((item) => truncate(item, level === 1 ? 600 : 200)),
+    // Each limit is below the render cap of its section, so that the first level already shortens.
+    reviewed: level >= 3 ? [] : state.reviewed.map((item) => truncate(item, level === 1 ? 120 : 80)),
+    changes: level >= 2 ? [] : state.changes.map((change) => ({ ...change, what: truncate(change.what, 100) })),
+    observations: level >= 3 ? [] : state.observations.map((item) => truncate(item, level === 1 ? 300 : 150)),
     tests:
-      level >= 3 ? [] : state.tests.map((test) => ({ ...test, focus: truncate(test.focus, level === 1 ? 300 : 100) })),
+      level >= 3 ? [] : state.tests.map((test) => ({ ...test, focus: truncate(test.focus, level === 1 ? 100 : 60) })),
     coverage: clip(state.coverage, prose),
     limitations: clip(state.limitations, prose),
     conclusion: clip(state.conclusion, level === 3 ? 300 : prose),
