@@ -15,7 +15,7 @@ import type { FindingSelection, Sender, TriggerSource } from "../github/event";
 import { httpStatus } from "../github/octokit";
 import { loadChangedFiles, loadDiff, loadPullRequest, prAttachmentData } from "../github/pr";
 import { findingIdFromBody, type StoredFinding } from "../github/sticky";
-import { applyThreadUpdate, listFindingThreads, planThreadUpdates, replyToThread } from "../github/threads";
+import { listFindingThreads, planThreadUpdates, replyToThread, tryThreadUpdate } from "../github/threads";
 import { errorMessage, fullName, jsonAttachment, shortSha, textAttachment } from "../util";
 import {
   failureForError,
@@ -174,7 +174,7 @@ export async function runFix(ctx: ActionContext, trigger: FixTriggerInput): Prom
   }
   log.info(`Applied ${applied.length} finding(s); skipped ${skipped.length}.`);
 
-  await updateFindingThreads(ctx, pr.number, [...appliedIds], skipped);
+  await updateFindingThreads(ctx, pr.number, applied, skipped);
   await updateSticky(ctx, pr, (s, stickyMarker) => {
     finishProgress(ctx, s, {
       did: `applied ${appliedIds.size} of ${selected.length} finding${selected.length === 1 ? "" : "s"}`,
@@ -259,14 +259,24 @@ async function selectFindings(
 async function updateFindingThreads(
   ctx: ActionContext,
   pr: number,
-  appliedIds: string[],
+  applied: Array<{ finding: string; commit: string }>,
   skipped: Array<{ finding: string; reason: string }>,
 ): Promise<void> {
   const gh = ctx.ghFix ?? ctx.gh;
+  const commits = new Map(applied.map((entry) => [entry.finding, entry.commit]));
   try {
     const threads = await listFindingThreads(gh, ctx.repo, pr);
-    for (const update of planThreadUpdates(threads, { resolve: appliedIds, unresolve: [] })) {
-      await applyThreadUpdate(gh, update);
+    for (const update of planThreadUpdates(threads, { resolve: [...commits.keys()], unresolve: [] })) {
+      // A thread the token may not resolve gets a reply that names the commit instead.
+      if (!(await tryThreadUpdate(gh, update, ctx.log))) {
+        await replyToThread(
+          ctx.gh,
+          ctx.repo,
+          pr,
+          update.commentId,
+          `Applied in \`${shortSha(commits.get(update.findingId) ?? "")}\`.`,
+        );
+      }
     }
     for (const entry of skipped) {
       const thread = threads.get(entry.finding);

@@ -1,4 +1,5 @@
 import type { RepoRef } from "../util";
+import { errorMessage, type Logger } from "../util";
 import type { Octokit } from "./octokit";
 import { findingIdFromBody } from "./sticky";
 
@@ -110,6 +111,24 @@ export function planThreadUpdates(
     if (thread?.isResolved) updates.push({ ...pick(thread), action: "unresolve" });
   }
   return updates;
+}
+
+/**
+ * Applies a thread update and says whether it worked. GitHub does not let a
+ * workflow's installation token resolve review threads ("Resource not
+ * accessible by integration"); the caller then replies under the thread
+ * instead, so that a reader still sees what happened.
+ */
+export async function tryThreadUpdate(gh: Octokit, update: ThreadUpdate, log: Logger): Promise<boolean> {
+  try {
+    await applyThreadUpdate(gh, update);
+    return true;
+  } catch (error) {
+    log.warning(
+      `Could not ${update.action} the thread of finding ${update.findingId}; a reply says what happened instead: ${errorMessage(error)}`,
+    );
+    return false;
+  }
 }
 
 export async function applyThreadUpdate(gh: Octokit, update: ThreadUpdate): Promise<void> {

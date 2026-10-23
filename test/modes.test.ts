@@ -186,6 +186,26 @@ describe("review mode", () => {
     expect(parseState(sticky)!.findings[0]!.excerpt).toBe("    send(a);\n  }\n  return a;");
   });
 
+  it("replies that a finding is fixed when it may not resolve its thread", async () => {
+    const { harness } = await reviewed();
+    const first = parseState(harness.github.stickyBody()!)!.findings[0]!;
+    const [commentId] = [...harness.github.reviewComments.keys()];
+    harness.github.threadMutationsForbidden = true;
+    harness.github.pr.head.sha = "d".repeat(40);
+    harness.archestra.script(AGENT_A, {
+      end: "completed",
+      files: { "review.json": reviewJson([], { previous: [{ id: first.id, status: "fixed" }] }) },
+    });
+    await run(harness.context("pull_request", prEvent(harness.github, "synchronize")));
+    expect(harness.github.graphqlMutations).toEqual([]);
+    expect(harness.github.resolved.has(commentId!)).toBe(false);
+    const replies = [...harness.github.reviewComments.values()].filter((comment) => comment.inReplyTo === commentId);
+    expect(replies.map((comment) => comment.body)).toEqual([
+      "Fixed in `ddddddd`: the re-review no longer finds this problem.",
+    ]);
+    expect(harness.log.lines.some((line) => line.includes("Could not resolve the thread"))).toBe(true);
+  });
+
   it("quotes the code of a finding in the diff with post: comment, when no inline comment is posted", async () => {
     const harness = setup();
     harness.archestra.script(AGENT_A, { end: "completed", files: { "review.json": reviewJson([FINDING_IN_DIFF]) } });

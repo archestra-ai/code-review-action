@@ -46639,6 +46639,17 @@ function planThreadUpdates(threads, wanted) {
   }
   return updates;
 }
+async function tryThreadUpdate(gh, update, log) {
+  try {
+    await applyThreadUpdate(gh, update);
+    return true;
+  } catch (error63) {
+    log.warning(
+      `Could not ${update.action} the thread of finding ${update.findingId}; a reply says what happened instead: ${errorMessage(error63)}`
+    );
+    return false;
+  }
+}
 async function applyThreadUpdate(gh, update) {
   const mutation = update.action === "resolve" ? "mutation($id: ID!) { resolveReviewThread(input: { threadId: $id }) { thread { id isResolved } } }" : "mutation($id: ID!) { unresolveReviewThread(input: { threadId: $id }) { thread { id isResolved } } }";
   await gh.graphql(mutation, { id: update.threadId });
@@ -46945,7 +46956,7 @@ async function runFix(ctx, trigger) {
     }
   }
   log.info(`Applied ${applied.length} finding(s); skipped ${skipped.length}.`);
-  await updateFindingThreads(ctx, pr.number, [...appliedIds], skipped);
+  await updateFindingThreads(ctx, pr.number, applied, skipped);
   await updateSticky(ctx, pr, (s, stickyMarker) => {
     finishProgress(ctx, s, {
       did: `applied ${appliedIds.size} of ${selected.length} finding${selected.length === 1 ? "" : "s"}`,
@@ -47012,12 +47023,21 @@ async function selectFindings(ctx, findings, selection) {
     throw error63;
   }
 }
-async function updateFindingThreads(ctx, pr, appliedIds, skipped) {
+async function updateFindingThreads(ctx, pr, applied, skipped) {
   const gh = ctx.ghFix ?? ctx.gh;
+  const commits = new Map(applied.map((entry) => [entry.finding, entry.commit]));
   try {
     const threads = await listFindingThreads(gh, ctx.repo, pr);
-    for (const update of planThreadUpdates(threads, { resolve: appliedIds, unresolve: [] })) {
-      await applyThreadUpdate(gh, update);
+    for (const update of planThreadUpdates(threads, { resolve: [...commits.keys()], unresolve: [] })) {
+      if (!await tryThreadUpdate(gh, update, ctx.log)) {
+        await replyToThread(
+          ctx.gh,
+          ctx.repo,
+          pr,
+          update.commentId,
+          `Applied in \`${shortSha(commits.get(update.findingId) ?? "")}\`.`
+        );
+      }
     }
     for (const entry of skipped) {
       const thread = threads.get(entry.finding);
@@ -47929,16 +47949,9 @@ async function updatePreviousThreads(ctx, pr, fixedIds, regressedIds, headSha, t
   const gh = ctx.ghFix ?? ctx.gh;
   try {
     for (const update of planThreadUpdates(threads, { resolve: fixedIds, unresolve: regressedIds })) {
-      await applyThreadUpdate(gh, update);
-      if (update.action === "unresolve") {
-        await replyToThread(
-          ctx.gh,
-          ctx.repo,
-          pr,
-          update.commentId,
-          `The re-review of \`${shortSha(headSha)}\` found this problem again.`
-        );
-      }
+      const done = await tryThreadUpdate(gh, update, ctx.log);
+      const note = update.action === "unresolve" ? `The re-review of \`${shortSha(headSha)}\` found this problem again.` : done ? null : `Fixed in \`${shortSha(headSha)}\`: the re-review no longer finds this problem.`;
+      if (note) await replyToThread(ctx.gh, ctx.repo, pr, update.commentId, note);
     }
   } catch (error63) {
     ctx.log.warning(`Could not update the review threads: ${errorMessage(error63)}`);

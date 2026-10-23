@@ -25,11 +25,11 @@ import {
 } from "../github/review";
 import { findSticky, type StoredFinding } from "../github/sticky";
 import {
-  applyThreadUpdate,
   type FindingThread,
   listFindingThreads,
   planThreadUpdates,
   replyToThread,
+  tryThreadUpdate,
 } from "../github/threads";
 import { errorMessage, fullName, jsonAttachment, shortSha, textAttachment } from "../util";
 import {
@@ -331,16 +331,15 @@ async function updatePreviousThreads(
   const gh = ctx.ghFix ?? ctx.gh;
   try {
     for (const update of planThreadUpdates(threads, { resolve: fixedIds, unresolve: regressedIds })) {
-      await applyThreadUpdate(gh, update);
-      if (update.action === "unresolve") {
-        await replyToThread(
-          ctx.gh,
-          ctx.repo,
-          pr,
-          update.commentId,
-          `The re-review of \`${shortSha(headSha)}\` found this problem again.`,
-        );
-      }
+      const done = await tryThreadUpdate(gh, update, ctx.log);
+      // A reopened thread gets a reply in any case; a thread that could not be resolved gets one instead.
+      const note =
+        update.action === "unresolve"
+          ? `The re-review of \`${shortSha(headSha)}\` found this problem again.`
+          : done
+            ? null
+            : `Fixed in \`${shortSha(headSha)}\`: the re-review no longer finds this problem.`;
+      if (note) await replyToThread(ctx.gh, ctx.repo, pr, update.commentId, note);
     }
   } catch (error) {
     ctx.log.warning(`Could not update the review threads: ${errorMessage(error)}`);
