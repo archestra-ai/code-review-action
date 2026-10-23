@@ -96,6 +96,9 @@ jobs:
           retries: 1
           timeout-minutes: 20
           fail-on: never
+          # Private repository: the runtime clones with this read-only token.
+          # Remove the line for a public repository.
+          clone-token: ${{ github.token }}
           fix-token: ${{ steps.app-token.outputs.token }}
           fix-timeout-minutes: 45
           ci-rerun: false
