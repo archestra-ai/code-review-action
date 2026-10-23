@@ -45606,7 +45606,7 @@ function serializeMarker(marker) {
   return `<!-- archestra-code-review ${marker.repo}#${marker.pr} session=${field(marker.session)} run=${field(marker.run)} agent=${field(marker.agent)} sha=${field(marker.sha)} -->`;
 }
 function parseMarker(body) {
-  const match = MARKER_PATTERN.exec(body);
+  const match = MARKER_PATTERN.exec(stripCode(body));
   if (!match) return null;
   const fields = /* @__PURE__ */ new Map();
   for (const pair of (match[3] ?? "").trim().split(" ").filter(Boolean)) {
@@ -45633,22 +45633,34 @@ function findingMarker(id) {
   return `<!-- archestra-finding:${id} -->`;
 }
 function escapeHtml(text) {
+  return mapCode(text, escapeText, (code) => code, true);
+}
+function stripCode(text) {
+  return mapCode(
+    text,
+    (prose) => prose,
+    () => " ",
+    false
+  );
+}
+function mapCode(text, prose, code, closeFences) {
   let out = "";
   let position = 0;
   for (const block of text.matchAll(FENCED_BLOCK)) {
     const fence = block[1] ?? block[2] ?? "";
     const closed = new RegExp(`\\n {0,3}${fence}${fence[0]}*[ \\t]*$`).test(block[0]);
-    out += escapeProse(text.slice(position, block.index)) + block[0] + (closed ? "" : `
-${fence}`);
+    out += mapProse(text.slice(position, block.index), prose, code) + code(block[0]);
+    if (closeFences && !closed) out += `
+${fence}`;
     position = block.index + block[0].length;
   }
-  return out + escapeProse(text.slice(position));
+  return out + mapProse(text.slice(position), prose, code);
 }
 var FENCED_BLOCK = /^(?:(`{3,})[^`\n]*\n[\s\S]*?(?:^ {0,3}\1`*[ \t]*$|$(?![\s\S]))|(~{3,})[^\n]*\n[\s\S]*?(?:^ {0,3}\2~*[ \t]*$|$(?![\s\S])))/gm;
-function escapeProse(text) {
-  return text.split("\n").map(escapeLine).join("\n");
+function mapProse(text, prose, code) {
+  return text.split("\n").map((line) => mapLine(line, prose, code)).join("\n");
 }
-function escapeLine(line) {
+function mapLine(line, prose, code) {
   const runs = [...line.matchAll(/`+/g)].map((run2) => ({ start: run2.index, end: run2.index + run2[0].length }));
   let out = "";
   let position = 0;
@@ -45657,16 +45669,16 @@ function escapeLine(line) {
     const length = open3.end - open3.start;
     const close = runs.find((run2) => run2.start >= open3.end && run2.end - run2.start === length);
     if (close === void 0) continue;
-    out += escapeText(line.slice(position, open3.start)) + line.slice(open3.start, close.end);
+    out += prose(line.slice(position, open3.start)) + code(line.slice(open3.start, close.end));
     position = close.end;
   }
-  return out + escapeText(line.slice(position));
+  return out + prose(line.slice(position));
 }
 function escapeText(text) {
   return text.replace(/&(?!(?:[a-z]+|#\d+|#x[0-9a-f]+);)/gi, "&amp;").replace(/</g, "&lt;");
 }
 function findingIdFromBody(body) {
-  return /<!-- archestra-finding:([\w.-]{1,100}) -->/.exec(body)?.[1] ?? null;
+  return /<!-- archestra-finding:([\w.-]{1,100}) -->/.exec(stripCode(body))?.[1] ?? null;
 }
 var FindingStatusSchema = external_exports.enum(["open", "applied", "skipped", "fixed"]);
 var StoredFindingSchema = ReviewFindingSchema.extend({
@@ -45769,7 +45781,7 @@ function emptyState(baseBranch) {
 }
 var STATE_PATTERN = /<!-- archestra-state:([A-Za-z0-9_-]+) -->/;
 function parseState(body) {
-  const match = STATE_PATTERN.exec(body);
+  const match = STATE_PATTERN.exec(stripCode(body));
   if (!match) return null;
   try {
     const json2 = JSON.parse(Buffer.from(match[1], "base64url").toString("utf8"));
@@ -45785,7 +45797,7 @@ function encodeState(state) {
 var ACTION_LINE = /^\s*[-*] \[([ xX])\] .*?<!-- archestra-action:([a-z0-9:-]{1,40}) -->\s*$/gm;
 function actionCheckboxes(body) {
   const result = /* @__PURE__ */ new Map();
-  for (const match of body.matchAll(ACTION_LINE)) {
+  for (const match of stripCode(body).matchAll(ACTION_LINE)) {
     result.set(match[2], match[1].toLowerCase() === "x");
   }
   return result;

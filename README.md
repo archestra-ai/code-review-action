@@ -26,6 +26,8 @@ The review comment appears as soon as the job starts, with a progress header: wh
 
 The review comment keeps the state between workflow runs. A hidden marker line holds the run (its ID is also the workspace ID), the agent and the reviewed commit:
 
+Text the runtime wrote is escaped in the comment, except inside Markdown code, which GitHub shows literally. The action reads its markers only outside code, so no runtime text can pass as a marker.
+
 ```text
 <!-- archestra-code-review owner/repo#N session=<run> run=<run> agent=<agent> sha=<commit> -->
 ```

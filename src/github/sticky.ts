@@ -28,7 +28,7 @@ export function serializeMarker(marker: StickyMarker): string {
 }
 
 export function parseMarker(body: string): StickyMarker | null {
-  const match = MARKER_PATTERN.exec(body);
+  const match = MARKER_PATTERN.exec(stripCode(body));
   if (!match) return null;
   const fields = new Map<string, string>();
   for (const pair of (match[3] ?? "").trim().split(" ").filter(Boolean)) {
@@ -65,16 +65,36 @@ export function findingMarker(id: string): string {
  * literally, entities included.
  */
 export function escapeHtml(text: string): string {
+  return mapCode(text, escapeText, (code) => code, true);
+}
+
+/**
+ * Replaces code spans and fenced blocks with a space. The action reads its markers from the
+ * result: the runtime's text is escaped everywhere else, so no marker it wrote can pass as ours.
+ */
+export function stripCode(text: string): string {
+  return mapCode(
+    text,
+    (prose) => prose,
+    () => " ",
+    false,
+  );
+}
+
+type Mapper = (segment: string) => string;
+
+function mapCode(text: string, prose: Mapper, code: Mapper, closeFences: boolean): string {
   let out = "";
   let position = 0;
   for (const block of text.matchAll(FENCED_BLOCK)) {
     const fence = block[1] ?? block[2] ?? "";
     // GitHub shows an unclosed fence to the end of the text; close it so the rest of the comment still renders.
     const closed = new RegExp(`\\n {0,3}${fence}${fence[0]}*[ \\t]*$`).test(block[0]);
-    out += escapeProse(text.slice(position, block.index)) + block[0] + (closed ? "" : `\n${fence}`);
+    out += mapProse(text.slice(position, block.index), prose, code) + code(block[0]);
+    if (closeFences && !closed) out += `\n${fence}`;
     position = block.index + block[0].length;
   }
-  return out + escapeProse(text.slice(position));
+  return out + mapProse(text.slice(position), prose, code);
 }
 
 /**
@@ -84,12 +104,15 @@ export function escapeHtml(text: string): string {
 const FENCED_BLOCK =
   /^(?:(`{3,})[^`\n]*\n[\s\S]*?(?:^ {0,3}\1`*[ \t]*$|$(?![\s\S]))|(~{3,})[^\n]*\n[\s\S]*?(?:^ {0,3}\2~*[ \t]*$|$(?![\s\S])))/gm;
 
-function escapeProse(text: string): string {
-  return text.split("\n").map(escapeLine).join("\n");
+function mapProse(text: string, prose: Mapper, code: Mapper): string {
+  return text
+    .split("\n")
+    .map((line) => mapLine(line, prose, code))
+    .join("\n");
 }
 
-/** Escapes one line of prose. A code span, a backtick run closed by a run of the same length, stays as written. */
-function escapeLine(line: string): string {
+/** Maps one line. A code span is a backtick run closed by a run of the same length on the same line. */
+function mapLine(line: string, prose: Mapper, code: Mapper): string {
   const runs = [...line.matchAll(/`+/g)].map((run) => ({ start: run.index, end: run.index + run[0].length }));
   let out = "";
   let position = 0;
@@ -98,10 +121,10 @@ function escapeLine(line: string): string {
     const length = open.end - open.start;
     const close = runs.find((run) => run.start >= open.end && run.end - run.start === length);
     if (close === undefined) continue;
-    out += escapeText(line.slice(position, open.start)) + line.slice(open.start, close.end);
+    out += prose(line.slice(position, open.start)) + code(line.slice(open.start, close.end));
     position = close.end;
   }
-  return out + escapeText(line.slice(position));
+  return out + prose(line.slice(position));
 }
 
 function escapeText(text: string): string {
@@ -109,7 +132,7 @@ function escapeText(text: string): string {
 }
 
 export function findingIdFromBody(body: string): string | null {
-  return /<!-- archestra-finding:([\w.-]{1,100}) -->/.exec(body)?.[1] ?? null;
+  return /<!-- archestra-finding:([\w.-]{1,100}) -->/.exec(stripCode(body))?.[1] ?? null;
 }
 
 // ===== State =====
@@ -229,7 +252,7 @@ export function emptyState(baseBranch: string): StickyState {
 const STATE_PATTERN = /<!-- archestra-state:([A-Za-z0-9_-]+) -->/;
 
 export function parseState(body: string): StickyState | null {
-  const match = STATE_PATTERN.exec(body);
+  const match = STATE_PATTERN.exec(stripCode(body));
   if (!match) return null;
   try {
     const json = JSON.parse(Buffer.from(match[1] as string, "base64url").toString("utf8"));
@@ -252,7 +275,7 @@ const ACTION_LINE = /^\s*[-*] \[([ xX])\] .*?<!-- archestra-action:([a-z0-9:-]{1
 
 export function actionCheckboxes(body: string): Map<string, boolean> {
   const result = new Map<string, boolean>();
-  for (const match of body.matchAll(ACTION_LINE)) {
+  for (const match of stripCode(body).matchAll(ACTION_LINE)) {
     result.set(match[2] as string, (match[1] as string).toLowerCase() === "x");
   }
   return result;
