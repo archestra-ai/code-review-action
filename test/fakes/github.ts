@@ -12,6 +12,7 @@ export interface FakeComment {
 export interface FakeReviewComment extends FakeComment {
   path: string;
   line: number;
+  startLine: number | null;
   inReplyTo: number | null;
 }
 
@@ -72,6 +73,10 @@ export class FakeGitHub {
   readonly reviewComments = new Map<number, FakeReviewComment>();
   readonly reviews: Array<{ body: string; commit_id: string; event: string; comments: unknown[] }> = [];
   readonly resolved = new Set<number>();
+  /** Review comments whose lines changed after they were written (GitHub's isOutdated). */
+  readonly outdated = new Set<number>();
+  /** Review comments rewritten in place, in order. */
+  readonly reviewCommentUpdates: number[] = [];
   readonly graphqlMutations: Array<{ action: "resolve" | "unresolve"; threadId: string }> = [];
   readonly reactions: Array<{ commentId: number; content: string }> = [];
   readonly reruns: number[] = [];
@@ -155,7 +160,7 @@ export class FakeGitHub {
           body: string;
           commit_id: string;
           event: string;
-          comments: Array<{ path: string; line: number; body: string }>;
+          comments: Array<{ path: string; line: number; start_line?: number; body: string }>;
         };
         if (this.rejectReview) {
           return HttpResponse.json({ message: "Unprocessable Entity: line must be part of the diff" }, { status: 422 });
@@ -169,6 +174,7 @@ export class FakeGitHub {
             user: BOT,
             path: comment.path,
             line: comment.line,
+            startLine: comment.start_line ?? null,
             inReplyTo: null,
           });
         }
@@ -185,6 +191,13 @@ export class FakeGitHub {
           line: comment.line,
         });
       }),
+      http.patch(`${base}/pulls/comments/:id`, async ({ request, params }) => {
+        const comment = this.reviewComments.get(Number(params.id));
+        if (!comment) return notFound();
+        comment.body = ((await request.json()) as { body: string }).body;
+        this.reviewCommentUpdates.push(comment.id);
+        return HttpResponse.json({ id: comment.id, body: comment.body });
+      }),
       http.post(`${base}/pulls/${this.pr.number}/comments/:id/replies`, async ({ request, params }) => {
         const { body } = (await request.json()) as { body: string };
         const id = ++this.nextId;
@@ -195,6 +208,7 @@ export class FakeGitHub {
           user: BOT,
           path: parent?.path ?? "",
           line: parent?.line ?? 0,
+          startLine: null,
           inReplyTo: Number(params.id),
         });
         return HttpResponse.json({ id, body }, { status: 201 });
@@ -329,6 +343,10 @@ export class FakeGitHub {
             .map((comment) => ({
               id: `thread-${comment.id}`,
               isResolved: this.resolved.has(comment.id),
+              isOutdated: this.outdated.has(comment.id),
+              path: comment.path,
+              line: comment.line,
+              startLine: comment.startLine,
               comments: { nodes: [{ databaseId: comment.id, body: comment.body }] },
             }));
           return HttpResponse.json({

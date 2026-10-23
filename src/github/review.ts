@@ -3,6 +3,7 @@ import { errorMessage, type Logger, type RepoRef, truncate } from "../util";
 import { type DiffIndex, isRangeInDiff } from "./diff";
 import { httpStatus, type Octokit } from "./octokit";
 import { escapeHtml, findingMarker, type StoredFinding } from "./sticky";
+import type { FindingThread } from "./threads";
 
 export interface InlineComment {
   path: string;
@@ -16,23 +17,87 @@ export interface InlineComment {
 /**
  * Gives each finding an id and a number, and decides where it goes: a
  * finding whose lines are inside the diff gets an inline comment; the other
- * findings go only into the sticky summary.
+ * findings go only into the sticky summary. A finding that repeats one of
+ * the last review (`previous`) keeps that finding's id.
  */
 export function placeFindings(
   findings: ReviewFinding[],
   index: DiffIndex,
-  options: { headSha: string; inline: boolean },
+  options: { headSha: string; inline: boolean; previous?: StoredFinding[]; reservedIds?: Iterable<string> },
 ): StoredFinding[] {
+  const previous = options.previous ?? [];
+  const links = linkPrevious(findings, previous);
+  // A fresh id must not repeat the id of an earlier finding or of an existing thread (`reservedIds`):
+  // the old inline comment would be taken for the new finding.
+  const used = new Set([...previous.map((finding) => finding.id), ...links.values(), ...(options.reservedIds ?? [])]);
+  const prefix = options.headSha.slice(0, 7);
   return findings.map((finding, i) => {
     const end = finding.end_line ?? finding.line;
+    const { previous_id: _link, ...rest } = finding;
     return {
-      ...finding,
-      id: `${options.headSha.slice(0, 7)}-${i + 1}`,
+      ...rest,
+      id: links.get(i) ?? freshId(prefix, i + 1, used),
       n: i + 1,
       inline: options.inline && isRangeInDiff(index, finding.file, finding.line, end),
       status: "open" as const,
     };
   });
+}
+
+/**
+ * Pairs each finding with the finding of the last review that it repeats,
+ * so that it keeps that id and its inline comment: by `previous_id` when
+ * the runtime set it and the file agrees, else by the same file and the
+ * same summary.
+ */
+export function linkPrevious(findings: ReviewFinding[], previous: StoredFinding[]): Map<number, string> {
+  const links = new Map<number, string>();
+  const taken = new Set<string>();
+  const byId = new Map(previous.map((finding) => [finding.id, finding]));
+  for (const [i, finding] of findings.entries()) {
+    const id = finding.previous_id;
+    // A wrong id must not take the thread of another finding: the file has to agree.
+    if (id && !taken.has(id) && byId.get(id)?.file === finding.file) {
+      links.set(i, id);
+      taken.add(id);
+    }
+  }
+  for (const [i, finding] of findings.entries()) {
+    if (links.has(i)) continue;
+    const match = previous.find(
+      (candidate) =>
+        !taken.has(candidate.id) && candidate.file === finding.file && sameText(candidate.summary, finding.summary),
+    );
+    if (match) {
+      links.set(i, match.id);
+      taken.add(match.id);
+    }
+  }
+  return links;
+}
+
+/** `<sha>-<n>`, or the next free number when a kept id has it (a second review of the same commit). */
+function freshId(prefix: string, n: number, used: Set<string>): string {
+  let candidate = `${prefix}-${n}`;
+  for (let k = n; used.has(candidate); k++) candidate = `${prefix}-${k + 1}`;
+  used.add(candidate);
+  return candidate;
+}
+
+function sameText(a: string, b: string): boolean {
+  const normalize = (text: string) => text.toLowerCase().replace(/\s+/g, " ").trim().replace(/\.$/, "");
+  return normalize(a) === normalize(b);
+}
+
+/** True when the thread sits on the lines of the finding, so that a suggestion in it applies to them. */
+export function coversFinding(thread: FindingThread, finding: StoredFinding): boolean {
+  const end = finding.end_line ?? finding.line;
+  return thread.path === finding.file && thread.line === end && (thread.startLine ?? thread.line) === finding.line;
+}
+
+/** Rewrites the inline comment of a finding reported before; the thread, its replies and its resolution stay. */
+export async function updateInlineComment(gh: Octokit, repo: RepoRef, commentId: number, body: string): Promise<void> {
+  await gh.rest.pulls.updateReviewComment({ ...repo, comment_id: commentId, body });
 }
 
 export function inlineComments(findings: StoredFinding[], index: DiffIndex, command: string): InlineComment[] {
@@ -57,7 +122,12 @@ export function inlineComments(findings: StoredFinding[], index: DiffIndex, comm
  * review comment, so the trigger here is a reply; the one-click box is in
  * the summary comment.
  */
-export function inlineBody(finding: StoredFinding, index: DiffIndex, command: string): string {
+export function inlineBody(
+  finding: StoredFinding,
+  index: DiffIndex,
+  command: string,
+  options: { suggestion?: boolean } = {},
+): string {
   const parts = [
     `**${finding.n}. [${finding.severity}] ${escapeHtml(truncate(finding.summary.replace(/\s+/g, " "), 300))}**`,
     "",
@@ -71,7 +141,11 @@ export function inlineBody(finding: StoredFinding, index: DiffIndex, command: st
     `To implement and push this fix, reply \`${command} fix\` to this comment. For all findings, tick the box in the review summary.`,
   ];
   const end = finding.end_line ?? finding.line;
-  if (finding.suggestion !== undefined && isRangeInDiff(index, finding.file, finding.line, end)) {
+  if (
+    options.suggestion !== false &&
+    finding.suggestion !== undefined &&
+    isRangeInDiff(index, finding.file, finding.line, end)
+  ) {
     // A fence longer than any backtick run in the text keeps the block intact.
     const longest = Math.max(2, ...[...finding.suggestion.matchAll(/`+/g)].map((m) => m[0].length));
     const fence = "`".repeat(longest + 1);

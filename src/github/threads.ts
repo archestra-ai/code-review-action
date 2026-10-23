@@ -6,6 +6,13 @@ export interface FindingThread {
   findingId: string;
   threadId: string;
   isResolved: boolean;
+  /** True when the lines of the comment changed after it was written. */
+  isOutdated: boolean;
+  path: string;
+  /** The last line the thread sits on; null when it is outdated. */
+  line: number | null;
+  /** The first line of a multi-line thread; null for one line. */
+  startLine: number | null;
   /** Database id of the first comment, for REST replies. */
   commentId: number;
 }
@@ -24,7 +31,7 @@ const THREADS_QUERY = `query($owner: String!, $name: String!, $number: Int!, $cu
     pullRequest(number: $number) {
       reviewThreads(first: 100, after: $cursor) {
         pageInfo { hasNextPage endCursor }
-        nodes { id isResolved comments(first: 1) { nodes { databaseId body } } }
+        nodes { id isResolved isOutdated path line startLine comments(first: 1) { nodes { databaseId body } } }
       }
     }
   }
@@ -38,6 +45,10 @@ interface ThreadsResponse {
         nodes: Array<{
           id: string;
           isResolved: boolean;
+          isOutdated: boolean;
+          path: string;
+          line: number | null;
+          startLine: number | null;
           comments: { nodes: Array<{ databaseId: number | null; body: string }> };
         }>;
       };
@@ -67,6 +78,10 @@ export async function listFindingThreads(gh: Octokit, repo: RepoRef, pr: number)
         findingId,
         threadId: thread.id,
         isResolved: thread.isResolved,
+        isOutdated: thread.isOutdated,
+        path: thread.path,
+        line: thread.line,
+        startLine: thread.startLine,
         commentId: first.databaseId,
       });
     }

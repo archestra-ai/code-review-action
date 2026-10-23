@@ -39629,7 +39629,8 @@ var ArchestraClient = class {
       runId: result.run.run_id,
       state: result.run.state,
       runUrl: result.run_url ?? null,
-      previousTurnCreatedAt: null
+      previousTurnCreatedAt: null,
+      continued: false
     };
   }
   async getRun(runId) {

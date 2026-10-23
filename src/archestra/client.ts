@@ -94,6 +94,8 @@ export interface StartedRun {
   runUrl: string | null;
   /** For a continuation: the previous turn's creation time, to tell the new turn apart. */
   previousTurnCreatedAt: string | null;
+  /** True when the run continued the workspace of an earlier run. */
+  continued: boolean;
 }
 
 export interface ArchestraClientOptions {
@@ -154,6 +156,7 @@ export class ArchestraClient {
       state: result.run.state,
       runUrl: result.run_url ?? null,
       previousTurnCreatedAt: null,
+      continued: false,
     };
   }
 

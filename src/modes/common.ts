@@ -5,6 +5,7 @@ import type { Sender, TriggerSource } from "../github/event";
 import { hasWriteAccess } from "../github/permissions";
 import { isFork, loadPullRequest, type PullRequestInfo } from "../github/pr";
 import {
+  addJob,
   attemptsTable,
   emptyState,
   findSticky,
@@ -214,10 +215,30 @@ export function finishProgress(
     did: job.did,
     login: job.login,
     durationMs: Number.isFinite(startedAt) ? Math.max(0, ctx.clock.now() - startedAt) : 0,
+    startedAt: state.progress?.startedAt ?? null,
     workflowRunUrl: ctx.workflowRunUrl,
     outcome: job.outcome,
   };
   state.progress = null;
+}
+
+/**
+ * Adds the job to the history of the review comment. Call it inside the final updateSticky, before
+ * or after finishProgress: the progress header and the finished header both hold the start time.
+ */
+export function recordJob(
+  ctx: ActionContext,
+  state: StickyState,
+  job: { label: string; outcome: string | null; attempts: AttemptRecord[] },
+): void {
+  const startedAt = state.progress?.startedAt ?? state.last?.startedAt ?? new Date(ctx.clock.now()).toISOString();
+  addJob(state, {
+    label: job.label,
+    startedAt,
+    workflowRunUrl: ctx.workflowRunUrl,
+    outcome: job.outcome,
+    attempts: job.attempts,
+  });
 }
 
 /** A step reporter for the attempt runner: each run start and state change updates the comment. */

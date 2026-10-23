@@ -56,10 +56,12 @@ export async function executeAttempt<T>(p: {
   const { client, clock, log } = p;
   const startedAt = clock.now();
   let runId: string | null = null;
+  let continued = false;
   const record = (result: AttemptRecord["result"], reason: string, source: AttemptRecord["source"]): AttemptRecord => ({
     agentId: p.agentId,
     runId,
     runUrl: runId ? client.runUrl(runId) : null,
+    continued,
     result,
     reason,
     source,
@@ -79,6 +81,7 @@ export async function executeAttempt<T>(p: {
     throw error;
   }
   runId = started.runId;
+  continued = started.continued;
   const liveRunId = runId;
   p.onLive(liveRunId);
   log.info(`Run on agent ${p.agentId}: ${client.runUrl(liveRunId)}`);
@@ -306,6 +309,7 @@ export async function continueRun(p: {
       state: "submitted",
       runUrl: previous.runUrl,
       previousTurnCreatedAt: status === "continued" ? previous.turnCreatedAt : null,
+      continued: true,
     };
   }
 }

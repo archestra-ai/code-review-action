@@ -1,8 +1,9 @@
 import { describe, expect, it } from "vitest";
+import type { AttemptRecord } from "../src/attempts";
 import { parseCommand } from "../src/github/commands";
 import { buildDiffIndex, commentableLines } from "../src/github/diff";
 import { detectTrigger } from "../src/github/event";
-import { inlineBody, placeFindings } from "../src/github/review";
+import { inlineBody, linkPrevious, placeFindings } from "../src/github/review";
 import {
   actionCheckboxes,
   balanceBackticks,
@@ -134,6 +135,7 @@ describe("sticky state and checkboxes", () => {
           did: "reviewed `aaaaaaa`",
           login: "alice",
           durationMs: 314_000,
+          startedAt: null,
           workflowRunUrl: "https://github.com/acme/widgets/actions/runs/1",
           outcome: "ok",
         },
@@ -145,7 +147,14 @@ describe("sticky state and checkboxes", () => {
     const unavailable = renderSticky(
       {
         ...state,
-        last: { did: "the review", login: "alice", durationMs: 1000, workflowRunUrl: "u", outcome: "unavailable" },
+        last: {
+          did: "the review",
+          login: "alice",
+          durationMs: 1000,
+          startedAt: null,
+          workflowRunUrl: "u",
+          outcome: "unavailable",
+        },
       },
       { marker, repoUrl: "", command: "/archestra" },
     );
@@ -434,14 +443,258 @@ describe("diff and inline placement", () => {
 
 describe("planThreadUpdates", () => {
   const threads = new Map([
-    ["f-1", { findingId: "f-1", threadId: "T1", isResolved: false, commentId: 1 }],
-    ["f-2", { findingId: "f-2", threadId: "T2", isResolved: true, commentId: 2 }],
-    ["f-3", { findingId: "f-3", threadId: "T3", isResolved: true, commentId: 3 }],
+    [
+      "f-1",
+      {
+        findingId: "f-1",
+        threadId: "T1",
+        isResolved: false,
+        isOutdated: false,
+        path: "a",
+        line: 1,
+        startLine: null,
+        commentId: 1,
+      },
+    ],
+    [
+      "f-2",
+      {
+        findingId: "f-2",
+        threadId: "T2",
+        isResolved: true,
+        isOutdated: false,
+        path: "a",
+        line: 1,
+        startLine: null,
+        commentId: 2,
+      },
+    ],
+    [
+      "f-3",
+      {
+        findingId: "f-3",
+        threadId: "T3",
+        isResolved: true,
+        isOutdated: false,
+        path: "a",
+        line: 1,
+        startLine: null,
+        commentId: 3,
+      },
+    ],
   ]);
   it("resolves open threads of applied findings and reopens resolved threads of regressed ones", () => {
     expect(planThreadUpdates(threads, { resolve: ["f-1", "f-2", "missing"], unresolve: ["f-3", "f-1"] })).toEqual([
       { findingId: "f-1", threadId: "T1", commentId: 1, action: "resolve" },
       { findingId: "f-3", threadId: "T3", commentId: 3, action: "unresolve" },
     ]);
+  });
+});
+
+describe("job history", () => {
+  const attempt = (overrides: Partial<AttemptRecord> = {}): AttemptRecord => ({
+    agentId: "11111111-1111-4111-8111-111111111111",
+    runId: "run-1",
+    runUrl: "https://archestra.example/runs/run-1",
+    continued: false,
+    result: "completed",
+    reason: "completed",
+    source: null,
+    durationMs: 102_869,
+    ...overrides,
+  });
+  const state = {
+    ...emptyState("main"),
+    jobs: [
+      {
+        label: "review of 9ae3795",
+        startedAt: "2026-10-23T11:35:28.000Z",
+        workflowRunUrl: "https://github.com/acme/widgets/actions/runs/1",
+        outcome: "changes requested, 4 findings",
+        attempts: [
+          attempt({
+            result: "non_retriable",
+            reason: "run ended in failed: Budget exceeded",
+            source: "message-pattern",
+            durationMs: 12_000,
+          }),
+          attempt({ agentId: "22222222-2222-4222-8222-222222222222", durationMs: 320_000 }),
+        ],
+      },
+      {
+        label: "review of 533b302",
+        startedAt: "2026-10-23T13:27:12.000Z",
+        workflowRunUrl: "https://github.com/acme/widgets/actions/runs/2",
+        outcome: "changes requested, 5 findings",
+        attempts: [attempt({ continued: true })],
+      },
+    ],
+  };
+  const context = { marker, repoUrl: "https://github.com/acme/widgets", command: "/archestra" };
+
+  it("lists every attempt of every job on the pull request, oldest first", () => {
+    const body = renderSticky(state, context);
+    expect(body).toContain("<details><summary>History: 2 jobs (3 attempts)</summary>");
+    expect(body).toContain(
+      "| 1 | 2026-10-23 11:35 | review of 9ae3795 ([job](https://github.com/acme/widgets/actions/runs/1)) | `11111111` | [run](https://archestra.example/runs/run-1) | non_retriable (message-pattern): run ended in failed: Budget exceeded | 12 s |",
+    );
+    expect(body).toContain(
+      "| 2 | 2026-10-23 11:35 | attempt 2 | `22222222` | [run](https://archestra.example/runs/run-1) | completed · changes requested, 4 findings | 5 min 20 s |",
+    );
+    expect(body).toContain(
+      "| 3 | 2026-10-23 13:27 | review of 533b302 ([job](https://github.com/acme/widgets/actions/runs/2)) | `11111111` | [run](https://archestra.example/runs/run-1) (continued) | completed · changes requested, 5 findings | 1 min 43 s |",
+    );
+    expect(body).not.toContain("completed: completed");
+    expect(parseState(body)?.jobs).toEqual(state.jobs);
+  });
+
+  it("reads the attempts of a comment written before the history as its one job", () => {
+    const { continued: _new, ...old } = attempt();
+    const legacy = {
+      ...emptyState("main"),
+      attempts: [old],
+      operation: "review of 9ae3795",
+      last: {
+        did: "reviewed `9ae3795`",
+        login: "alice",
+        durationMs: 110_000,
+        startedAt: null,
+        workflowRunUrl: "https://github.com/acme/widgets/actions/runs/1",
+        outcome: "ok" as const,
+      },
+    };
+    const body = renderSticky(legacy, context);
+    expect(parseState(body)?.jobs).toEqual([
+      {
+        label: "review of 9ae3795",
+        startedAt: null,
+        workflowRunUrl: "https://github.com/acme/widgets/actions/runs/1",
+        outcome: null,
+        attempts: [attempt()],
+      },
+    ]);
+  });
+
+  it("keeps the last jobs when the comment must shrink", () => {
+    const jobs = Array.from({ length: 25 }, (_, i) => ({ ...state.jobs[1]!, label: `review of ${i}` }));
+    const long = { ...state, summary: "x".repeat(70_000), jobs };
+    const parsed = parseState(renderSticky(long, context));
+    expect(parsed?.jobs.length).toBeLessThanOrEqual(10);
+    expect(parsed?.jobs.at(-1)?.label).toBe("review of 24");
+  });
+});
+
+describe("linkPrevious", () => {
+  const previous = placeFindings(
+    [
+      {
+        file: "src/a.ts",
+        line: 3,
+        severity: "high",
+        summary: "Null is not handled.",
+        failure_scenario: "x",
+        recommendation: "y",
+      },
+      { file: "src/a.ts", line: 9, severity: "low", summary: "No test.", failure_scenario: "x", recommendation: "y" },
+    ],
+    buildDiffIndex([]),
+    { headSha: "a".repeat(40), inline: false },
+  );
+
+  it("pairs by previous_id, then by file and summary, and gives the rest fresh ids", () => {
+    const findings = [
+      { file: "src/a.ts", line: 9, severity: "low", summary: "no test", failure_scenario: "x", recommendation: "y" },
+      {
+        file: "src/a.ts",
+        line: 4,
+        severity: "high",
+        summary: "Different words.",
+        failure_scenario: "x",
+        recommendation: "y",
+        previous_id: "aaaaaaa-1",
+      },
+      { file: "src/b.ts", line: 1, severity: "nit", summary: "New.", failure_scenario: "x", recommendation: "y" },
+    ] as const;
+    expect([...linkPrevious([...findings], previous)]).toEqual([
+      [1, "aaaaaaa-1"],
+      [0, "aaaaaaa-2"],
+    ]);
+    const placed = placeFindings([...findings], buildDiffIndex([]), {
+      headSha: "d".repeat(40),
+      inline: false,
+      previous,
+    });
+    expect(placed.map((finding) => [finding.id, finding.n])).toEqual([
+      ["aaaaaaa-2", 1],
+      ["aaaaaaa-1", 2],
+      ["ddddddd-3", 3],
+    ]);
+    expect(placed.some((finding) => "previous_id" in finding)).toBe(false);
+  });
+
+  it("never gives two findings the same id, also on a second review of the same commit", () => {
+    const again = placeFindings(
+      [
+        { file: "src/c.ts", line: 1, severity: "nit", summary: "New one.", failure_scenario: "x", recommendation: "y" },
+        {
+          file: "src/a.ts",
+          line: 3,
+          severity: "high",
+          summary: "Null is not handled.",
+          failure_scenario: "x",
+          recommendation: "y",
+        },
+      ],
+      buildDiffIndex([]),
+      { headSha: "a".repeat(40), inline: false, previous },
+    );
+    expect(again.map((finding) => finding.id)).toEqual(["aaaaaaa-3", "aaaaaaa-1"]);
+  });
+
+  it("keeps fresh ids clear of the threads already on the pull request", () => {
+    const placed = placeFindings(
+      [{ file: "src/c.ts", line: 1, severity: "nit", summary: "New.", failure_scenario: "x", recommendation: "y" }],
+      buildDiffIndex([]),
+      { headSha: "d".repeat(40), inline: false, previous, reservedIds: ["ddddddd-1", "ddddddd-2"] },
+    );
+    expect(placed[0]?.id).toBe("ddddddd-3");
+  });
+
+  it("ignores a previous_id whose finding is in another file", () => {
+    const placed = placeFindings(
+      [
+        {
+          file: "src/b.ts",
+          line: 3,
+          severity: "high",
+          summary: "Null is not handled.",
+          failure_scenario: "x",
+          recommendation: "y",
+          previous_id: "aaaaaaa-1",
+        },
+      ],
+      buildDiffIndex([]),
+      { headSha: "d".repeat(40), inline: false, previous },
+    );
+    expect(placed[0]?.id).toBe("ddddddd-1");
+  });
+
+  it("ignores a previous_id that the last review did not report", () => {
+    const placed = placeFindings(
+      [
+        {
+          file: "src/a.ts",
+          line: 3,
+          severity: "high",
+          summary: "Other.",
+          failure_scenario: "x",
+          recommendation: "y",
+          previous_id: "zzz-9",
+        },
+      ],
+      buildDiffIndex([]),
+      { headSha: "d".repeat(40), inline: false, previous },
+    );
+    expect(placed[0]?.id).toBe("ddddddd-1");
   });
 });

@@ -22,6 +22,7 @@ import {
   isResult,
   prepareFix,
   progressReporter,
+  recordJob,
   reply,
   startProgress,
   summarize,
@@ -109,9 +110,8 @@ export async function runFixCi(
   if (!outcome.ok || !outcome.value) {
     const reason = outcome.fatal ? fatalReason(outcome.attempts) : "No runtime completed the triage.";
     await updateSticky(ctx, pr, (s) => {
+      recordJob(ctx, s, { label: "CI triage", outcome: null, attempts: outcome.attempts });
       finishProgress(ctx, s, { did: doing, login: identity.login, outcome: "unavailable" });
-      s.attempts = outcome.attempts;
-      s.operation = "CI triage";
       s.notice = `The CI triage requested by @${identity.login} did not complete: ${reason}`;
     });
     await reply(ctx, trigger, `The CI triage did not complete: ${reason}`);
@@ -183,8 +183,11 @@ export async function runFixCi(
           .map((commit) => ({ finding: null, check: row.check, commit, login: identity.login, runUrl })),
       ),
     ].slice(-50);
-    s.attempts = outcome.attempts;
-    s.operation = "CI triage";
+    recordJob(ctx, s, {
+      label: "CI triage",
+      outcome: `triaged ${rows.length} failing check${rows.length === 1 ? "" : "s"}`,
+      attempts: outcome.attempts,
+    });
     s.notice = null;
   });
 

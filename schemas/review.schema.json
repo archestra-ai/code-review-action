@@ -72,6 +72,12 @@
             "description": "Full replacement text for lines line..end_line",
             "type": "string",
             "maxLength": 4000
+          },
+          "previous_id": {
+            "description": "The id from previous-findings.json when this finding was reported before",
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 100
           }
         },
         "required": [
