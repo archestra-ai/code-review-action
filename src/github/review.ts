@@ -63,7 +63,10 @@ export function inlineBody(finding: StoredFinding, index: DiffIndex, command: st
     "",
     escapeHtml(truncate(finding.failure_scenario, 3000)),
     "",
-    `**Recommendation:** ${escapeHtml(truncate(finding.recommendation, 1500))}`,
+    // Its own paragraph at the margin, so the escaper and the marker reader see the same fences.
+    "**Recommendation:**",
+    "",
+    escapeHtml(truncate(finding.recommendation, 1500)),
     "",
     `To implement and push this fix, reply \`${command} fix\` to this comment. For all findings, tick the box in the review summary.`,
   ];

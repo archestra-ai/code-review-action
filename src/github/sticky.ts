@@ -64,8 +64,8 @@ export function findingMarker(id: string): string {
  * reaches GitHub. Markdown code spans and fenced code blocks stay as written: GitHub shows their text
  * literally, entities included.
  */
-export function escapeHtml(text: string): string {
-  return mapCode(text, escapeText, (code) => code, true);
+export function escapeHtml(text: string, options: { fences?: boolean } = {}): string {
+  return mapCode(text, escapeText, (code) => code, { fences: options.fences ?? true, closeFences: true });
 }
 
 /**
@@ -77,13 +77,25 @@ export function stripCode(text: string): string {
     text,
     (prose) => prose,
     () => " ",
-    false,
+    { fences: true, closeFences: false },
   );
 }
 
 type Mapper = (segment: string) => string;
 
-function mapCode(text: string, prose: Mapper, code: Mapper, closeFences: boolean): string {
+/**
+ * The escaper runs on each field and the reader on the whole comment, so a field must keep its
+ * code the same after the renderer places it: a field placed alone at the left margin keeps its
+ * fences (`fences: true`); a field that gets a prefix or shares a line with other fields has no
+ * fences (`fences: false`) and, in a table cell, no stray backtick (`balanceBackticks`).
+ */
+function mapCode(
+  text: string,
+  prose: Mapper,
+  code: Mapper,
+  options: { fences: boolean; closeFences: boolean },
+): string {
+  if (!options.fences) return mapProse(text, prose, code);
   let out = "";
   let position = 0;
   for (const block of text.matchAll(FENCED_BLOCK)) {
@@ -91,7 +103,7 @@ function mapCode(text: string, prose: Mapper, code: Mapper, closeFences: boolean
     // GitHub shows an unclosed fence to the end of the text; close it so the rest of the comment still renders.
     const closed = new RegExp(`\\n {0,3}${fence}${fence[0]}*[ \\t]*$`).test(block[0]);
     out += mapProse(text.slice(position, block.index), prose, code) + code(block[0]);
-    if (closeFences && !closed) out += `\n${fence}`;
+    if (options.closeFences && !closed) out += `\n${fence}`;
     position = block.index + block[0].length;
   }
   return out + mapProse(text.slice(position), prose, code);
@@ -111,20 +123,52 @@ function mapProse(text: string, prose: Mapper, code: Mapper): string {
     .join("\n");
 }
 
-/** Maps one line. A code span is a backtick run closed by a run of the same length on the same line. */
-function mapLine(line: string, prose: Mapper, code: Mapper): string {
-  const runs = [...line.matchAll(/`+/g)].map((run) => ({ start: run.index, end: run.index + run[0].length }));
-  let out = "";
+type Run = { start: number; end: number };
+
+function backtickRuns(line: string): Run[] {
+  return [...line.matchAll(/`+/g)].map((run) => ({ start: run.index, end: run.index + run[0].length }));
+}
+
+/** The code spans of one line: a backtick run closed by the next run of the same length. */
+function codeSpans(line: string): Array<[Run, Run]> {
+  const runs = backtickRuns(line);
+  const spans: Array<[Run, Run]> = [];
   let position = 0;
   for (const open of runs) {
     if (open.start < position) continue;
     const length = open.end - open.start;
     const close = runs.find((run) => run.start >= open.end && run.end - run.start === length);
     if (close === undefined) continue;
+    spans.push([open, close]);
+    position = close.end;
+  }
+  return spans;
+}
+
+function mapLine(line: string, prose: Mapper, code: Mapper): string {
+  let out = "";
+  let position = 0;
+  for (const [open, close] of codeSpans(line)) {
     out += prose(line.slice(position, open.start)) + code(line.slice(open.start, close.end));
     position = close.end;
   }
   return out + prose(line.slice(position));
+}
+
+/**
+ * Replaces each backtick run outside a code span with apostrophes. A cell with no stray backtick
+ * keeps its spans when the row joins it with other cells.
+ */
+export function balanceBackticks(line: string): string {
+  const spans = codeSpans(line);
+  let out = "";
+  let position = 0;
+  for (const run of backtickRuns(line)) {
+    if (spans.some(([open, close]) => run.start >= open.start && run.end <= close.end)) continue;
+    out += line.slice(position, run.start) + "'".repeat(run.end - run.start);
+    position = run.end;
+  }
+  return out + line.slice(position);
 }
 
 function escapeText(text: string): string {
@@ -132,7 +176,7 @@ function escapeText(text: string): string {
 }
 
 export function findingIdFromBody(body: string): string | null {
-  return /<!-- archestra-finding:([\w.-]{1,100}) -->/.exec(stripCode(body))?.[1] ?? null;
+  return [...stripCode(body).matchAll(/<!-- archestra-finding:([\w.-]{1,100}) -->/g)].at(-1)?.[1] ?? null;
 }
 
 // ===== State =====
@@ -249,10 +293,11 @@ export function emptyState(baseBranch: string): StickyState {
   };
 }
 
-const STATE_PATTERN = /<!-- archestra-state:([A-Za-z0-9_-]+) -->/;
+const STATE_PATTERN = /<!-- archestra-state:([A-Za-z0-9_-]+) -->/g;
 
 export function parseState(body: string): StickyState | null {
-  const match = STATE_PATTERN.exec(stripCode(body));
+  // The state line is the last line of the comment; a marker before it is not ours.
+  const match = [...stripCode(body).matchAll(STATE_PATTERN)].at(-1);
   if (!match) return null;
   try {
     const json = JSON.parse(Buffer.from(match[1] as string, "base64url").toString("utf8"));
@@ -530,8 +575,10 @@ function verdictLabel(verdict: string): string {
   );
 }
 
+/** A table cell: one line, no stray backtick, pipes escaped. */
 function cell(text: string, max: number): string {
-  return oneLine(text, max).replace(/\|/g, "\\|");
+  const line = balanceBackticks(truncate(text.replace(/\s+/g, " ").trim(), max));
+  return escapeHtml(line, { fences: false }).replace(/\|/g, "\\|");
 }
 
 function oneLine(text: string, max: number): string {
@@ -539,7 +586,8 @@ function oneLine(text: string, max: number): string {
 }
 
 function quote(text: string): string {
-  return escapeHtml(truncate(text, 2000))
+  // Quoted lines no longer start at the margin, so a fence is prose here.
+  return escapeHtml(truncate(text, 2000), { fences: false })
     .split("\n")
     .map((line) => `> ${line}`)
     .join("\n");
