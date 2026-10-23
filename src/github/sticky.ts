@@ -328,7 +328,7 @@ function renderBody(state: StickyState, context: RenderContext): string {
     out.push("**Review unavailable.** No runtime completed the review. The attempts are listed below.", "");
   } else if (state.verdict) {
     out.push(
-      `**Verdict:** ${verdictLabel(state.verdict)} · reviewed \`${shortSha(state.reviewedSha)}\` · ${state.findings.length} finding${state.findings.length === 1 ? "" : "s"}`,
+      `**Verdict: ${verdictLabel(state.verdict)}** · reviewed \`${shortSha(state.reviewedSha)}\` · ${state.findings.length} finding${state.findings.length === 1 ? "" : "s"}`,
       "",
     );
   }
@@ -498,7 +498,13 @@ function shrink(state: StickyState, level: number): StickyState {
 }
 
 function verdictLabel(verdict: string): string {
-  return { approve: "approve", comment: "comment", request_changes: "changes requested" }[verdict] ?? verdict;
+  return (
+    {
+      approve: "Looks good to merge.",
+      comment: "Comments only; nothing blocks the merge.",
+      request_changes: "Needs changes before merge.",
+    }[verdict] ?? verdict
+  );
 }
 
 function cell(text: string, max: number): string {
