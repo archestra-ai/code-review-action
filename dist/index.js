@@ -40605,8 +40605,21 @@ function readEnvironment(env, readFile) {
     runAttempt: Number(env.GITHUB_RUN_ATTEMPT ?? "1") || 1,
     serverUrl,
     apiUrl: (env.GITHUB_API_URL ?? "https://api.github.com").replace(/\/+$/, ""),
-    workflowRunUrl: `${serverUrl}/${owner}/${repo}/actions/runs/${runId}`
+    workflowRunUrl: `${serverUrl}/${owner}/${repo}/actions/runs/${runId}`,
+    progressImageUrl: progressImageUrl(env)
   };
+}
+function progressImageUrl(env) {
+  const repository = env.GITHUB_ACTION_REPOSITORY ?? "";
+  const ref = env.GITHUB_ACTION_REF ?? "";
+  const source = isPath(repository, 2) ? repository : "archestra-ai/code-review-action";
+  const revision = isPath(ref) ? ref : "main";
+  return `https://raw.githubusercontent.com/${source}/${revision}/assets/progress.gif`;
+}
+function isPath(value, segments) {
+  const parts = value.split("/");
+  if (segments !== void 0 && parts.length !== segments) return false;
+  return parts.every((part) => /^[\w.-]+$/.test(part) && !/^\.+$/.test(part));
 }
 
 // node_modules/@actions/github/lib/context.js
@@ -46070,7 +46083,9 @@ var ProgressSchema = external_exports.object({
   workflowRunUrl: external_exports.string(),
   /** The current step: "starting a run on agent 1 of 2", "waiting for the run". */
   step: external_exports.string().max(300).nullable(),
-  runUrl: external_exports.string().nullable()
+  runUrl: external_exports.string().nullable(),
+  /** The animated mark next to the header; absent in comments written before this field existed. */
+  image: external_exports.string().nullable().optional()
 });
 var LastJobSchema = external_exports.object({
   /** What the job did, in a few words: "reviewed", "applied 2 findings". */
@@ -46249,12 +46264,15 @@ function renderSticky(state, context3) {
   }
   return renderBody(fitted, context3);
 }
-var PROGRESS_LOGO = '<img src="https://avatars.githubusercontent.com/u/216022683?s=28&amp;v=4" width="14px" height="14px" alt="Archestra" style="vertical-align: middle; margin-left: 4px;" />';
+var DEFAULT_PROGRESS_IMAGE = "https://raw.githubusercontent.com/archestra-ai/code-review-action/main/assets/progress.gif";
+function progressImage(url2) {
+  return `<img src="${escapeHtml(url2 ?? DEFAULT_PROGRESS_IMAGE)}" width="14" height="14" alt="Archestra is working" />`;
+}
 function renderHeader(state) {
   const { progress, last } = state;
   if (progress) {
     const lines = [
-      `**Archestra is ${oneLine(progress.doing, 200)} for @${progress.login}\u2026** ${PROGRESS_LOGO} \u2014\u2014 [View job](${progress.workflowRunUrl})`,
+      `**Archestra is ${oneLine(progress.doing, 200)} for @${progress.login}\u2026** ${progressImage(progress.image)} \u2014\u2014 [View job](${progress.workflowRunUrl})`,
       ""
     ];
     const step = progress.step ? oneLine(progress.step, 300) : null;
@@ -46804,6 +46822,7 @@ async function startProgress(ctx, pr, job) {
       login: job.login,
       startedAt: new Date(ctx.clock.now()).toISOString(),
       workflowRunUrl: ctx.workflowRunUrl,
+      image: ctx.progressImageUrl,
       step: "preparing the inputs",
       runUrl: null
     };
@@ -48068,6 +48087,7 @@ async function main() {
     runAttempt: environment.runAttempt,
     serverUrl: environment.serverUrl,
     workflowRunUrl: environment.workflowRunUrl,
+    progressImageUrl: environment.progressImageUrl,
     gh: createOctokit(inputs.githubToken, { baseUrl: environment.apiUrl }),
     ghFix: inputs.fixToken ? createOctokit(inputs.fixToken, { baseUrl: environment.apiUrl }) : null,
     archestra: new ArchestraClient({ gatewayUrl: inputs.gatewayUrl, token: inputs.token }),

@@ -14,6 +14,8 @@ export interface ActionContext {
   runAttempt: number;
   serverUrl: string;
   workflowRunUrl: string;
+  /** The animated Archestra mark of the progress header. */
+  progressImageUrl: string;
   /** The job token: posts comments and reviews. */
   gh: Octokit;
   /** The GitHub App token (fix-token): resolves threads, re-runs jobs, opens fix PRs. */

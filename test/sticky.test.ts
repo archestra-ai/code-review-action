@@ -389,8 +389,9 @@ describe("sticky state and rendering", () => {
     );
     const header = inProgress.split("\n").slice(1, 4).join("\n");
     expect(header).toContain("**Archestra is reviewing `aaaaaaa` for @alice…**");
-    expect(header).toContain('<img src="https://avatars.githubusercontent.com/u/');
-    expect(header).toContain('alt="Archestra"');
+    expect(header).toContain(
+      '<img src="https://raw.githubusercontent.com/archestra-ai/code-review-action/main/assets/progress.gif" width="14" height="14" alt="Archestra is working" />',
+    );
     expect(header).toContain("[View job](https://github.com/acme/widgets/actions/runs/1)");
     expect(header).toContain("- waiting for the runtime to finish ([run](https://archestra.test/chat/runs/r1))");
     expect(inProgress.indexOf("Archestra is reviewing")).toBeLessThan(inProgress.indexOf("### Archestra code review"));

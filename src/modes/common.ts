@@ -170,6 +170,7 @@ export async function startProgress(
       login: job.login,
       startedAt: new Date(ctx.clock.now()).toISOString(),
       workflowRunUrl: ctx.workflowRunUrl,
+      image: ctx.progressImageUrl,
       step: "preparing the inputs",
       runUrl: null,
     };

@@ -246,6 +246,8 @@ const ProgressSchema = z.object({
   /** The current step: "starting a run on agent 1 of 2", "waiting for the run". */
   step: z.string().max(300).nullable(),
   runUrl: z.string().nullable(),
+  /** The animated mark next to the header; absent in comments written before this field existed. */
+  image: z.string().nullable().optional(),
 });
 
 const LastJobSchema = z.object({
@@ -482,22 +484,27 @@ export function renderSticky(state: StickyState, context: RenderContext): string
 }
 
 /**
- * The picture next to the in-progress header: the Archestra logo. The action does not know which
- * model an agent runs (agent ids are opaque, and the run reports only its state), so it shows no
- * provider's logo.
+ * The picture next to the in-progress header: the Archestra mark in a badge with a turning arc, an
+ * animated GIF (`assets/progress.gif`) served from the action's own repository at the running
+ * revision, visible on both GitHub themes. The action does not know which model an agent runs (agent
+ * ids are opaque, and the run reports only its state), so it shows no provider's logo.
  */
-const PROGRESS_LOGO =
-  '<img src="https://avatars.githubusercontent.com/u/216022683?s=28&amp;v=4" width="14px" height="14px" alt="Archestra" style="vertical-align: middle; margin-left: 4px;" />';
+const DEFAULT_PROGRESS_IMAGE =
+  "https://raw.githubusercontent.com/archestra-ai/code-review-action/main/assets/progress.gif";
+
+function progressImage(url: string | null | undefined): string {
+  return `<img src="${escapeHtml(url ?? DEFAULT_PROGRESS_IMAGE)}" width="14" height="14" alt="Archestra is working" />`;
+}
 
 /**
  * The first line: who the job acts for and where it is. A job in progress
- * shows the Archestra logo and its current step; a finished job shows its duration.
+ * shows the animated Archestra mark and its current step; a finished job shows its duration.
  */
 export function renderHeader(state: StickyState): string[] {
   const { progress, last } = state;
   if (progress) {
     const lines = [
-      `**Archestra is ${oneLine(progress.doing, 200)} for @${progress.login}…** ${PROGRESS_LOGO} —— [View job](${progress.workflowRunUrl})`,
+      `**Archestra is ${oneLine(progress.doing, 200)} for @${progress.login}…** ${progressImage(progress.image)} —— [View job](${progress.workflowRunUrl})`,
       "",
     ];
     const step = progress.step ? oneLine(progress.step, 300) : null;
