@@ -442,7 +442,9 @@ describe("progress comment", () => {
     expect(history.length).toBeGreaterThanOrEqual(3);
     expect(history[0]).toContain("**Archestra is reviewing `");
     expect(history[0]).toContain("for @alice…**");
-    expect(history[0]).toContain('<img src="https://avatars.githubusercontent.com/u/');
+    expect(history[0]).toContain(
+      '<img src="https://raw.githubusercontent.com/archestra-ai/code-review-action/0000000/assets/progress.gif" width="14" height="14" alt="Archestra is working" />',
+    );
     expect(history[0]).toContain("- preparing the inputs");
     expect(history.some((body) => body.includes("- starting a run on agent 1 of 3"))).toBe(true);
     expect(

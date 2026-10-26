@@ -389,10 +389,28 @@ describe("sticky state and rendering", () => {
     );
     const header = inProgress.split("\n").slice(1, 4).join("\n");
     expect(header).toContain("**Archestra is reviewing `aaaaaaa` for @alice…**");
-    expect(header).toContain('<img src="https://avatars.githubusercontent.com/u/');
-    expect(header).toContain('alt="Archestra"');
+    expect(header).toContain(
+      '<img src="https://raw.githubusercontent.com/archestra-ai/code-review-action/main/assets/progress.gif" width="14" height="14" alt="Archestra is working" />',
+    );
     expect(header).toContain("[View job](https://github.com/acme/widgets/actions/runs/1)");
     expect(header).toContain("- waiting for the runtime to finish ([run](https://archestra.test/chat/runs/r1))");
+    const pinned = renderSticky(
+      {
+        ...state,
+        progress: {
+          doing: "reviewing",
+          login: "alice",
+          startedAt: "2026-10-23T10:00:00.000Z",
+          workflowRunUrl: "https://github.com/acme/widgets/actions/runs/1",
+          step: null,
+          runUrl: null,
+        },
+      },
+      { marker, repoUrl: "", command: "/archestra", progressImageUrl: 'https://example.test/mark"1.gif' },
+    );
+    expect(pinned).toContain(
+      '<img src="https://example.test/mark&quot;1.gif" width="14" height="14" alt="Archestra is working" />',
+    );
     expect(inProgress.indexOf("Archestra is reviewing")).toBeLessThan(inProgress.indexOf("### Archestra code review"));
     expect(parseState(inProgress)?.progress?.step).toBe("waiting for the runtime to finish");
   });

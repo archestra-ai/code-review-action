@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.3.1 (2026-10-26)
+
+- The in-progress header shows an animated Archestra mark (the logo in a badge with a turning arc, `assets/progress.gif`, served from this repository at the revision the workflow pins; a fork or a GitHub Enterprise server shows the main-branch image) instead of the organisation avatar, a black mark on a transparent background that GitHub's dark theme did not show. Seen on archestra-ai/archestra#9660.
+
 ## 0.3.0 (2026-10-24)
 
 - Change map: `review.json` can list the places a rule of the change reached (`changes`: file, line, what changed), and the comment shows them as a table after the summary, so a reader sees at once that a rule applied in several places reached all of them.

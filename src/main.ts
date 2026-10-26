@@ -45,6 +45,7 @@ async function main(): Promise<void> {
     runAttempt: environment.runAttempt,
     serverUrl: environment.serverUrl,
     workflowRunUrl: environment.workflowRunUrl,
+    progressImageUrl: environment.progressImageUrl,
     gh: createOctokit(inputs.githubToken, { baseUrl: environment.apiUrl }),
     ghFix: inputs.fixToken ? createOctokit(inputs.fixToken, { baseUrl: environment.apiUrl }) : null,
     archestra: new ArchestraClient({ gatewayUrl: inputs.gatewayUrl, token: inputs.token }),

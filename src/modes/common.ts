@@ -150,7 +150,12 @@ export async function updateSticky(
     sha: null,
   };
   mutate(state, marker);
-  const body = renderSticky(state, { marker, repoUrl: repoUrl(ctx), command: commentCommand(ctx.inputs) });
+  const body = renderSticky(state, {
+    marker,
+    repoUrl: repoUrl(ctx),
+    command: commentCommand(ctx.inputs),
+    progressImageUrl: ctx.progressImageUrl,
+  });
   await writeSticky(ctx.gh, ctx.repo, pr.number, sticky?.id ?? null, body);
 }
 

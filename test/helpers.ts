@@ -82,6 +82,8 @@ export function createHarness(): Harness {
         runAttempt: 1,
         serverUrl: "https://github.com",
         workflowRunUrl: `https://github.com/${github.fullName}/actions/runs/1`,
+        progressImageUrl:
+          "https://raw.githubusercontent.com/archestra-ai/code-review-action/0000000/assets/progress.gif",
         gh: testOctokit(inputs.githubToken),
         ghFix: inputs.fixToken ? testOctokit(inputs.fixToken) : null,
         archestra: new ArchestraClient({ gatewayUrl: inputs.gatewayUrl, token: inputs.token }),
