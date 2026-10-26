@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { setTimeout as sleep } from "node:timers/promises";
 import * as core from "@actions/core";
 import { ArchestraClient } from "./archestra/client";
+import { exchangeGitHubActionsToken } from "./archestra/github-actions-auth";
 import { cancelIfLive } from "./cancel";
 import { type ActionContext, type ActionResult, repoUrl } from "./context";
 import { readEnvironment } from "./env";
@@ -16,6 +17,10 @@ export const LIVE_RUN_STATE = "live-run-id";
 export const JOB_STATE = "job";
 /** Set when the main step finished or recorded its own cancellation: the post step has nothing left to do. */
 export const DONE_STATE = "done";
+/** The Archestra token of a job that signed in with its GitHub Actions identity, for the post step. */
+export const TOKEN_STATE = "archestra-token";
+/** The review App's GitHub token from that sign-in, so the post step writes as the same identity. */
+export const GITHUB_TOKEN_STATE = "github-token";
 
 /**
  * The runner sends SIGINT to a canceled step and SIGTERM about 7.5 seconds later. The job's
@@ -50,7 +55,9 @@ async function main(): Promise<void> {
     error: (message: string) => core.error(message),
     debug: (message: string) => core.debug(message),
   };
-  const ctx: ActionContext = {
+  // The context the job works with; a GitHub Actions sign-in replaces it with one that holds the
+  // signed-in clients. The stop handler always uses the current one.
+  let ctx: ActionContext = {
     inputs,
     repo: environment.repo,
     eventName: environment.eventName,
@@ -74,6 +81,35 @@ async function main(): Promise<void> {
       core.saveState(JOB_STATE, JSON.stringify(job));
     },
     isStopping: () => stopping,
+    // Sign in with the job's GitHub Actions identity: the token of the pull request author's user,
+    // and the review App's token for this repository. Only a review event signs in.
+    signIn: async () => {
+      const exchange = await exchangeGitHubActionsToken({
+        gatewayUrl: inputs.gatewayUrl,
+        getIdToken: (audience) => core.getIDToken(audience),
+      });
+      if (!exchange.ok) {
+        return { ok: false, refusal: { reason: exchange.reason, message: exchange.message, login: exchange.login } };
+      }
+      core.setSecret(exchange.accessToken);
+      core.saveState(TOKEN_STATE, exchange.accessToken);
+      if (exchange.githubToken) {
+        core.setSecret(exchange.githubToken);
+        core.saveState(GITHUB_TOKEN_STATE, exchange.githubToken);
+      }
+      core.info(`Signed in to Archestra for the GitHub user ${exchange.githubLogin ?? "(unknown)"}.`);
+      inputs = { ...inputs, token: exchange.accessToken, githubToken: exchange.githubToken ?? inputs.githubToken };
+      ctx = {
+        ...ctx,
+        inputs,
+        gh: createOctokit(inputs.githubToken, { baseUrl: environment.apiUrl }),
+        archestra: new ArchestraClient({ gatewayUrl: inputs.gatewayUrl, token: inputs.token }),
+        appIdentity: exchange.githubToken !== null,
+      };
+      return { ok: true, ctx };
+    },
+    appIdentity: false,
+    cache: { stickyId: null },
     startedAt: Date.now(),
   };
 

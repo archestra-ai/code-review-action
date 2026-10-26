@@ -1,16 +1,19 @@
 import { HttpResponse, http } from "msw";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { exchangeGitHubActionsToken, tokenEndpoint } from "../src/archestra/github-actions-auth";
 import { isTransient } from "../src/github/octokit";
 import { verdictFor } from "../src/github/review";
-import { parseState } from "../src/github/sticky";
+import { checklistTitle, parseState } from "../src/github/sticky";
 import { reviewBody, summaryWords } from "../src/modes/review";
 import { run } from "../src/run";
 import { recordStoppedJob, type SavedJob } from "../src/stopped";
 import {
   AGENT_A,
+  AGENT_B,
   createHarness,
   FINDING_IN_DIFF,
   FINDING_OUTSIDE,
+  issueCommentEvent,
   MemoryLogger,
   mockServer,
   prEvent,
@@ -138,6 +141,304 @@ describe("change requests", () => {
   });
 });
 
+describe("GitHub Actions sign-in", () => {
+  const gatewayUrl = "https://archestra.test/v1/mcp/11111111-1111-4111-8111-111111111111";
+  const getIdToken = async (audience: string) => `oidc-for-${audience}`;
+
+  it("trades the job's identity token for the author's Archestra token and the App's GitHub token", async () => {
+    let request: unknown = null;
+    server.use(
+      http.post(tokenEndpoint(gatewayUrl), async ({ request: req }) => {
+        request = await req.json();
+        return HttpResponse.json({ access_token: "arch-1", github_token: "ghs-app", github_login: "alice" });
+      }),
+    );
+    const result = await exchangeGitHubActionsToken({ gatewayUrl, getIdToken, retryDelaysMs: [] });
+    expect(result).toEqual({ ok: true, accessToken: "arch-1", githubToken: "ghs-app", githubLogin: "alice" });
+    // The audience is the deployment, and the resource names the gateway.
+    expect(request).toEqual({ token: "oidc-for-https://archestra.test", resource: gatewayUrl });
+  });
+
+  it("passes on why Archestra refused, and retries a server error once", async () => {
+    let calls = 0;
+    server.use(
+      http.post(tokenEndpoint(gatewayUrl), () => {
+        calls++;
+        return calls === 1
+          ? HttpResponse.json({ error: "server_error" }, { status: 503 })
+          : HttpResponse.json(
+              { error: "not_linked", login: "bob", message: "Connect GitHub under Credentials in Archestra." },
+              { status: 403 },
+            );
+      }),
+    );
+    const result = await exchangeGitHubActionsToken({ gatewayUrl, getIdToken, retryDelaysMs: [0] });
+    expect(result).toEqual({
+      ok: false,
+      reason: "not_linked",
+      message: "Connect GitHub under Credentials in Archestra.",
+      login: "bob",
+    });
+    expect(calls).toBe(2);
+  });
+
+  it("asks for a fresh identity token on each try", async () => {
+    const tokens: string[] = [];
+    server.use(
+      http.post(tokenEndpoint(gatewayUrl), async ({ request: req }) => {
+        tokens.push(((await req.json()) as { token: string }).token);
+        return tokens.length === 1
+          ? HttpResponse.json({ error: "rate_limited" }, { status: 429 })
+          : HttpResponse.json({ access_token: "arch-2" });
+      }),
+    );
+    let n = 0;
+    const result = await exchangeGitHubActionsToken({
+      gatewayUrl,
+      getIdToken: async () => `oidc-${++n}`,
+      retryDelaysMs: [0],
+    });
+    expect(result).toMatchObject({ ok: true, accessToken: "arch-2" });
+    expect(tokens).toEqual(["oidc-1", "oidc-2"]);
+  });
+
+  it("says nothing when someone other than the author started the run", async () => {
+    const harness = setup();
+    const result = await run({
+      ...harness.context("pull_request", prEvent(harness.github, "synchronize"), {
+        "archestra-auth": "github-actions",
+      }),
+      signIn: refusedBy({ reason: "not_author", message: "started by bob", login: "alice" }),
+    });
+    expect(result.status).toBe("skipped");
+    expect(harness.github.stickyBody()).toBeNull();
+  });
+
+  it("explains a job without an identity token", async () => {
+    const result = await exchangeGitHubActionsToken({
+      gatewayUrl,
+      getIdToken: async () => {
+        throw new Error("Unable to get ACTIONS_ID_TOKEN_REQUEST_URL env variable");
+      },
+    });
+    expect(result).toMatchObject({ ok: false, reason: "unavailable" });
+    expect(!result.ok && result.message).toContain("id-token: write");
+  });
+
+  function refusedBy(refusal: {
+    reason: "not_linked" | "not_author" | "unavailable";
+    message: string;
+    login: string | null;
+  }) {
+    return async () => ({ ok: false as const, refusal });
+  }
+
+  it("tells an author who has not connected GitHub why there is no review, without failing the job", async () => {
+    const harness = setup();
+    const ctx = {
+      ...harness.context("pull_request", prEvent(harness.github), { "archestra-auth": "github-actions" }),
+      signIn: refusedBy({
+        reason: "not_linked",
+        message: "@alice has not connected GitHub to Archestra.",
+        login: "alice",
+      }),
+    };
+    const result = await run(ctx);
+    expect(result).toMatchObject({ status: "unauthorized", failure: null });
+    expect(harness.archestra.starts).toHaveLength(0);
+    expect(harness.github.stickyBody()).toContain(
+      "> No review of `aaaaaaa`: @alice has not connected GitHub to Archestra.",
+    );
+  });
+
+  it("says nothing on a pull request that is never reviewed, and fails the job when the sign-in failed", async () => {
+    const harness = setup();
+    const inputs = { "archestra-auth": "github-actions" };
+    harness.github.pr.draft = true;
+    const draft = await run({
+      ...harness.context("pull_request", prEvent(harness.github), inputs),
+      signIn: refusedBy({ reason: "not_linked", message: "not connected", login: "alice" }),
+    });
+    expect(draft.status).toBe("skipped");
+    expect(harness.github.stickyBody()).toBeNull();
+    harness.github.pr.draft = false;
+    const failed = await run({
+      ...harness.context("pull_request", prEvent(harness.github), inputs),
+      signIn: refusedBy({ reason: "unavailable", message: "Archestra did not answer", login: null }),
+    });
+    expect(failed.failure).toMatch(/did not answer/);
+  });
+
+  it("reviews with the signed-in clients, and signs in only for a review", async () => {
+    const harness = setup();
+    harness.archestra.script(AGENT_A, { end: "completed", files: { "review.json": reviewJson() } });
+    let signIns = 0;
+    const base = harness.context("pull_request", prEvent(harness.github), { "archestra-auth": "github-actions" });
+    const ctx = {
+      ...base,
+      signIn: async () => {
+        signIns++;
+        const signed = harness.context("pull_request", prEvent(harness.github));
+        return {
+          ok: true as const,
+          ctx: { ...signed, inputs: { ...signed.inputs, archestraAuth: "github-actions" as const } },
+        };
+      },
+    };
+    const result = await run(ctx);
+    expect(result.status).toBe("success");
+    expect(signIns).toBe(1);
+    const command = await run({
+      ...harness.context("issue_comment", issueCommentEvent(harness.github, "/archestra fix"), {
+        "archestra-auth": "github-actions",
+      }),
+      signIn: async () => {
+        signIns++;
+        throw new Error("no sign-in for a command");
+      },
+    });
+    expect(command.status).toBe("skipped");
+    expect(signIns).toBe(1);
+  });
+
+  it("moves to a new review comment only when the old one belongs to the workflow token", async () => {
+    const harness = setup();
+    harness.archestra.script(AGENT_A, { end: "completed", files: { "review.json": reviewJson([FINDING_IN_DIFF]) } });
+    await run(harness.context("pull_request", prEvent(harness.github)));
+    const [oldId] = [...harness.github.comments.keys()];
+    harness.github.foreignComments.add(oldId!);
+    harness.github.pr.head.sha = "d".repeat(40);
+    // Without the App identity, a refused edit is an error: no second comment.
+    harness.archestra.script(AGENT_A, { end: "completed", files: { "review.json": reviewJson([]) } });
+    await expect(run(harness.context("pull_request", prEvent(harness.github, "synchronize")))).rejects.toThrow();
+    const stickies = () =>
+      [...harness.github.comments.values()].filter((c) => c.body.includes("archestra-code-review"));
+    expect(stickies()).toHaveLength(1);
+    // As the review App, the workflow token's comment is taken over.
+    harness.archestra.script(AGENT_A, { end: "completed", files: { "review.json": reviewJson([]) } });
+    await run({ ...harness.context("pull_request", prEvent(harness.github, "synchronize")), appIdentity: true });
+    expect(stickies()).toHaveLength(2);
+    // The new comment carries on with the old one's history.
+    expect(parseState(stickies()[1]!.body)!.jobs.length).toBeGreaterThanOrEqual(2);
+  });
+
+  it("keeps a checklist step from mentioning anyone or linking anywhere", () => {
+    expect(checklistTitle("Ping @org/everyone at [x](https://evil.test) <b>")).toBe(
+      "Ping @\u2060org/everyone at x(https:/\u2060/evil.test) &lt;b>",
+    );
+  });
+});
+
+describe("progress checklist", () => {
+  it("shows the runtime's plan while it works, and ignores a file of an earlier commit", async () => {
+    const harness = setup();
+    const steps = [
+      { title: "Read the diff and the changed files", status: "done" },
+      { title: "Run the backend type check", status: "doing" },
+      { title: "Write the review", status: "todo" },
+    ];
+    harness.archestra.script(AGENT_A, {
+      end: "completed",
+      polls: 4,
+      liveFiles: { "progress.json": { sha: "a".repeat(40), steps } },
+      files: { "review.json": reviewJson() },
+    });
+    await run(harness.context("pull_request", prEvent(harness.github)));
+    const withPlan = harness.github.stickyHistory.find((body) => body.includes("- [x] Read the diff"));
+    expect(withPlan).toContain(
+      "- [x] Read the diff and the changed files\n- [ ] **Run the backend type check**\n- [ ] Write the review\n",
+    );
+    // The finished comment has no checklist any more.
+    expect(harness.github.stickyBody()).not.toContain("- [x] Read the diff");
+
+    const stale = setup();
+    stale.archestra.script(AGENT_A, {
+      end: "completed",
+      polls: 4,
+      liveFiles: { "progress.json": { sha: "f".repeat(40), steps } },
+      files: { "review.json": reviewJson() },
+    });
+    await run(stale.context("pull_request", prEvent(stale.github)));
+    expect(stale.github.stickyHistory.some((body) => body.includes("Read the diff"))).toBe(false);
+  });
+});
+
+describe("progress checklist after a failed run", () => {
+  it("drops the failed run's plan when the next agent starts", async () => {
+    const harness = setup();
+    harness.archestra.script(AGENT_A, {
+      end: "failed",
+      polls: 4,
+      statusReason: "Budget exceeded",
+      liveFiles: { "progress.json": { sha: "a".repeat(40), steps: [{ title: "Read the diff", status: "doing" }] } },
+    });
+    harness.archestra.script(AGENT_B, { end: "completed", files: { "review.json": reviewJson() } });
+    await run(harness.context("pull_request", prEvent(harness.github)));
+    // The plan showed while the first run worked, and went with it.
+    expect(harness.github.stickyHistory.some((body) => body.includes("- [ ] **Read the diff**"))).toBe(true);
+    const moving = harness.github.stickyHistory.find((body) => body.includes("moving to the next agent"));
+    expect(moving).toBeDefined();
+    expect(moving).not.toContain("Read the diff");
+  });
+
+  it("resets the progress file before it continues a workspace", async () => {
+    const harness = setup();
+    harness.archestra.script(AGENT_A, {
+      end: "completed",
+      files: {
+        "review.json": reviewJson(),
+        "progress.json": { sha: "a".repeat(40), steps: [{ title: "Done", status: "done" }] },
+      },
+    });
+    await run(harness.context("pull_request", prEvent(harness.github)));
+    harness.archestra.script(AGENT_A, { end: "completed", polls: 3, files: { "review.json": reviewJson() } });
+    await run(harness.context("pull_request", prEvent(harness.github, "reopened")));
+    expect(harness.archestra.starts[1]).toMatchObject({ kind: "continue" });
+    expect(harness.github.stickyHistory.slice(-6).some((body) => body.includes("- [x] Done"))).toBe(false);
+  });
+});
+
+describe("checks", () => {
+  it("gives the reviewer the checks of the head commit, with the details of the failing ones", async () => {
+    const harness = setup();
+    harness.github.checkRuns = [
+      {
+        id: 301,
+        name: "Supply Chain Policy",
+        app: "github-actions",
+        conclusion: "failure",
+        log: "",
+        baseBranchConclusion: "success",
+        annotations: [
+          {
+            path: "release.yml",
+            start_line: 3,
+            end_line: 3,
+            annotation_level: "failure",
+            message: "agent-kimi archives are not relayed",
+          },
+        ],
+      },
+      { id: 302, name: "lint", app: "github-actions", conclusion: "success", log: "", baseBranchConclusion: "success" },
+    ];
+    harness.archestra.script(AGENT_A, { end: "completed", files: { "review.json": reviewJson() } });
+    await run(harness.context("pull_request", prEvent(harness.github)));
+    const start = harness.archestra.starts[0]!;
+    expect(start.attachmentNames).toContain("checks.json");
+    const checks = JSON.parse(start.attachments["checks.json"]!) as Array<{
+      name: string;
+      conclusion: string;
+      annotations?: Array<{ message: string }>;
+    }>;
+    expect(checks.map((check) => [check.name, check.conclusion])).toEqual([
+      ["Supply Chain Policy", "failure"],
+      ["lint", "success"],
+    ]);
+    expect(checks[0]!.annotations?.[0]?.message).toBe("agent-kimi archives are not relayed");
+    expect(start.message).toContain("Read `checks.json`");
+  });
+});
+
 describe("review scope", () => {
   it("reviews the whole pull request again after a force-push dropped the last reviewed commit", async () => {
     const harness = setup();
@@ -234,6 +535,7 @@ describe("stopped jobs", () => {
       workflowRunUrl: "https://github.com/acme/widgets/actions/runs/99",
       step: "waiting for the runtime to finish",
       runUrl: null,
+      checklist: [],
     };
     finishProgress(ctx, state, { did: "the review of `aaaaaaa`", login: "alice", outcome: "error" });
     expect(state.progress?.workflowRunUrl).toBe("https://github.com/acme/widgets/actions/runs/99");
@@ -294,6 +596,7 @@ describe("stopped jobs", () => {
       workflowRunUrl: job.workflowRunUrl,
       step: "waiting for the runtime to finish",
       runUrl: null,
+      checklist: [],
     };
     state.jobs = [];
     const { renderSticky, parseMarker } = await import("../src/github/sticky");

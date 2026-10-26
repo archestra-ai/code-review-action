@@ -1,6 +1,7 @@
 import { orderAgents } from "../attempts";
 import { renderBrief } from "../briefs";
 import {
+  type AccessRefusalInfo,
   type ActionContext,
   type ActionResult,
   briefTitle,
@@ -11,7 +12,7 @@ import {
   repoUrl,
 } from "../context";
 import { CONTRACTS } from "../contracts";
-import { countFailingChecks } from "../github/ci";
+import { checkSnapshot } from "../github/ci";
 import { isAncestor } from "../github/commits";
 import { buildDiffIndex, excerptFor, isRangeInDiff } from "../github/diff";
 import { httpStatus } from "../github/octokit";
@@ -77,12 +78,13 @@ export async function runReview(ctx: ActionContext, prNumber: number): Promise<A
     return makeResult("review", { status: "skipped", summary: `No review: ${skip}.` });
   }
 
-  const [files, diff, sticky, failingChecks] = await Promise.all([
+  const [files, diff, sticky, checks] = await Promise.all([
     loadChangedFiles(gh, repo, pr.number),
     loadDiff(gh, repo, pr.number),
     findSticky(gh, repo, pr.number),
-    countFailingChecks(gh, repo, pr.headSha, log),
+    checkSnapshot(gh, repo, pr.headSha, log),
   ]);
+  const failingChecks = checks.failing;
   const previous = sticky?.state ?? null;
   const marker = sticky?.marker ?? null;
 
@@ -108,6 +110,7 @@ export async function runReview(ctx: ActionContext, prNumber: number): Promise<A
     textAttachment("pr.diff", diff.diff, "text/x-diff"),
   ];
   if (inputs.instructions) attachments.push(textAttachment("instructions.md", inputs.instructions, "text/markdown"));
+  if (checks.checks.length > 0) attachments.push(jsonAttachment("checks.json", checks.checks));
   const previousFindings = previous?.findings ?? [];
   if (previousFindings.length > 0) {
     attachments.push(
@@ -447,6 +450,38 @@ export function reviewScope(lastSha: string | null, sinceSha: string | null, hea
     return `The commit of the last review (${lastSha}) is no longer in the history of this pull request (a force-push or a rebase): review the whole pull request again.`;
   }
   return "This is the first review of this pull request.";
+}
+
+/**
+ * Archestra refused the job's GitHub Actions sign-in. A review event says why in the review
+ * comment, so the author knows what to do; a pull request that is never reviewed (a draft, a bot's)
+ * gets nothing. Only a failed sign-in fails the job; a refusal is a skip.
+ */
+export async function refuseAccess(
+  ctx: ActionContext,
+  trigger: { kind: string; prNumber?: number },
+  refusal: AccessRefusalInfo,
+): Promise<ActionResult> {
+  const summary = `No Archestra review: ${refusal.message}`;
+  ctx.log.warning(summary);
+  // Someone other than the author started the run (a push to their branch, a bot updating it): the
+  // author's next push gets the review, so the comment says nothing.
+  if (refusal.reason === "not_author") return makeResult(trigger.kind, { status: "skipped", summary });
+  const failure = refusal.reason === "unavailable" ? failureForError(ctx, summary) : null;
+  const status = refusal.reason === "unavailable" ? "unavailable" : "unauthorized";
+  if (trigger.kind !== "review" || trigger.prNumber === undefined || ctx.inputs.post === "none") {
+    return makeResult(trigger.kind, { status, failure, summary });
+  }
+  try {
+    const pr = await loadPullRequest(ctx.gh, ctx.repo, trigger.prNumber);
+    if (skipReason(pr)) return makeResult("review", { status: "skipped", summary: `No review: ${skipReason(pr)}.` });
+    await updateSticky(ctx, pr, (state) => {
+      state.notice = `No review of \`${shortSha(pr.headSha)}\`: ${refusal.message}`;
+    });
+  } catch (error) {
+    ctx.log.warning(`Could not say in the review comment why there is no review: ${errorMessage(error)}`);
+  }
+  return makeResult("review", { status, failure, summary });
 }
 
 /** About 60 words for a small change, up to 300 for a large one. */

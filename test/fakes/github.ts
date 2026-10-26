@@ -75,6 +75,8 @@ export class FakeGitHub {
   readonly reviewComments = new Map<number, FakeReviewComment>();
   readonly reviews: Array<{ body: string; commit_id: string; event: string; comments: unknown[] }> = [];
   readonly resolved = new Set<number>();
+  /** Comments another identity wrote: editing them is forbidden, as GitHub does for another App's comment. */
+  readonly foreignComments = new Set<number>();
   /** The ids of the reviews the action dismissed. */
   readonly dismissed: number[] = [];
   /** Review comments whose lines changed after they were written (GitHub's isOutdated). */
@@ -152,9 +154,16 @@ export class FakeGitHub {
         if (body.includes("<!-- archestra-code-review ")) this.stickyHistory.push(body);
         return HttpResponse.json(this.commentJson(comment), { status: 201 });
       }),
+      http.get(`${base}/issues/comments/:id`, ({ params }) => {
+        const comment = this.comments.get(Number(params.id));
+        return comment ? HttpResponse.json(this.commentJson(comment)) : notFound();
+      }),
       http.patch(`${base}/issues/comments/:id`, async ({ request, params }) => {
         const comment = this.comments.get(Number(params.id));
         if (!comment) return notFound();
+        if (this.foreignComments.has(comment.id)) {
+          return HttpResponse.json({ message: "Resource not accessible by integration" }, { status: 403 });
+        }
         comment.body = ((await request.json()) as { body: string }).body;
         if (comment.body.includes("<!-- archestra-code-review ")) this.stickyHistory.push(comment.body);
         return HttpResponse.json(this.commentJson(comment));

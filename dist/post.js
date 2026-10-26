@@ -44862,9 +44862,10 @@ function readInputs(get, readFile) {
       `Input "archestra-gateway-url" must be the MCP gateway endpoint, for example https://archestra.example.com/v1/mcp/code-review.`
     );
   }
-  const actorToken = value("archestra-token");
-  const fallbackToken = value("fallback-token");
-  const tokenSource = actorToken ? "actor" : fallbackToken ? "fallback" : null;
+  const archestraAuth = oneOf("archestra-auth", value("archestra-auth") || "token", ["token", "github-actions"]);
+  const actorToken = archestraAuth === "token" ? value("archestra-token") : "";
+  const fallbackToken = archestraAuth === "token" ? value("fallback-token") : "";
+  const tokenSource = archestraAuth === "github-actions" ? "github-actions" : actorToken ? "actor" : fallbackToken ? "fallback" : null;
   let agents = agentList("agents", required2("agents"));
   const fallbackAgents = value("fallback-agents");
   if (tokenSource === "fallback" && fallbackAgents) agents = agentList("fallback-agents", fallbackAgents);
@@ -44890,6 +44891,7 @@ function readInputs(get, readFile) {
     gatewayUrl,
     token: actorToken || fallbackToken,
     tokenSource,
+    archestraAuth,
     agents,
     strategy: oneOf("strategy", value("strategy") || "rotate", ["rotate", "ordered", "random"]),
     retries: integer2("retries", value("retries") || "1", 0, 5),
@@ -44952,15 +44954,6 @@ function commandPrefix(raw) {
   }
   return raw;
 }
-
-// src/run-attempt.ts
-var MAX_WORKSPACE_FILE_BYTES = 4 * 1024 * 1024;
-
-// src/github/pr.ts
-var MAX_DIFF_BYTES = 5 * 1024 * 1024;
-
-// src/github/sticky.ts
-import { createHash } from "node:crypto";
 
 // src/contracts.ts
 var sha = external_exports.string().regex(/^[0-9a-f]{40}$/, "must be a full 40-character lowercase commit SHA");
@@ -45047,8 +45040,24 @@ var CiMainFixSchema = external_exports.object({
   root_cause: external_exports.string().max(4e3).optional(),
   reproduction: external_exports.string().min(1).max(4e3)
 });
+var ProgressFileSchema = external_exports.object({
+  sha: external_exports.string(),
+  steps: external_exports.array(
+    external_exports.object({
+      title: external_exports.string().min(1).max(200),
+      status: external_exports.enum(["todo", "doing", "done"])
+    })
+  ).max(20)
+});
+
+// src/run-attempt.ts
+var MAX_WORKSPACE_FILE_BYTES = 4 * 1024 * 1024;
+
+// src/github/pr.ts
+var MAX_DIFF_BYTES = 5 * 1024 * 1024;
 
 // src/github/sticky.ts
+import { createHash } from "node:crypto";
 var MARKER_PATTERN = /<!-- archestra-code-review (\S+?)#(\d+)((?: [a-z]+=\S*)*) -->/;
 var MARKER_VALUE = /^[\w.-]{1,100}$/;
 function serializeMarker(marker) {
@@ -45200,7 +45209,9 @@ var ProgressSchema = external_exports.object({
   workflowRunUrl: external_exports.string(),
   /** The current step: "starting a run on agent 1 of 2", "waiting for the run". */
   step: external_exports.string().max(300).nullable(),
-  runUrl: external_exports.string().nullable()
+  runUrl: external_exports.string().nullable(),
+  /** The runtime's own plan, from its progress file; empty until it writes one. */
+  checklist: external_exports.array(external_exports.object({ title: external_exports.string(), status: external_exports.enum(["todo", "doing", "done"]) })).max(20).default([])
 });
 var LastJobSchema = external_exports.object({
   /** What the job did, in a few words: "reviewed", "applied 2 findings". */
@@ -45381,12 +45392,23 @@ function renderHeader(state, context3) {
       `**Archestra is ${oneLine(progress.doing, 200)} for @${progress.login}\u2026** ${progressImage(context3)} \u2014\u2014 [View job](${progress.workflowRunUrl})`,
       ""
     ];
-    const step = progress.step ? oneLine(progress.step, 300) : null;
-    if (step || progress.runUrl) {
-      lines.push(
-        [step ? `- ${step}` : "- Working.", progress.runUrl ? `([run](${progress.runUrl}))` : ""].join(" ").trim(),
-        ""
-      );
+    if (progress.checklist.length > 0) {
+      for (const item of progress.checklist) {
+        const title = checklistTitle(item.title);
+        lines.push(
+          item.status === "done" ? `- [x] ${title}` : `- [ ] ${item.status === "doing" ? `**${title}**` : title}`
+        );
+      }
+      lines.push("");
+      if (progress.runUrl) lines.push(`[Run](${progress.runUrl})`, "");
+    } else {
+      const step = progress.step ? oneLine(progress.step, 300) : null;
+      if (step || progress.runUrl) {
+        lines.push(
+          [step ? `- ${step}` : "- Working.", progress.runUrl ? `([run](${progress.runUrl}))` : ""].join(" ").trim(),
+          ""
+        );
+      }
     }
     if (state.status === "reviewed" && state.verdict && state.reviewedSha) {
       lines.push(`_The result below is from the review of \`${shortSha(state.reviewedSha)}\`._`, "");
@@ -45614,6 +45636,9 @@ function findingSection(state, context3, finding) {
   );
   return lines;
 }
+function checklistTitle(text) {
+  return marginLine(text.replace(/[[\]]/g, "").replace(/@/g, "@\u2060").replace(/:\/\//g, ":/\u2060/"), 120);
+}
 function paragraphs(text) {
   return escapeHtml(text.trim());
 }
@@ -45749,6 +45774,7 @@ function formatDuration(ms) {
 }
 async function findSticky(gh, repo, pr) {
   const prefix2 = markerPrefix(repo, pr);
+  let found = null;
   for await (const page of gh.paginate.iterator(gh.rest.issues.listComments, {
     ...repo,
     issue_number: pr,
@@ -45760,15 +45786,22 @@ async function findSticky(gh, repo, pr) {
       if (comment.user && !isBotUser(comment.user)) continue;
       const marker = parseMarker(body);
       if (!marker) continue;
-      return { id: comment.id, body, marker, state: parseState(body), author: comment.user?.login ?? null };
+      found = { id: comment.id, body, marker, state: parseState(body), author: comment.user?.login ?? null };
     }
   }
-  return null;
+  return found;
 }
-async function writeSticky(gh, repo, pr, existingId, body) {
-  if (existingId !== null) {
-    await gh.rest.issues.updateComment({ ...repo, comment_id: existingId, body });
-    return existingId;
+async function writeSticky(gh, repo, pr, existing, body, takeOverFrom = null) {
+  const current = typeof existing === "number" ? { id: existing, author: null } : existing;
+  if (current !== null) {
+    try {
+      await gh.rest.issues.updateComment({ ...repo, comment_id: current.id, body });
+      return current.id;
+    } catch (error63) {
+      const status = httpStatus(error63);
+      const foreign = status === 403 && takeOverFrom !== null && current.author === takeOverFrom;
+      if (status !== 404 && !foreign) throw error63;
+    }
   }
   const { data } = await gh.rest.issues.createComment({ ...repo, issue_number: pr, body });
   return data.id;
@@ -45826,7 +45859,13 @@ async function recordStoppedJob(p) {
       attempts: [],
       durationMs
     });
-    await writeSticky(gh, repo, job.pr, sticky.id, renderSticky(state, { ...p.render, marker: sticky.marker }));
+    await writeSticky(
+      gh,
+      repo,
+      job.pr,
+      { id: sticky.id, author: sticky.author },
+      renderSticky(state, { ...p.render, marker: sticky.marker })
+    );
     return outcome;
   } catch (error63) {
     log2.warning(
@@ -45847,7 +45886,7 @@ async function post() {
   if (getState("done") === "true") return;
   const runId = getState("live-run-id");
   const gatewayUrl = getInput("archestra-gateway-url");
-  const token = getInput("archestra-token") || getInput("fallback-token");
+  const token = getState("archestra-token") || getInput("archestra-token") || getInput("fallback-token");
   if (runId && gatewayUrl && token) {
     setSecret(token);
     const client = new ArchestraClient({ gatewayUrl, token, requestTimeoutMs: 2e4 });
@@ -45859,10 +45898,11 @@ async function post() {
     (name) => getInput(name),
     (path) => readFileSync2(path, "utf8")
   );
-  setSecret(inputs.githubToken);
+  const githubToken = getState("github-token") || inputs.githubToken;
+  setSecret(githubToken);
   const environment = readEnvironment(process.env, (path) => readFileSync2(path, "utf8"));
   await recordStoppedJob({
-    gh: createOctokit(inputs.githubToken, { baseUrl: environment.apiUrl, retryDelaysMs: [1e3] }),
+    gh: createOctokit(githubToken, { baseUrl: environment.apiUrl, retryDelaysMs: [1e3] }),
     repo: environment.repo,
     job,
     render: {

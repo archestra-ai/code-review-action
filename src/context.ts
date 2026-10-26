@@ -1,5 +1,6 @@
 import type { z } from "zod";
 import type { ArchestraClient } from "./archestra/client";
+import type { AccessRefusal } from "./archestra/github-actions-auth";
 import { type AttemptRecord, type FallbackResult, type ProgressReporter, runWithFallback } from "./attempts";
 import type { Octokit } from "./github/octokit";
 import type { Inputs } from "./inputs";
@@ -31,7 +32,24 @@ export interface ActionContext {
   saveJob: (job: SavedJob) => void;
   /** True once the runner canceled the job: no new run starts, and nothing more is written. */
   isStopping: () => boolean;
+  /**
+   * Signs in with the job's GitHub Actions identity ("archestra-auth: github-actions"): a context
+   * with the pull request author's Archestra token and the review App's GitHub token, or why
+   * Archestra refused.
+   */
+  signIn: () => Promise<{ ok: true; ctx: ActionContext } | { ok: false; refusal: AccessRefusalInfo }>;
+  /** True when `gh` is a GitHub App's token from the sign-in, not the workflow's token. */
+  appIdentity: boolean;
+  /** The review comment found earlier in this job, so later updates read it with one request. */
+  cache: { stickyId: number | null };
   startedAt: number;
+}
+
+export interface AccessRefusalInfo {
+  reason: AccessRefusal;
+  /** Archestra's explanation, written for the pull request author. */
+  message: string;
+  login: string | null;
 }
 
 export type ActionStatus =
@@ -143,6 +161,7 @@ export async function launch<T>(
           if (runId && p.progress) void p.progress.running(ctx.archestra.runUrl(runId));
         },
         readResult: (runId) => readContract(ctx.archestra, runId, p.contract.file, p.contract.schema),
+        onPoll: p.progress?.poll,
         start: async () => {
           if (ctx.isStopping()) throw new Error("The job was canceled; no new run starts.");
           if (p.credentialToken) {

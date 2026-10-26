@@ -27,8 +27,8 @@ async function post(): Promise<void> {
   if (core.getState("done") === "true") return;
   const runId = core.getState("live-run-id");
   const gatewayUrl = core.getInput("archestra-gateway-url");
-  // The same choice as the main step: the actor's token, else the fallback.
-  const token = core.getInput("archestra-token") || core.getInput("fallback-token");
+  // The same choice as the main step: the token of the GitHub Actions sign-in, the actor's token, else the fallback.
+  const token = core.getState("archestra-token") || core.getInput("archestra-token") || core.getInput("fallback-token");
   if (runId && gatewayUrl && token) {
     core.setSecret(token);
     const client = new ArchestraClient({ gatewayUrl, token, requestTimeoutMs: 20_000 });
@@ -41,10 +41,12 @@ async function post(): Promise<void> {
     (name) => core.getInput(name),
     (path) => readFileSync(path, "utf8"),
   );
-  core.setSecret(inputs.githubToken);
+  // After a GitHub Actions sign-in, write as the review App, the identity of the review comment.
+  const githubToken = core.getState("github-token") || inputs.githubToken;
+  core.setSecret(githubToken);
   const environment = readEnvironment(process.env, (path) => readFileSync(path, "utf8"));
   await recordStoppedJob({
-    gh: createOctokit(inputs.githubToken, { baseUrl: environment.apiUrl, retryDelaysMs: [1_000] }),
+    gh: createOctokit(githubToken, { baseUrl: environment.apiUrl, retryDelaysMs: [1_000] }),
     repo: environment.repo,
     job,
     render: {

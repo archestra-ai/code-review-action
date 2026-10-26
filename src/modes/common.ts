@@ -1,5 +1,6 @@
 import type { AttemptRecord, ProgressReporter } from "../attempts";
 import { type ActionContext, type ActionResult, makeResult, repoUrl } from "../context";
+import { PROGRESS_FILE, ProgressFileSchema } from "../contracts";
 import { type AuthorIdentity, userIdentity } from "../github/commits";
 import type { Sender, TriggerSource } from "../github/event";
 import { hasWriteAccess } from "../github/permissions";
@@ -10,10 +11,12 @@ import {
   emptyState,
   findSticky,
   type LastJob,
+  readSticky,
   renderSticky,
   type StickyComment,
   type StickyMarker,
   type StickyState,
+  WORKFLOW_TOKEN_LOGIN,
   writeSticky,
 } from "../github/sticky";
 import type { Inputs } from "../inputs";
@@ -141,7 +144,9 @@ export async function updateSticky(
   pr: Pick<PullRequestInfo, "number" | "baseRef">,
   mutate: (state: StickyState, marker: StickyMarker) => void,
 ): Promise<number> {
-  const sticky = await findSticky(ctx.gh, ctx.repo, pr.number);
+  // The comment found earlier in this job is read with one request; the listing is the fallback.
+  const cached = ctx.cache.stickyId === null ? null : await readSticky(ctx.gh, ctx.repo, pr.number, ctx.cache.stickyId);
+  const sticky = cached ?? (await findSticky(ctx.gh, ctx.repo, pr.number));
   // A canceled job records itself once, from the signal handler; the work still in flight writes nothing.
   if (ctx.isStopping()) return sticky?.id ?? 0;
   const state = sticky?.state ?? emptyState(pr.baseRef);
@@ -160,7 +165,16 @@ export async function updateSticky(
     command: commentCommand(ctx.inputs),
     progressImageUrl: ctx.progressImageUrl,
   });
-  return writeSticky(ctx.gh, ctx.repo, pr.number, sticky?.id ?? null, body);
+  const id = await writeSticky(
+    ctx.gh,
+    ctx.repo,
+    pr.number,
+    sticky ? { id: sticky.id, author: sticky.author } : null,
+    body,
+    ctx.appIdentity ? WORKFLOW_TOKEN_LOGIN : null,
+  );
+  ctx.cache.stickyId = id;
+  return id;
 }
 
 /**
@@ -192,6 +206,7 @@ export async function startProgress(
       workflowRunUrl: ctx.workflowRunUrl,
       step: "preparing the inputs",
       runUrl: null,
+      checklist: [],
     };
   });
 }
@@ -206,12 +221,15 @@ export async function stepProgress(
   step: string,
   /** The run the step belongs to; null drops the previous run's link. */
   runUrl: string | null = null,
+  /** True when the step leaves the run behind (a retry, the next agent): its plan goes too. */
+  clearChecklist = false,
 ): Promise<void> {
   try {
     await updateSticky(ctx, pr, (state) => {
       if (!state.progress) return;
       state.progress.step = step;
       state.progress.runUrl = runUrl;
+      if (clearChecklist) state.progress.checklist = [];
     });
   } catch (error) {
     ctx.log.debug(`Could not update the progress: ${errorMessage(error)}`);
@@ -264,15 +282,63 @@ export function recordJob(
   });
 }
 
-/** A step reporter for the attempt runner: each run start and state change updates the comment. */
+/** How often the runtime's progress file is read while a run works. */
+export const PROGRESS_READ_INTERVAL_MS = 30_000;
+
+/**
+ * A step reporter for the attempt runner: each run start and state change updates the comment.
+ * While a run works, the runtime's progress file (its plan as a checklist) is read every 30 s and
+ * shown when it changed. A file of an earlier turn names another commit and is ignored.
+ */
 export function progressReporter(ctx: ActionContext, pr: PullRequestInfo, total: number): ProgressReporter {
+  let lastRead = Number.NEGATIVE_INFINITY;
+  let shown = "";
   return {
-    attempt: (index, agentId) =>
-      stepProgress(ctx, pr, `starting a run on agent ${index + 1} of ${total} (\`${agentId.slice(0, 8)}\`)`),
+    poll: async (runId) => {
+      if (ctx.clock.now() - lastRead < PROGRESS_READ_INTERVAL_MS) return;
+      lastRead = ctx.clock.now();
+      const data = await ctx.archestra.readWorkspaceFile(runId, PROGRESS_FILE);
+      if (!data) return;
+      let parsed: ReturnType<typeof ProgressFileSchema.safeParse>;
+      try {
+        parsed = ProgressFileSchema.safeParse(JSON.parse(data.toString("utf8")));
+      } catch {
+        return;
+      }
+      if (!parsed.success || parsed.data.sha !== pr.headSha || parsed.data.steps.length === 0) return;
+      const checklist = parsed.data.steps;
+      const key = JSON.stringify(checklist);
+      if (key === shown) return;
+      shown = key;
+      await updateSticky(ctx, pr, (state) => {
+        if (state.progress?.workflowRunUrl === ctx.workflowRunUrl) state.progress.checklist = checklist;
+      });
+    },
+    attempt: (index, agentId) => {
+      shown = "";
+      return stepProgress(
+        ctx,
+        pr,
+        `starting a run on agent ${index + 1} of ${total} (\`${agentId.slice(0, 8)}\`)`,
+        null,
+        true,
+      );
+    },
     running: (runUrl) => stepProgress(ctx, pr, "waiting for the runtime to finish", runUrl),
-    retry: (delayMs) =>
-      stepProgress(ctx, pr, `the run failed; trying the same agent again in ${Math.round(delayMs / 1000)} s`),
-    next: () => stepProgress(ctx, pr, "the run failed; moving to the next agent"),
+    retry: (delayMs) => {
+      shown = "";
+      return stepProgress(
+        ctx,
+        pr,
+        `the run failed; trying the same agent again in ${Math.round(delayMs / 1000)} s`,
+        null,
+        true,
+      );
+    },
+    next: () => {
+      shown = "";
+      return stepProgress(ctx, pr, "the run failed; moving to the next agent", null, true);
+    },
   };
 }
 

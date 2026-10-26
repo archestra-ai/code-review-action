@@ -11,8 +11,13 @@ export interface Inputs {
   gatewayUrl: string;
   /** The platform token that the runs act as; "" when the actor has none. */
   token: string;
-  /** "actor": the actor's own token. "fallback": a shared token. */
-  tokenSource: "actor" | "fallback" | null;
+  /**
+   * "actor": the actor's own token. "fallback": a shared token. "github-actions": the job signs in
+   * with its GitHub Actions identity, and Archestra returns a token of the pull request author.
+   */
+  tokenSource: "actor" | "fallback" | "github-actions" | null;
+  /** "token": the "archestra-token" input. "github-actions": sign in with the job's identity. */
+  archestraAuth: "token" | "github-actions";
   agents: string[];
   strategy: Strategy;
   retries: number;
@@ -76,9 +81,12 @@ export function readInputs(get: (name: string) => string, readFile: (path: strin
       `Input "archestra-gateway-url" must be the MCP gateway endpoint, for example https://archestra.example.com/v1/mcp/code-review.`,
     );
   }
-  const actorToken = value("archestra-token");
-  const fallbackToken = value("fallback-token");
-  const tokenSource = actorToken ? "actor" : fallbackToken ? "fallback" : null;
+  const archestraAuth = oneOf("archestra-auth", value("archestra-auth") || "token", ["token", "github-actions"]);
+  // With the job's identity, the token comes from the sign-in, not from an input.
+  const actorToken = archestraAuth === "token" ? value("archestra-token") : "";
+  const fallbackToken = archestraAuth === "token" ? value("fallback-token") : "";
+  const tokenSource =
+    archestraAuth === "github-actions" ? "github-actions" : actorToken ? "actor" : fallbackToken ? "fallback" : null;
 
   let agents = agentList("agents", required("agents"));
   const fallbackAgents = value("fallback-agents");
@@ -112,6 +120,7 @@ export function readInputs(get: (name: string) => string, readFile: (path: strin
     gatewayUrl,
     token: actorToken || fallbackToken,
     tokenSource,
+    archestraAuth,
     agents,
     strategy: oneOf("strategy", value("strategy") || "rotate", ["rotate", "ordered", "random"]),
     retries: integer("retries", value("retries") || "1", 0, 5),

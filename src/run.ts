@@ -3,10 +3,11 @@ import { detectTrigger } from "./github/event";
 import { runFix } from "./modes/fix";
 import { runFixCi } from "./modes/fix-ci";
 import { runFixCiMain } from "./modes/fix-ci-main";
-import { runReview } from "./modes/review";
+import { refuseAccess, runReview } from "./modes/review";
 
 /** Detects the mode from the event (or the "mode" input) and runs it. */
-export async function run(ctx: ActionContext): Promise<ActionResult> {
+export async function run(initial: ActionContext): Promise<ActionResult> {
+  let ctx = initial;
   const trigger = detectTrigger(ctx.eventName, ctx.payload, {
     command: ctx.inputs.fixCommand,
     mode: ctx.inputs.mode,
@@ -15,6 +16,17 @@ export async function run(ctx: ActionContext): Promise<ActionResult> {
   if (trigger.kind === "skip") {
     ctx.log.info(`Nothing to do: ${trigger.reason}.`);
     return makeResult("none", { status: "skipped", summary: `Nothing to do: ${trigger.reason}.` });
+  }
+  if (ctx.inputs.archestraAuth === "github-actions") {
+    // The sign-in gives the pull request author's token: it serves reviews only.
+    if (trigger.kind !== "review") {
+      const message = 'Comment commands need "archestra-auth: token": the GitHub Actions sign-in serves reviews only.';
+      ctx.log.warning(message);
+      return makeResult(trigger.kind, { status: "skipped", summary: message });
+    }
+    const signed = await ctx.signIn();
+    if (!signed.ok) return refuseAccess(ctx, trigger, signed.refusal);
+    ctx = signed.ctx;
   }
   if (!ctx.inputs.token) {
     // Runs act as the person who caused them; without that person's token

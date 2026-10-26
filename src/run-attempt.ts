@@ -8,6 +8,7 @@ import {
 } from "./archestra/client";
 import type { AttemptOutcome, AttemptRecord } from "./attempts";
 import { type Classification, classifyApiError, classifyRun } from "./classify";
+import { PROGRESS_FILE } from "./contracts";
 import { type Attachment, errorMessage, type Logger } from "./util";
 
 export interface Clock {
@@ -52,6 +53,8 @@ export async function executeAttempt<T>(p: {
   clock: Clock;
   log: Logger;
   onLive: (runId: string | null) => void;
+  /** Called after each poll that finds the run still working; its errors are ignored. */
+  onPoll?: (runId: string) => Promise<void>;
 }): Promise<AttemptOutcome<AttemptValue<T>>> {
   const { client, clock, log } = p;
   const startedAt = clock.now();
@@ -135,6 +138,13 @@ export async function executeAttempt<T>(p: {
       lastState = run.state;
     }
     if (isTerminalState(run.state)) break;
+    if (p.onPoll) {
+      try {
+        await p.onPoll(liveRunId);
+      } catch (error) {
+        log.debug(`Progress update failed: ${errorMessage(error)}`);
+      }
+    }
   }
 
   if (run.state !== "completed") {
@@ -282,6 +292,8 @@ export async function continueRun(p: {
       await p.client.writeWorkspaceFile(p.runId, names[index] as string, Buffer.from(file.contentBase64, "base64"));
     }
     await p.client.writeWorkspaceFile(p.runId, p.resultFile, Buffer.from(`${JSON.stringify(PENDING_RESULT)}\n`));
+    // The plan of the turn before must not show as this turn's progress, also on the same commit.
+    await p.client.writeWorkspaceFile(p.runId, PROGRESS_FILE, Buffer.from("{}\n"));
     const message =
       names.length > 0
         ? `${p.message}\n\nAttached files are available for this run:\n${names.map((name) => `- ${WORKSPACE_ROOT}/${name}`).join("\n")}`
