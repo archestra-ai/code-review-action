@@ -1,10 +1,5 @@
-# Reusable job workflow for archestra-runtime-review.yml. Copy it to
-# .github/workflows/archestra-runtime-review-run.yml in the same repository.
-#
-# The calling job passes only the secrets that this job needs: the actor's
-# Archestra token and, for fixes, the GitHub App key. This job never gets
-# the rest of the repository's secrets. Its GITHUB_TOKEN permissions come
-# from the calling job, so a review gets no "actions" permission.
+# Reusable job workflow for archestra-runtime-review.yml.
+# Receives only the secrets needed for this job: the actor's Archestra token and (for fixes) GitHub App credentials.
 name: Archestra Runtime Review Run
 
 on:
@@ -59,8 +54,7 @@ jobs:
       pull-requests: write
       actions: read
     steps:
-      # No token for this actor: skip the review, do not fail the job. The
-      # person creates a platform token and stores it as their secret.
+      # Skip if no token is configured for this actor.
       - name: Check the actor's Archestra token
         id: token
         env:
@@ -105,11 +99,7 @@ jobs:
           retries: 1
           timeout-minutes: 30
           fail-on: never
-          # Private repository: the runtime clones with this token. Mint one
-          # that can only read contents (the step above with
-          # permission-contents: read), or store a fine-grained token; the
-          # job token also carries pull-requests: write. Remove the line for
-          # a public repository.
+          # Read-only token for private repo clone. Remove for public repositories.
           clone-token: ${{ steps.clone-token.outputs.token }}
           fix-token: ${{ steps.app-token.outputs.token }}
           fix-timeout-minutes: 45
