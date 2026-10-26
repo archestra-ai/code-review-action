@@ -1002,10 +1002,14 @@ function pathCell(file: string): string {
   return cell(file, 120).replace(/[`[\]]/g, "'");
 }
 
-/** A table cell: one line, no stray backtick, pipes escaped. */
-function cell(text: string, max: number): string {
+/**
+ * A table cell: one line, no stray backtick, pipes escaped. GitHub reads `\\` as an escaped
+ * backslash, so a backslash run before a pipe is doubled first: the pipe stays escaped and the cell
+ * does not split.
+ */
+export function cell(text: string, max: number): string {
   const line = balanceBackticks(truncate(text.replace(/\s+/g, " ").trim(), max));
-  return escapeHtml(line, { fences: false }).replace(/\|/g, "\\|");
+  return escapeHtml(line, { fences: false }).replace(/(\\*)\|/g, (_, slashes: string) => `${slashes}${slashes}\\|`);
 }
 
 function oneLine(text: string, max: number): string {

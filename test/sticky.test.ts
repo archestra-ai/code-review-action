@@ -8,6 +8,7 @@ import { detectTrigger } from "../src/github/event";
 import { inlineBody, linkPrevious, placeFindings } from "../src/github/review";
 import {
   balanceBackticks,
+  cell,
   codeLanguage,
   emptyState,
   escapeHtml,
@@ -231,6 +232,14 @@ describe("sticky state and rendering", () => {
     );
     expect(rendered).toContain(`- ${"r".repeat(199)}…\n`);
     expect(rendered).toContain(`- ${"o".repeat(599)}…\n`);
+  });
+
+  it("keeps a pipe after a backslash escaped, so a cell cannot split", () => {
+    expect(cell("a | b", 50)).toBe("a \\| b");
+    // `\\` is an escaped backslash for GitHub: the pipe after it would end the cell.
+    expect(cell("a \\| b", 50)).toBe("a \\\\\\| b");
+    expect(cell("a \\\\| b", 50)).toBe("a \\\\\\\\\\| b");
+    expect(cell("C:\\path", 50)).toBe("C:\\path");
   });
 
   it("shows no commands when no workflow listens to them", () => {

@@ -45738,7 +45738,7 @@ function pathCell(file2) {
 }
 function cell(text, max) {
   const line = balanceBackticks(truncate(text.replace(/\s+/g, " ").trim(), max));
-  return escapeHtml(line, { fences: false }).replace(/\|/g, "\\|");
+  return escapeHtml(line, { fences: false }).replace(/(\\*)\|/g, (_, slashes) => `${slashes}${slashes}\\|`);
 }
 function oneLine(text, max) {
   return escapeHtml(truncate(text.replace(/\s+/g, " ").trim(), max));

@@ -236,25 +236,29 @@ export async function postReview(
     });
     return data.id;
   };
+  let rejection: unknown;
   try {
     return { posted: true, reviewId: await create(event, params.comments) };
   } catch (error) {
     if (httpStatus(error) !== 422) throw error;
-    // GitHub refuses a change request on a pull request that the token's identity opened; post the
-    // same comments as a comment review.
-    if (event !== "COMMENT") {
-      params.log.warning(`GitHub refused the change request; posting a comment review: ${errorMessage(error)}`);
-      if (params.comments.length === 0) return { posted: true, reviewId: null };
-      try {
-        return { posted: true, reviewId: await create("COMMENT", params.comments) };
-      } catch (retryError) {
-        if (httpStatus(retryError) !== 422) throw retryError;
-        error = retryError;
-      }
-    }
-    params.log.warning(`GitHub rejected the inline comments; the findings go into the summary: ${errorMessage(error)}`);
-    return { posted: false, reviewId: null };
+    rejection = error;
   }
+  // GitHub refuses a change request on a pull request that the token's identity opened; post the
+  // same comments as a comment review.
+  if (event !== "COMMENT") {
+    params.log.warning(`GitHub refused the change request; posting a comment review: ${errorMessage(rejection)}`);
+    if (params.comments.length === 0) return { posted: true, reviewId: null };
+    try {
+      return { posted: true, reviewId: await create("COMMENT", params.comments) };
+    } catch (error) {
+      if (httpStatus(error) !== 422) throw error;
+      rejection = error;
+    }
+  }
+  params.log.warning(
+    `GitHub rejected the inline comments; the findings go into the summary: ${errorMessage(rejection)}`,
+  );
+  return { posted: false, reviewId: null };
 }
 
 /**

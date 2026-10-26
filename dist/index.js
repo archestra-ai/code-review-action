@@ -46554,7 +46554,7 @@ function pathCell(file2) {
 }
 function cell(text, max) {
   const line = balanceBackticks(truncate(text.replace(/\s+/g, " ").trim(), max));
-  return escapeHtml(line, { fences: false }).replace(/\|/g, "\\|");
+  return escapeHtml(line, { fences: false }).replace(/(\\*)\|/g, (_, slashes) => `${slashes}${slashes}\\|`);
 }
 function oneLine(text, max) {
   return escapeHtml(truncate(text.replace(/\s+/g, " ").trim(), max));
@@ -47913,23 +47913,27 @@ ${REVIEW_MARKER}`,
     });
     return data.id;
   };
+  let rejection;
   try {
     return { posted: true, reviewId: await create(event, params.comments) };
   } catch (error63) {
     if (httpStatus(error63) !== 422) throw error63;
-    if (event !== "COMMENT") {
-      params.log.warning(`GitHub refused the change request; posting a comment review: ${errorMessage(error63)}`);
-      if (params.comments.length === 0) return { posted: true, reviewId: null };
-      try {
-        return { posted: true, reviewId: await create("COMMENT", params.comments) };
-      } catch (retryError) {
-        if (httpStatus(retryError) !== 422) throw retryError;
-        error63 = retryError;
-      }
-    }
-    params.log.warning(`GitHub rejected the inline comments; the findings go into the summary: ${errorMessage(error63)}`);
-    return { posted: false, reviewId: null };
+    rejection = error63;
   }
+  if (event !== "COMMENT") {
+    params.log.warning(`GitHub refused the change request; posting a comment review: ${errorMessage(rejection)}`);
+    if (params.comments.length === 0) return { posted: true, reviewId: null };
+    try {
+      return { posted: true, reviewId: await create("COMMENT", params.comments) };
+    } catch (error63) {
+      if (httpStatus(error63) !== 422) throw error63;
+      rejection = error63;
+    }
+  }
+  params.log.warning(
+    `GitHub rejected the inline comments; the findings go into the summary: ${errorMessage(rejection)}`
+  );
+  return { posted: false, reviewId: null };
 }
 async function dismissChangeRequests(gh, repo, params) {
   let dismissed = 0;
