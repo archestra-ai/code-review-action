@@ -65,6 +65,8 @@ export interface ProgressReporter {
   running: (runUrl: string) => Promise<void>;
   retry: (delayMs: number) => Promise<void>;
   next: () => Promise<void>;
+  /** Called after each poll of a live run; may read the run's progress file. Optional. */
+  poll?: (runId: string) => Promise<void>;
 }
 
 /**

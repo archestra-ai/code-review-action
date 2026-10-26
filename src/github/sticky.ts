@@ -249,6 +249,11 @@ const ProgressSchema = z.object({
   /** The current step: "starting a run on agent 1 of 2", "waiting for the run". */
   step: z.string().max(300).nullable(),
   runUrl: z.string().nullable(),
+  /** The runtime's own plan, from its progress file; empty until it writes one. */
+  checklist: z
+    .array(z.object({ title: z.string(), status: z.enum(["todo", "doing", "done"]) }))
+    .max(20)
+    .default([]),
 });
 
 const LastJobSchema = z.object({
@@ -534,12 +539,24 @@ export function renderHeader(state: StickyState, context?: Pick<RenderContext, "
       `**Archestra is ${oneLine(progress.doing, 200)} for @${progress.login}…** ${progressImage(context)} —— [View job](${progress.workflowRunUrl})`,
       "",
     ];
-    const step = progress.step ? oneLine(progress.step, 300) : null;
-    if (step || progress.runUrl) {
-      lines.push(
-        [step ? `- ${step}` : "- Working.", progress.runUrl ? `([run](${progress.runUrl}))` : ""].join(" ").trim(),
-        "",
-      );
+    if (progress.checklist.length > 0) {
+      // The runtime's plan, ticked off as it goes; the step in progress is bold.
+      for (const item of progress.checklist) {
+        const title = marginLine(item.title, 120);
+        lines.push(
+          item.status === "done" ? `- [x] ${title}` : `- [ ] ${item.status === "doing" ? `**${title}**` : title}`,
+        );
+      }
+      lines.push("");
+      if (progress.runUrl) lines.push(`[Run](${progress.runUrl})`, "");
+    } else {
+      const step = progress.step ? oneLine(progress.step, 300) : null;
+      if (step || progress.runUrl) {
+        lines.push(
+          [step ? `- ${step}` : "- Working.", progress.runUrl ? `([run](${progress.runUrl}))` : ""].join(" ").trim(),
+          "",
+        );
+      }
     }
     // A re-review shows the last result until it finishes; say which commit that result is for.
     if (state.status === "reviewed" && state.verdict && state.reviewedSha) {

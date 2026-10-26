@@ -143,6 +143,7 @@ export async function launch<T>(
           if (runId && p.progress) void p.progress.running(ctx.archestra.runUrl(runId));
         },
         readResult: (runId) => readContract(ctx.archestra, runId, p.contract.file, p.contract.schema),
+        onPoll: p.progress?.poll,
         start: async () => {
           if (ctx.isStopping()) throw new Error("The job was canceled; no new run starts.");
           if (p.credentialToken) {

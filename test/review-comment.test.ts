@@ -138,6 +138,40 @@ describe("change requests", () => {
   });
 });
 
+describe("progress checklist", () => {
+  it("shows the runtime's plan while it works, and ignores a file of an earlier commit", async () => {
+    const harness = setup();
+    const steps = [
+      { title: "Read the diff and the changed files", status: "done" },
+      { title: "Run the backend type check", status: "doing" },
+      { title: "Write the review", status: "todo" },
+    ];
+    harness.archestra.script(AGENT_A, {
+      end: "completed",
+      polls: 4,
+      liveFiles: { "progress.json": { sha: "a".repeat(40), steps } },
+      files: { "review.json": reviewJson() },
+    });
+    await run(harness.context("pull_request", prEvent(harness.github)));
+    const withPlan = harness.github.stickyHistory.find((body) => body.includes("- [x] Read the diff"));
+    expect(withPlan).toContain(
+      "- [x] Read the diff and the changed files\n- [ ] **Run the backend type check**\n- [ ] Write the review\n",
+    );
+    // The finished comment has no checklist any more.
+    expect(harness.github.stickyBody()).not.toContain("- [x] Read the diff");
+
+    const stale = setup();
+    stale.archestra.script(AGENT_A, {
+      end: "completed",
+      polls: 4,
+      liveFiles: { "progress.json": { sha: "f".repeat(40), steps } },
+      files: { "review.json": reviewJson() },
+    });
+    await run(stale.context("pull_request", prEvent(stale.github)));
+    expect(stale.github.stickyHistory.some((body) => body.includes("Read the diff"))).toBe(false);
+  });
+});
+
 describe("review scope", () => {
   it("reviews the whole pull request again after a force-push dropped the last reviewed commit", async () => {
     const harness = setup();
@@ -234,6 +268,7 @@ describe("stopped jobs", () => {
       workflowRunUrl: "https://github.com/acme/widgets/actions/runs/99",
       step: "waiting for the runtime to finish",
       runUrl: null,
+      checklist: [],
     };
     finishProgress(ctx, state, { did: "the review of `aaaaaaa`", login: "alice", outcome: "error" });
     expect(state.progress?.workflowRunUrl).toBe("https://github.com/acme/widgets/actions/runs/99");
@@ -294,6 +329,7 @@ describe("stopped jobs", () => {
       workflowRunUrl: job.workflowRunUrl,
       step: "waiting for the runtime to finish",
       runUrl: null,
+      checklist: [],
     };
     state.jobs = [];
     const { renderSticky, parseMarker } = await import("../src/github/sticky");

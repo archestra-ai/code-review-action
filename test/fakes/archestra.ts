@@ -10,7 +10,13 @@ import { HttpResponse, http } from "msw";
 export type RunScript =
   | { start: "http"; status: number; message?: string }
   | { start: "tool-error"; text: string }
-  | { end: "completed"; files: Record<string, unknown>; polls?: number }
+  | {
+      end: "completed";
+      files: Record<string, unknown>;
+      polls?: number;
+      /** Files the run writes while it works, before it completes. */
+      liveFiles?: Record<string, unknown>;
+    }
   | { end: "failed"; statusReason: string; failure?: { code: string; retriable: boolean }; polls?: number }
   | { end: "canceled" | "rejected" | "input-required" | "auth-required"; statusReason?: string; polls?: number }
   | { end: "never" };
@@ -419,6 +425,11 @@ export class FakeArchestra {
     if (turn.ended) return;
     turn.polls++;
     const { script } = turn;
+    if (turn.polls === 1 && script.end === "completed") {
+      for (const [name, value] of Object.entries(script.liveFiles ?? {})) {
+        run.files[name] = typeof value === "string" ? value : JSON.stringify(value);
+      }
+    }
     if (script.end === "never" || turn.polls < (script.polls ?? 2)) {
       turn.state = "working";
       return;

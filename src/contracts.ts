@@ -145,6 +145,25 @@ export const CiMainFixSchema = z.object({
 });
 export type CiMainFix = z.infer<typeof CiMainFixSchema>;
 
+/**
+ * The progress file the runtime keeps up to date while it reviews: its plan as a checklist. The
+ * action shows it in the progress header. The head commit tells it apart from the file of an
+ * earlier turn in the same workspace.
+ */
+export const ProgressFileSchema = z.object({
+  sha: z.string(),
+  steps: z
+    .array(
+      z.object({
+        title: z.string().min(1).max(200),
+        status: z.enum(["todo", "doing", "done"]),
+      }),
+    )
+    .max(20),
+});
+export type ProgressFile = z.infer<typeof ProgressFileSchema>;
+export const PROGRESS_FILE = "progress.json";
+
 export const CONTRACTS = {
   review: { file: "review.json", schema: ReviewResultSchema },
   fix: { file: "fix-result.json", schema: FixResultSchema },

@@ -1,5 +1,6 @@
 import type { AttemptRecord, ProgressReporter } from "../attempts";
 import { type ActionContext, type ActionResult, makeResult, repoUrl } from "../context";
+import { PROGRESS_FILE, ProgressFileSchema } from "../contracts";
 import { type AuthorIdentity, userIdentity } from "../github/commits";
 import type { Sender, TriggerSource } from "../github/event";
 import { hasWriteAccess } from "../github/permissions";
@@ -192,6 +193,7 @@ export async function startProgress(
       workflowRunUrl: ctx.workflowRunUrl,
       step: "preparing the inputs",
       runUrl: null,
+      checklist: [],
     };
   });
 }
@@ -264,9 +266,38 @@ export function recordJob(
   });
 }
 
-/** A step reporter for the attempt runner: each run start and state change updates the comment. */
+/** How often the runtime's progress file is read while a run works. */
+export const PROGRESS_READ_INTERVAL_MS = 30_000;
+
+/**
+ * A step reporter for the attempt runner: each run start and state change updates the comment.
+ * While a run works, the runtime's progress file (its plan as a checklist) is read every 30 s and
+ * shown when it changed. A file of an earlier turn names another commit and is ignored.
+ */
 export function progressReporter(ctx: ActionContext, pr: PullRequestInfo, total: number): ProgressReporter {
+  let lastRead = Number.NEGATIVE_INFINITY;
+  let shown = "";
   return {
+    poll: async (runId) => {
+      if (ctx.clock.now() - lastRead < PROGRESS_READ_INTERVAL_MS) return;
+      lastRead = ctx.clock.now();
+      const data = await ctx.archestra.readWorkspaceFile(runId, PROGRESS_FILE);
+      if (!data) return;
+      let parsed: ReturnType<typeof ProgressFileSchema.safeParse>;
+      try {
+        parsed = ProgressFileSchema.safeParse(JSON.parse(data.toString("utf8")));
+      } catch {
+        return;
+      }
+      if (!parsed.success || parsed.data.sha !== pr.headSha || parsed.data.steps.length === 0) return;
+      const checklist = parsed.data.steps;
+      const key = JSON.stringify(checklist);
+      if (key === shown) return;
+      shown = key;
+      await updateSticky(ctx, pr, (state) => {
+        if (state.progress?.workflowRunUrl === ctx.workflowRunUrl) state.progress.checklist = checklist;
+      });
+    },
     attempt: (index, agentId) =>
       stepProgress(ctx, pr, `starting a run on agent ${index + 1} of ${total} (\`${agentId.slice(0, 8)}\`)`),
     running: (runUrl) => stepProgress(ctx, pr, "waiting for the runtime to finish", runUrl),
