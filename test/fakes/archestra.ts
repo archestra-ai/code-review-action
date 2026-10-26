@@ -17,7 +17,13 @@ export type RunScript =
       /** Files the run writes while it works, before it completes. */
       liveFiles?: Record<string, unknown>;
     }
-  | { end: "failed"; statusReason: string; failure?: { code: string; retriable: boolean }; polls?: number }
+  | {
+      end: "failed";
+      statusReason: string;
+      failure?: { code: string; retriable: boolean };
+      polls?: number;
+      liveFiles?: Record<string, unknown>;
+    }
   | { end: "canceled" | "rejected" | "input-required" | "auth-required"; statusReason?: string; polls?: number }
   | { end: "never" };
 
@@ -425,7 +431,7 @@ export class FakeArchestra {
     if (turn.ended) return;
     turn.polls++;
     const { script } = turn;
-    if (turn.polls === 1 && script.end === "completed") {
+    if (turn.polls === 1 && (script.end === "completed" || script.end === "failed")) {
       for (const [name, value] of Object.entries(script.liveFiles ?? {})) {
         run.files[name] = typeof value === "string" ? value : JSON.stringify(value);
       }

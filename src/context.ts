@@ -32,8 +32,16 @@ export interface ActionContext {
   saveJob: (job: SavedJob) => void;
   /** True once the runner canceled the job: no new run starts, and nothing more is written. */
   isStopping: () => boolean;
-  /** Why Archestra refused the job's GitHub Actions sign-in; null when it signed in, or used a token. */
-  accessRefusal: AccessRefusalInfo | null;
+  /**
+   * Signs in with the job's GitHub Actions identity ("archestra-auth: github-actions"): a context
+   * with the pull request author's Archestra token and the review App's GitHub token, or why
+   * Archestra refused.
+   */
+  signIn: () => Promise<{ ok: true; ctx: ActionContext } | { ok: false; refusal: AccessRefusalInfo }>;
+  /** True when `gh` is a GitHub App's token from the sign-in, not the workflow's token. */
+  appIdentity: boolean;
+  /** The review comment found earlier in this job, so later updates read it with one request. */
+  cache: { stickyId: number | null };
   startedAt: number;
 }
 

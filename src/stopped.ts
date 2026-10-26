@@ -76,7 +76,13 @@ export async function recordStoppedJob(p: {
       attempts: [],
       durationMs,
     });
-    await writeSticky(gh, repo, job.pr, sticky.id, renderSticky(state, { ...p.render, marker: sticky.marker }));
+    await writeSticky(
+      gh,
+      repo,
+      job.pr,
+      { id: sticky.id, author: sticky.author },
+      renderSticky(state, { ...p.render, marker: sticky.marker }),
+    );
     return outcome;
   } catch (error) {
     log.warning(

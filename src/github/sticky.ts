@@ -542,7 +542,7 @@ export function renderHeader(state: StickyState, context?: Pick<RenderContext, "
     if (progress.checklist.length > 0) {
       // The runtime's plan, ticked off as it goes; the step in progress is bold.
       for (const item of progress.checklist) {
-        const title = marginLine(item.title, 120);
+        const title = checklistTitle(item.title);
         lines.push(
           item.status === "done" ? `- [x] ${title}` : `- [ ] ${item.status === "doing" ? `**${title}**` : title}`,
         );
@@ -847,6 +847,15 @@ function findingSection(state: StickyState, context: RenderContext, finding: Sto
 }
 
 /**
+ * A checklist step the runtime wrote, as plain text: the comment is rewritten every 30 s, so a
+ * step must not mention anyone (a word joiner after `@`), link anywhere (no brackets, and `://`
+ * broken so that GitHub does not link a bare URL), or carry HTML.
+ */
+export function checklistTitle(text: string): string {
+  return marginLine(text.replace(/[[\]]/g, "").replace(/@/g, "@\u2060").replace(/:\/\//g, ":/\u2060/"), 120);
+}
+
+/**
  * A text placed at the margin as its own paragraphs: trimmed before it is escaped, so that the
  * escaper and the marker reader see the same fences (an indented fence is prose for both).
  */
@@ -1049,6 +1058,20 @@ export interface StickyComment {
   author: string | null;
 }
 
+/** Reads the review comment by its id; null when it is gone or no longer a review comment of this pull request. */
+export async function readSticky(gh: Octokit, repo: RepoRef, pr: number, id: number): Promise<StickyComment | null> {
+  try {
+    const { data } = await gh.rest.issues.getComment({ ...repo, comment_id: id });
+    const body = data.body ?? "";
+    const marker = body.includes(markerPrefix(repo, pr)) ? parseMarker(body) : null;
+    if (!marker || (data.user && !isBotUser(data.user))) return null;
+    return { id: data.id, body, marker, state: parseState(body), author: data.user?.login ?? null };
+  } catch (error) {
+    if (httpStatus(error) === 404) return null;
+    throw error;
+  }
+}
+
 /**
  * Finds the sticky comment of this pull request: the newest bot comment with the marker. A pull
  * request can have two when the action's identity changed (from the workflow token to a GitHub
@@ -1074,22 +1097,32 @@ export async function findSticky(gh: Octokit, repo: RepoRef, pr: number): Promis
   return found;
 }
 
+/** The identity that wrote review comments before a repository moved to a GitHub App. */
+export const WORKFLOW_TOKEN_LOGIN = "github-actions[bot]";
+
+/**
+ * Writes the review comment. When it is gone, a new one takes over with the same state. When it
+ * belongs to `takeOverFrom` (the workflow token, after the job moved to a GitHub App, which may not
+ * edit it), a new one takes over too; any other refusal is an error, so two identities never keep
+ * creating comments.
+ */
 export async function writeSticky(
   gh: Octokit,
   repo: RepoRef,
   pr: number,
-  existingId: number | null,
+  existing: number | { id: number; author: string | null } | null,
   body: string,
+  takeOverFrom: string | null = null,
 ): Promise<number> {
-  if (existingId !== null) {
+  const current = typeof existing === "number" ? { id: existing, author: null } : existing;
+  if (current !== null) {
     try {
-      await gh.rest.issues.updateComment({ ...repo, comment_id: existingId, body });
-      return existingId;
+      await gh.rest.issues.updateComment({ ...repo, comment_id: current.id, body });
+      return current.id;
     } catch (error) {
-      // Another identity wrote it (the workflow token before a GitHub App), or a person deleted it:
-      // a new comment takes over, with the same state.
       const status = httpStatus(error);
-      if (status !== 403 && status !== 404) throw error;
+      const foreign = status === 403 && takeOverFrom !== null && current.author === takeOverFrom;
+      if (status !== 404 && !foreign) throw error;
     }
   }
   const { data } = await gh.rest.issues.createComment({ ...repo, issue_number: pr, body });

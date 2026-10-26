@@ -469,11 +469,15 @@ export async function refuseAccess(
   if (trigger.kind !== "review" || trigger.prNumber === undefined || ctx.inputs.post === "none") {
     return makeResult(trigger.kind, { status, failure, summary });
   }
-  const pr = await loadPullRequest(ctx.gh, ctx.repo, trigger.prNumber);
-  if (skipReason(pr)) return makeResult("review", { status: "skipped", summary: `No review: ${skipReason(pr)}.` });
-  await updateSticky(ctx, pr, (state) => {
-    state.notice = `No review of \`${shortSha(pr.headSha)}\`: ${refusal.message}`;
-  });
+  try {
+    const pr = await loadPullRequest(ctx.gh, ctx.repo, trigger.prNumber);
+    if (skipReason(pr)) return makeResult("review", { status: "skipped", summary: `No review: ${skipReason(pr)}.` });
+    await updateSticky(ctx, pr, (state) => {
+      state.notice = `No review of \`${shortSha(pr.headSha)}\`: ${refusal.message}`;
+    });
+  } catch (error) {
+    ctx.log.warning(`Could not say in the review comment why there is no review: ${errorMessage(error)}`);
+  }
   return makeResult("review", { status, failure, summary });
 }
 

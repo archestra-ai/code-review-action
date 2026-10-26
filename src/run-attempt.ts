@@ -8,6 +8,7 @@ import {
 } from "./archestra/client";
 import type { AttemptOutcome, AttemptRecord } from "./attempts";
 import { type Classification, classifyApiError, classifyRun } from "./classify";
+import { PROGRESS_FILE } from "./contracts";
 import { type Attachment, errorMessage, type Logger } from "./util";
 
 export interface Clock {
@@ -291,6 +292,8 @@ export async function continueRun(p: {
       await p.client.writeWorkspaceFile(p.runId, names[index] as string, Buffer.from(file.contentBase64, "base64"));
     }
     await p.client.writeWorkspaceFile(p.runId, p.resultFile, Buffer.from(`${JSON.stringify(PENDING_RESULT)}\n`));
+    // The plan of the turn before must not show as this turn's progress, also on the same commit.
+    await p.client.writeWorkspaceFile(p.runId, PROGRESS_FILE, Buffer.from("{}\n"));
     const message =
       names.length > 0
         ? `${p.message}\n\nAttached files are available for this run:\n${names.map((name) => `- ${WORKSPACE_ROOT}/${name}`).join("\n")}`

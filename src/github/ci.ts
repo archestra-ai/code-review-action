@@ -72,24 +72,25 @@ export async function checkSnapshot(
 ): Promise<{ failing: number; checks: CheckSnapshotEntry[] }> {
   try {
     const runs = await gh.paginate(gh.rest.checks.listForRef, { ...repo, ref, filter: "latest", per_page: 100 });
-    const checks: CheckSnapshotEntry[] = [];
     let detailed = 0;
-    for (const run of runs.slice(0, 100)) {
-      const entry: CheckSnapshotEntry = {
-        name: run.name,
-        status: run.status,
-        conclusion: run.conclusion ?? null,
-        url: run.html_url ?? null,
-      };
-      if (run.conclusion && FAILING_CONCLUSIONS.has(run.conclusion) && detailed < 5) {
-        detailed++;
-        if (run.output?.summary) entry.summary = run.output.summary.slice(0, 2000);
-        if ((run.output?.annotations_count ?? 0) > 0) {
-          entry.annotations = (await annotations(gh, repo, run.id, log)).slice(0, 10);
+    const checks = await Promise.all(
+      runs.slice(0, 100).map(async (run): Promise<CheckSnapshotEntry> => {
+        const entry: CheckSnapshotEntry = {
+          name: run.name,
+          status: run.status,
+          conclusion: run.conclusion ?? null,
+          url: run.html_url ?? null,
+        };
+        if (run.conclusion && FAILING_CONCLUSIONS.has(run.conclusion) && detailed < 5) {
+          detailed++;
+          if (run.output?.summary) entry.summary = run.output.summary.slice(0, 2000);
+          if ((run.output?.annotations_count ?? 0) > 0) {
+            entry.annotations = (await annotations(gh, repo, run.id, log)).slice(0, 10);
+          }
         }
-      }
-      checks.push(entry);
-    }
+        return entry;
+      }),
+    );
     const failing = runs.filter((run) => run.conclusion && FAILING_CONCLUSIONS.has(run.conclusion)).length;
     return { failing, checks };
   } catch (error) {

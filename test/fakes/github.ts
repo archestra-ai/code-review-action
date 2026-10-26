@@ -154,6 +154,10 @@ export class FakeGitHub {
         if (body.includes("<!-- archestra-code-review ")) this.stickyHistory.push(body);
         return HttpResponse.json(this.commentJson(comment), { status: 201 });
       }),
+      http.get(`${base}/issues/comments/:id`, ({ params }) => {
+        const comment = this.comments.get(Number(params.id));
+        return comment ? HttpResponse.json(this.commentJson(comment)) : notFound();
+      }),
       http.patch(`${base}/issues/comments/:id`, async ({ request, params }) => {
         const comment = this.comments.get(Number(params.id));
         if (!comment) return notFound();

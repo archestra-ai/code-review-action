@@ -3,15 +3,17 @@ import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { exchangeGitHubActionsToken, tokenEndpoint } from "../src/archestra/github-actions-auth";
 import { isTransient } from "../src/github/octokit";
 import { verdictFor } from "../src/github/review";
-import { parseState } from "../src/github/sticky";
+import { checklistTitle, parseState } from "../src/github/sticky";
 import { reviewBody, summaryWords } from "../src/modes/review";
 import { run } from "../src/run";
 import { recordStoppedJob, type SavedJob } from "../src/stopped";
 import {
   AGENT_A,
+  AGENT_B,
   createHarness,
   FINDING_IN_DIFF,
   FINDING_OUTSIDE,
+  issueCommentEvent,
   MemoryLogger,
   mockServer,
   prEvent,
@@ -191,15 +193,19 @@ describe("GitHub Actions sign-in", () => {
     expect(!result.ok && result.message).toContain("id-token: write");
   });
 
+  function refusedBy(refusal: { reason: "not_linked" | "unavailable"; message: string; login: string | null }) {
+    return async () => ({ ok: false as const, refusal });
+  }
+
   it("tells an author who has not connected GitHub why there is no review, without failing the job", async () => {
     const harness = setup();
     const ctx = {
       ...harness.context("pull_request", prEvent(harness.github), { "archestra-auth": "github-actions" }),
-      accessRefusal: {
-        reason: "not_linked" as const,
+      signIn: refusedBy({
+        reason: "not_linked",
         message: "@alice has not connected GitHub to Archestra.",
         login: "alice",
-      },
+      }),
     };
     const result = await run(ctx);
     expect(result).toMatchObject({ status: "unauthorized", failure: null });
@@ -211,32 +217,79 @@ describe("GitHub Actions sign-in", () => {
 
   it("says nothing on a pull request that is never reviewed, and fails the job when the sign-in failed", async () => {
     const harness = setup();
+    const inputs = { "archestra-auth": "github-actions" };
     harness.github.pr.draft = true;
-    const refusal = { reason: "not_linked" as const, message: "not connected", login: "alice" };
-    const draft = await run({ ...harness.context("pull_request", prEvent(harness.github)), accessRefusal: refusal });
+    const draft = await run({
+      ...harness.context("pull_request", prEvent(harness.github), inputs),
+      signIn: refusedBy({ reason: "not_linked", message: "not connected", login: "alice" }),
+    });
     expect(draft.status).toBe("skipped");
     expect(harness.github.stickyBody()).toBeNull();
     harness.github.pr.draft = false;
     const failed = await run({
-      ...harness.context("pull_request", prEvent(harness.github)),
-      accessRefusal: { reason: "unavailable", message: "Archestra did not answer", login: null },
+      ...harness.context("pull_request", prEvent(harness.github), inputs),
+      signIn: refusedBy({ reason: "unavailable", message: "Archestra did not answer", login: null }),
     });
     expect(failed.failure).toMatch(/did not answer/);
   });
 
-  it("moves to a new review comment when the old one belongs to another identity", async () => {
+  it("reviews with the signed-in clients, and signs in only for a review", async () => {
+    const harness = setup();
+    harness.archestra.script(AGENT_A, { end: "completed", files: { "review.json": reviewJson() } });
+    let signIns = 0;
+    const base = harness.context("pull_request", prEvent(harness.github), { "archestra-auth": "github-actions" });
+    const ctx = {
+      ...base,
+      signIn: async () => {
+        signIns++;
+        const signed = harness.context("pull_request", prEvent(harness.github));
+        return {
+          ok: true as const,
+          ctx: { ...signed, inputs: { ...signed.inputs, archestraAuth: "github-actions" as const } },
+        };
+      },
+    };
+    const result = await run(ctx);
+    expect(result.status).toBe("success");
+    expect(signIns).toBe(1);
+    const command = await run({
+      ...harness.context("issue_comment", issueCommentEvent(harness.github, "/archestra fix"), {
+        "archestra-auth": "github-actions",
+      }),
+      signIn: async () => {
+        signIns++;
+        throw new Error("no sign-in for a command");
+      },
+    });
+    expect(command.status).toBe("skipped");
+    expect(signIns).toBe(1);
+  });
+
+  it("moves to a new review comment only when the old one belongs to the workflow token", async () => {
     const harness = setup();
     harness.archestra.script(AGENT_A, { end: "completed", files: { "review.json": reviewJson([FINDING_IN_DIFF]) } });
     await run(harness.context("pull_request", prEvent(harness.github)));
     const [oldId] = [...harness.github.comments.keys()];
     harness.github.foreignComments.add(oldId!);
     harness.github.pr.head.sha = "d".repeat(40);
+    // Without the App identity, a refused edit is an error: no second comment.
     harness.archestra.script(AGENT_A, { end: "completed", files: { "review.json": reviewJson([]) } });
-    await run(harness.context("pull_request", prEvent(harness.github, "synchronize")));
-    const stickies = [...harness.github.comments.values()].filter((c) => c.body.includes("archestra-code-review"));
-    expect(stickies).toHaveLength(2);
-    // The new comment carries on: it knows the finding of the old one is gone.
-    expect(parseState(stickies[1]!.body)!.jobs).toHaveLength(2);
+    await expect(run(harness.context("pull_request", prEvent(harness.github, "synchronize")))).rejects.toThrow();
+    const stickies = () =>
+      [...harness.github.comments.values()].filter((c) => c.body.includes("archestra-code-review"));
+    expect(stickies()).toHaveLength(1);
+    // As the review App, the workflow token's comment is taken over.
+    harness.archestra.script(AGENT_A, { end: "completed", files: { "review.json": reviewJson([]) } });
+    await run({ ...harness.context("pull_request", prEvent(harness.github, "synchronize")), appIdentity: true });
+    expect(stickies()).toHaveLength(2);
+    // The new comment carries on with the old one's history.
+    expect(parseState(stickies()[1]!.body)!.jobs.length).toBeGreaterThanOrEqual(2);
+  });
+
+  it("keeps a checklist step from mentioning anyone or linking anywhere", () => {
+    expect(checklistTitle("Ping @org/everyone at [x](https://evil.test) <b>")).toBe(
+      "Ping @\u2060org/everyone at x(https:/\u2060/evil.test) &lt;b>",
+    );
   });
 });
 
@@ -271,6 +324,41 @@ describe("progress checklist", () => {
     });
     await run(stale.context("pull_request", prEvent(stale.github)));
     expect(stale.github.stickyHistory.some((body) => body.includes("Read the diff"))).toBe(false);
+  });
+});
+
+describe("progress checklist after a failed run", () => {
+  it("drops the failed run's plan when the next agent starts", async () => {
+    const harness = setup();
+    harness.archestra.script(AGENT_A, {
+      end: "failed",
+      polls: 4,
+      statusReason: "Budget exceeded",
+      liveFiles: { "progress.json": { sha: "a".repeat(40), steps: [{ title: "Read the diff", status: "doing" }] } },
+    });
+    harness.archestra.script(AGENT_B, { end: "completed", files: { "review.json": reviewJson() } });
+    await run(harness.context("pull_request", prEvent(harness.github)));
+    // The plan showed while the first run worked, and went with it.
+    expect(harness.github.stickyHistory.some((body) => body.includes("- [ ] **Read the diff**"))).toBe(true);
+    const moving = harness.github.stickyHistory.find((body) => body.includes("moving to the next agent"));
+    expect(moving).toBeDefined();
+    expect(moving).not.toContain("Read the diff");
+  });
+
+  it("resets the progress file before it continues a workspace", async () => {
+    const harness = setup();
+    harness.archestra.script(AGENT_A, {
+      end: "completed",
+      files: {
+        "review.json": reviewJson(),
+        "progress.json": { sha: "a".repeat(40), steps: [{ title: "Done", status: "done" }] },
+      },
+    });
+    await run(harness.context("pull_request", prEvent(harness.github)));
+    harness.archestra.script(AGENT_A, { end: "completed", polls: 3, files: { "review.json": reviewJson() } });
+    await run(harness.context("pull_request", prEvent(harness.github, "reopened")));
+    expect(harness.archestra.starts[1]).toMatchObject({ kind: "continue" });
+    expect(harness.github.stickyHistory.slice(-6).some((body) => body.includes("- [x] Done"))).toBe(false);
   });
 });
 

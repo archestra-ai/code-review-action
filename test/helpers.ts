@@ -97,7 +97,11 @@ export function createHarness(): Harness {
         saveLiveRun: (runId) => void live.push(runId),
         saveJob: (job) => void jobs.push(job),
         isStopping: () => false,
-        accessRefusal: null,
+        signIn: async () => {
+          throw new Error("this test does not sign in");
+        },
+        appIdentity: false,
+        cache: { stickyId: null },
         startedAt: clock.now(),
       };
     },
