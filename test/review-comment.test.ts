@@ -182,6 +182,38 @@ describe("GitHub Actions sign-in", () => {
     expect(calls).toBe(2);
   });
 
+  it("asks for a fresh identity token on each try", async () => {
+    const tokens: string[] = [];
+    server.use(
+      http.post(tokenEndpoint(gatewayUrl), async ({ request: req }) => {
+        tokens.push(((await req.json()) as { token: string }).token);
+        return tokens.length === 1
+          ? HttpResponse.json({ error: "rate_limited" }, { status: 429 })
+          : HttpResponse.json({ access_token: "arch-2" });
+      }),
+    );
+    let n = 0;
+    const result = await exchangeGitHubActionsToken({
+      gatewayUrl,
+      getIdToken: async () => `oidc-${++n}`,
+      retryDelaysMs: [0],
+    });
+    expect(result).toMatchObject({ ok: true, accessToken: "arch-2" });
+    expect(tokens).toEqual(["oidc-1", "oidc-2"]);
+  });
+
+  it("says nothing when someone other than the author started the run", async () => {
+    const harness = setup();
+    const result = await run({
+      ...harness.context("pull_request", prEvent(harness.github, "synchronize"), {
+        "archestra-auth": "github-actions",
+      }),
+      signIn: refusedBy({ reason: "not_author", message: "started by bob", login: "alice" }),
+    });
+    expect(result.status).toBe("skipped");
+    expect(harness.github.stickyBody()).toBeNull();
+  });
+
   it("explains a job without an identity token", async () => {
     const result = await exchangeGitHubActionsToken({
       gatewayUrl,
@@ -193,7 +225,11 @@ describe("GitHub Actions sign-in", () => {
     expect(!result.ok && result.message).toContain("id-token: write");
   });
 
-  function refusedBy(refusal: { reason: "not_linked" | "unavailable"; message: string; login: string | null }) {
+  function refusedBy(refusal: {
+    reason: "not_linked" | "not_author" | "unavailable";
+    message: string;
+    login: string | null;
+  }) {
     return async () => ({ ok: false as const, refusal });
   }
 

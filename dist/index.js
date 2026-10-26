@@ -41456,26 +41456,32 @@ var RefusalSchema = external_exports.object({
   error_description: external_exports.string().optional(),
   login: external_exports.string().optional()
 });
-var REFUSALS = /* @__PURE__ */ new Set(["not_linked", "ambiguous_link", "not_trusted", "forbidden"]);
+var REFUSALS = /* @__PURE__ */ new Set([
+  "not_linked",
+  "ambiguous_link",
+  "not_trusted",
+  "not_author",
+  "forbidden"
+]);
 function tokenEndpoint(gatewayUrl) {
   return `${new URL(gatewayUrl).origin}/api/github-actions/token`;
 }
 async function exchangeGitHubActionsToken(p) {
   const audience = new URL(p.gatewayUrl).origin;
-  let idToken;
-  try {
-    idToken = await p.getIdToken(audience);
-  } catch (error63) {
-    return {
-      ok: false,
-      reason: "unavailable",
-      message: `The job has no GitHub Actions identity token (it needs the id-token: write permission): ${errorMessage(error63)}`,
-      login: null
-    };
-  }
   const doFetch = p.fetch ?? fetch;
   const delays = p.retryDelaysMs ?? [2e3, 5e3];
   for (let attempt = 0; ; attempt++) {
+    let idToken;
+    try {
+      idToken = await p.getIdToken(audience);
+    } catch (error63) {
+      return {
+        ok: false,
+        reason: "unavailable",
+        message: `The job has no GitHub Actions identity token (it needs the id-token: write permission): ${errorMessage(error63)}`,
+        login: null
+      };
+    }
     let response;
     try {
       response = await doFetch(tokenEndpoint(p.gatewayUrl), {
@@ -41522,7 +41528,7 @@ async function exchangeGitHubActionsToken(p) {
       };
     }
     const delay = delays[attempt];
-    if (response.status >= 500 && delay !== void 0) {
+    if ((response.status >= 500 || response.status === 429) && delay !== void 0) {
       await sleep(delay);
       continue;
     }
@@ -49344,6 +49350,7 @@ function reviewScope(lastSha, sinceSha, headSha) {
 async function refuseAccess(ctx, trigger, refusal) {
   const summary2 = `No Archestra review: ${refusal.message}`;
   ctx.log.warning(summary2);
+  if (refusal.reason === "not_author") return makeResult(trigger.kind, { status: "skipped", summary: summary2 });
   const failure2 = refusal.reason === "unavailable" ? failureForError(ctx, summary2) : null;
   const status = refusal.reason === "unavailable" ? "unavailable" : "unauthorized";
   if (trigger.kind !== "review" || trigger.prNumber === void 0 || ctx.inputs.post === "none") {

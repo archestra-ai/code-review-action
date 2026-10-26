@@ -8,7 +8,13 @@ import { errorMessage } from "../util";
 // request author's Archestra user, who must have connected GitHub there, and
 // with a GitHub token of the review App for this repository.
 
-export type AccessRefusal = "not_linked" | "ambiguous_link" | "not_trusted" | "forbidden" | "unavailable";
+export type AccessRefusal =
+  | "not_linked"
+  | "ambiguous_link"
+  | "not_trusted"
+  | "not_author"
+  | "forbidden"
+  | "unavailable";
 
 export type ExchangeResult =
   | {
@@ -33,7 +39,13 @@ const RefusalSchema = z.object({
   login: z.string().optional(),
 });
 
-const REFUSALS: ReadonlySet<string> = new Set(["not_linked", "ambiguous_link", "not_trusted", "forbidden"]);
+const REFUSALS: ReadonlySet<string> = new Set([
+  "not_linked",
+  "ambiguous_link",
+  "not_trusted",
+  "not_author",
+  "forbidden",
+]);
 
 /** The token endpoint of the deployment that serves the gateway. */
 export function tokenEndpoint(gatewayUrl: string): string {
@@ -48,20 +60,21 @@ export async function exchangeGitHubActionsToken(p: {
   retryDelaysMs?: readonly number[];
 }): Promise<ExchangeResult> {
   const audience = new URL(p.gatewayUrl).origin;
-  let idToken: string;
-  try {
-    idToken = await p.getIdToken(audience);
-  } catch (error) {
-    return {
-      ok: false,
-      reason: "unavailable",
-      message: `The job has no GitHub Actions identity token (it needs the id-token: write permission): ${errorMessage(error)}`,
-      login: null,
-    };
-  }
   const doFetch = p.fetch ?? fetch;
   const delays = p.retryDelaysMs ?? [2_000, 5_000];
   for (let attempt = 0; ; attempt++) {
+    // A fresh identity token for each try: Archestra accepts each token once.
+    let idToken: string;
+    try {
+      idToken = await p.getIdToken(audience);
+    } catch (error) {
+      return {
+        ok: false,
+        reason: "unavailable",
+        message: `The job has no GitHub Actions identity token (it needs the id-token: write permission): ${errorMessage(error)}`,
+        login: null,
+      };
+    }
     let response: Response;
     try {
       response = await doFetch(tokenEndpoint(p.gatewayUrl), {
@@ -108,7 +121,7 @@ export async function exchangeGitHubActionsToken(p: {
       };
     }
     const delay = delays[attempt];
-    if (response.status >= 500 && delay !== undefined) {
+    if ((response.status >= 500 || response.status === 429) && delay !== undefined) {
       await sleep(delay);
       continue;
     }

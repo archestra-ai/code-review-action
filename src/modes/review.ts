@@ -464,6 +464,9 @@ export async function refuseAccess(
 ): Promise<ActionResult> {
   const summary = `No Archestra review: ${refusal.message}`;
   ctx.log.warning(summary);
+  // Someone other than the author started the run (a push to their branch, a bot updating it): the
+  // author's next push gets the review, so the comment says nothing.
+  if (refusal.reason === "not_author") return makeResult(trigger.kind, { status: "skipped", summary });
   const failure = refusal.reason === "unavailable" ? failureForError(ctx, summary) : null;
   const status = refusal.reason === "unavailable" ? "unavailable" : "unauthorized";
   if (trigger.kind !== "review" || trigger.prNumber === undefined || ctx.inputs.post === "none") {

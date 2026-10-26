@@ -174,7 +174,7 @@ Choose one of two ways.
 2. On the review gateway, turn on GitHub Actions access: pick the App, and list the repositories and the trusted workflow (the `job_workflow_ref` of the job that runs this action).
 3. Give the job `id-token: write` and set `archestra-auth: github-actions`.
 
-An author who has not connected GitHub gets a short note in the review comment instead of a review.
+An author who has not connected GitHub gets a short note in the review comment instead of a review. A run that someone else started (a push to the author's branch, a bot updating it) is skipped without a note; the author's next push gets the review.
 
 **Personal platform tokens (`archestra-auth: token`, the default).** Each user creating PRs or triggering commands needs an Archestra platform token:
 1. Generate a platform token in Archestra Personal Settings.
