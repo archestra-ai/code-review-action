@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.5.0 (unreleased)
+
+- New `archestra-auth: github-actions`: the job signs in with its GitHub Actions identity. Archestra runs the review as the pull request author, who must have connected GitHub to Archestra, and returns its GitHub App's token for the repository, so the review posts as the App. Authors who have not connected get a note in the review comment instead of a review.
+- While a run works, the progress header shows the runtime's own plan as a checklist (from its `progress.json`).
+- The reviewer gets the checks of the head commit (`checks.json`), and the brief asks it to turn a failure the pull request causes into a finding. It also checks resource lifetimes, unbounded loops and retries, and images and copy against the code.
+- The review comment moves to a new comment when the old one belongs to another identity (the workflow token before a GitHub App).
+
 ## 0.4.0 (2026-10-27)
 
 - Shorter review comment: the verdict and what to do first come first, then the findings table. A finding with an inline comment is written out only there; the table links to it. What the review read, the change map, observations, tests and limitations fold into "Review notes".

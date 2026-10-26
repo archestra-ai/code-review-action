@@ -165,9 +165,18 @@ Create one or more Archestra agents with dedicated runtimes:
 - Grant **Can use** permissions to members or teams using the action.
 - For private repositories, provide a read-only token via `clone-token`.
 
-### 3. Platform Tokens
+### 3. Who the Runs Act As
 
-Each user creating PRs or triggering commands needs an Archestra platform token:
+Choose one of two ways.
+
+**Sign in with the job's identity (`archestra-auth: github-actions`).** No tokens in GitHub. The job sends its GitHub Actions identity token to Archestra. Archestra runs the review as the pull request author, and only when the author has connected GitHub to Archestra through your organization's GitHub App. It also returns that App's token for this repository, so reviews post as the App, which can resolve review threads.
+1. In Archestra, add the GitHub App as a credential and let users connect their GitHub accounts to it.
+2. On the review gateway, turn on GitHub Actions access: pick the App, and list the repositories and the trusted workflow (the `job_workflow_ref` of the job that runs this action).
+3. Give the job `id-token: write` and set `archestra-auth: github-actions`.
+
+An author who has not connected GitHub gets a short note in the review comment instead of a review.
+
+**Personal platform tokens (`archestra-auth: token`, the default).** Each user creating PRs or triggering commands needs an Archestra platform token:
 1. Generate a platform token in Archestra Personal Settings.
 2. Add it as an organization or repository secret: `ARCHESTRA_TOKEN_<LOGIN>` (uppercase GitHub username with hyphens replaced by underscores, e.g. `ARCHESTRA_TOKEN_OCTO_CAT`).
 
@@ -247,9 +256,10 @@ pull_request     ──► action ──► start_agent_run ──► runtime wr
 
 ### Review Comments
 
-- The action maintains a single sticky comment on the pull request that updates with run progress, overall verdict, architecture summary, and finding details.
-- Inline review comments are posted for findings inside the diff and updated in place across incremental reviews.
-- Resolved threads are marked resolved or acknowledged with a reply once fixed.
+- The action keeps one review comment on the pull request. While a run works, it shows the runtime's plan as a checklist. When the run ends, it shows the verdict, what to do first and the findings table. A re-review leads with what changed since the last reviewed commit. What the review read, its tests and its limits fold into "Review notes".
+- Findings inside the diff get inline comments, updated in place across re-reviews; the table links to them.
+- The threads of fixed findings are resolved, or get a reply naming the two reviewed commits when the token cannot resolve them.
+- The reviewer gets the checks of the head commit: a failing check the pull request causes becomes a finding.
 
 ### Reliability & Failover
 
