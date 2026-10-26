@@ -96,6 +96,7 @@ export function createHarness(): Harness {
         random: () => 0.5,
         saveLiveRun: (runId) => void live.push(runId),
         saveJob: (job) => void jobs.push(job),
+        isStopping: () => false,
         startedAt: clock.now(),
       };
     },

@@ -29,6 +29,8 @@ export interface ActionContext {
   saveLiveRun: (runId: string | null) => void;
   /** Records the job in progress, so that a canceled job can still record itself in the review comment. */
   saveJob: (job: SavedJob) => void;
+  /** True once the runner canceled the job: no new run starts, and nothing more is written. */
+  isStopping: () => boolean;
   startedAt: number;
 }
 
@@ -142,6 +144,7 @@ export async function launch<T>(
         },
         readResult: (runId) => readContract(ctx.archestra, runId, p.contract.file, p.contract.schema),
         start: async () => {
+          if (ctx.isStopping()) throw new Error("The job was canceled; no new run starts.");
           if (p.credentialToken) {
             await ctx.archestra.transferCredential(
               agentId,

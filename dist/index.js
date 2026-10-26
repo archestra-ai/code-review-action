@@ -41149,6 +41149,7 @@ async function launch(ctx, p) {
       },
       readResult: (runId) => readContract(ctx.archestra, runId, p.contract.file, p.contract.schema),
       start: async () => {
+        if (ctx.isStopping()) throw new Error("The job was canceled; no new run starts.");
         if (p.credentialToken) {
           await ctx.archestra.transferCredential(
             agentId,
@@ -45575,6 +45576,18 @@ async function userIdentity(gh, login) {
   const name = (data.name ?? "").replace(/["\n\r]/g, "").trim() || data.login;
   return { login: data.login, name, email: `${data.id}+${data.login}@users.noreply.github.com` };
 }
+async function isAncestor(gh, repo, base, head) {
+  try {
+    const { data } = await gh.rest.repos.compareCommitsWithBasehead({
+      ...repo,
+      basehead: `${base}...${head}`,
+      per_page: 1
+    });
+    return data.status === "ahead" || data.status === "identical";
+  } catch {
+    return false;
+  }
+}
 async function verifyCommits(gh, repo, params) {
   const result = { verified: [], rejected: [] };
   if (params.commits.length === 0) return result;
@@ -45963,9 +45976,7 @@ var ProgressSchema = external_exports.object({
   workflowRunUrl: external_exports.string(),
   /** The current step: "starting a run on agent 1 of 2", "waiting for the run". */
   step: external_exports.string().max(300).nullable(),
-  runUrl: external_exports.string().nullable(),
-  /** The head commit the job works on; null for comments written before this field. */
-  sha: external_exports.string().nullable().default(null)
+  runUrl: external_exports.string().nullable()
 });
 var LastJobSchema = external_exports.object({
   /** What the job did, in a few words: "reviewed", "applied 2 findings". */
@@ -45975,8 +45986,13 @@ var LastJobSchema = external_exports.object({
   /** ISO time of the start; null in comments written before this field existed. */
   startedAt: external_exports.string().nullable().default(null),
   workflowRunUrl: external_exports.string(),
-  /** Picks the header's wording. "superseded": a newer push canceled the job; "canceled": anything else did. */
-  outcome: external_exports.enum(["ok", "unavailable", "error", "superseded", "canceled"])
+  /** "ok", "unavailable" or "error": picks the header's wording. A stopped job is an "error" with a `stop` reason. */
+  outcome: external_exports.enum(["ok", "unavailable", "error"]),
+  /**
+   * Why a job stopped before it finished: a newer push replaced it, or something else canceled it.
+   * A field of its own, so that an older version of the action still reads the state.
+   */
+  stop: external_exports.enum(["superseded", "canceled"]).nullable().default(null)
 });
 var DeltaSchema = external_exports.object({
   /** The commit the review before this one covered. */
@@ -46186,12 +46202,10 @@ function renderHeader(state, context3) {
   if (last) {
     const did = oneLine(last.did, 200);
     const duration3 = formatDuration(last.durationMs);
-    const text = {
+    const text = last.stop === "superseded" ? `Archestra stopped ${did} for @${last.login} after ${duration3}: a newer push replaced it` : last.stop === "canceled" ? `Archestra stopped ${did} for @${last.login} after ${duration3}: the job was canceled` : {
       ok: `Archestra ${did} for @${last.login} in ${duration3}`,
       unavailable: `Archestra could not finish ${did} for @${last.login} in ${duration3}`,
-      error: `Archestra stopped ${did} for @${last.login} with an error after ${duration3}`,
-      superseded: `Archestra stopped ${did} for @${last.login} after ${duration3}: a newer push replaced it`,
-      canceled: `Archestra stopped ${did} for @${last.login} after ${duration3}: the job was canceled`
+      error: `Archestra stopped ${did} for @${last.login} with an error after ${duration3}`
     }[last.outcome];
     return [`**${text}** \u2014\u2014 [View job](${last.workflowRunUrl})`, ""];
   }
@@ -46562,7 +46576,7 @@ async function findSticky(gh, repo, pr) {
       if (comment.user && !isBotUser(comment.user)) continue;
       const marker = parseMarker(body);
       if (!marker) continue;
-      return { id: comment.id, body, marker, state: parseState(body) };
+      return { id: comment.id, body, marker, state: parseState(body), author: comment.user?.login ?? null };
     }
   }
   return null;
@@ -46657,6 +46671,7 @@ function commentCommand(inputs) {
 }
 async function updateSticky(ctx, pr, mutate) {
   const sticky = await findSticky(ctx.gh, ctx.repo, pr.number);
+  if (ctx.isStopping()) return sticky?.id ?? 0;
   const state = sticky?.state ?? emptyState(pr.baseRef);
   const marker = sticky?.marker ?? {
     repo: fullName(ctx.repo),
@@ -46693,8 +46708,7 @@ async function startProgress(ctx, pr, job) {
       startedAt,
       workflowRunUrl: ctx.workflowRunUrl,
       step: "preparing the inputs",
-      runUrl: null,
-      sha: pr.headSha
+      runUrl: null
     };
   });
 }
@@ -46710,20 +46724,24 @@ async function stepProgress(ctx, pr, step, runUrl = null) {
   }
 }
 function finishProgress(ctx, state, job) {
-  const startedAt = state.progress ? Date.parse(state.progress.startedAt) : Number.NaN;
+  const mine = state.progress?.workflowRunUrl === ctx.workflowRunUrl ? state.progress : null;
+  const startedAt = mine ? mine.startedAt : new Date(ctx.startedAt).toISOString();
   state.last = {
     did: job.did,
     login: job.login,
-    durationMs: Number.isFinite(startedAt) ? Math.max(0, ctx.clock.now() - startedAt) : 0,
-    startedAt: state.progress?.startedAt ?? null,
+    durationMs: Math.max(0, ctx.clock.now() - Date.parse(startedAt)),
+    startedAt,
     workflowRunUrl: ctx.workflowRunUrl,
-    outcome: job.outcome
+    outcome: job.outcome,
+    stop: null
   };
-  state.progress = null;
+  if (mine) state.progress = null;
 }
 function recordJob(ctx, state, job) {
-  const startedAt = state.progress?.startedAt ?? state.last?.startedAt ?? new Date(ctx.clock.now()).toISOString();
-  const durationMs = !state.progress && state.last?.startedAt === startedAt ? state.last.durationMs : Math.max(0, ctx.clock.now() - Date.parse(startedAt));
+  const own2 = state.progress?.workflowRunUrl === ctx.workflowRunUrl ? state.progress : null;
+  const last = state.last?.workflowRunUrl === ctx.workflowRunUrl ? state.last : null;
+  const startedAt = own2?.startedAt ?? last?.startedAt ?? new Date(ctx.startedAt).toISOString();
+  const durationMs = !own2 && last?.startedAt === startedAt ? last.durationMs : Math.max(0, ctx.clock.now() - Date.parse(startedAt));
   addJob(state, {
     label: job.label,
     startedAt,
@@ -47882,34 +47900,35 @@ var REVIEW_MARKER = "<!-- archestra-review -->";
 async function postReview(gh, repo, params) {
   const event = params.event ?? "COMMENT";
   if (params.comments.length === 0 && event === "COMMENT") return { posted: true, reviewId: null };
-  const create = (comments) => gh.rest.pulls.createReview({
-    ...repo,
-    pull_number: params.pr,
-    commit_id: params.headSha,
-    event,
-    body: `${params.body}
+  const create = async (kind, comments) => {
+    const { data } = await gh.rest.pulls.createReview({
+      ...repo,
+      pull_number: params.pr,
+      commit_id: params.headSha,
+      event: kind,
+      body: `${params.body}
 
 ${REVIEW_MARKER}`,
-    ...comments.length > 0 ? { comments } : {}
-  });
+      ...comments.length > 0 ? { comments } : {}
+    });
+    return data.id;
+  };
   try {
-    const { data } = await create(params.comments);
-    return { posted: true, reviewId: data.id };
+    return { posted: true, reviewId: await create(event, params.comments) };
   } catch (error63) {
-    if (httpStatus(error63) === 422 && params.comments.length > 0) {
-      params.log.warning(
-        `GitHub rejected the inline comments; the findings go into the summary: ${errorMessage(error63)}`
-      );
-      if (event !== "COMMENT") {
-        try {
-          await create([]);
-        } catch (retryError) {
-          params.log.warning(`Could not post the change request: ${errorMessage(retryError)}`);
-        }
+    if (httpStatus(error63) !== 422) throw error63;
+    if (event !== "COMMENT") {
+      params.log.warning(`GitHub refused the change request; posting a comment review: ${errorMessage(error63)}`);
+      if (params.comments.length === 0) return { posted: true, reviewId: null };
+      try {
+        return { posted: true, reviewId: await create("COMMENT", params.comments) };
+      } catch (retryError) {
+        if (httpStatus(retryError) !== 422) throw retryError;
+        error63 = retryError;
       }
-      return { posted: false, reviewId: null };
     }
-    throw error63;
+    params.log.warning(`GitHub rejected the inline comments; the findings go into the summary: ${errorMessage(error63)}`);
+    return { posted: false, reviewId: null };
   }
 }
 async function dismissChangeRequests(gh, repo, params) {
@@ -47918,7 +47937,7 @@ async function dismissChangeRequests(gh, repo, params) {
     const reviews = await gh.paginate(gh.rest.pulls.listReviews, { ...repo, pull_number: params.pr, per_page: 100 });
     for (const review of reviews) {
       if (review.state !== "CHANGES_REQUESTED" || !(review.body ?? "").includes(REVIEW_MARKER)) continue;
-      if (review.user && !isBot(review.user)) continue;
+      if (params.self ? review.user?.login !== params.self : review.user && !isBot(review.user)) continue;
       await gh.rest.pulls.dismissReview({
         ...repo,
         pull_number: params.pr,
@@ -48004,6 +48023,8 @@ async function runReview(ctx, prNumber) {
       )
     );
   }
+  const lastSha = previous?.verdict ? previous.reviewedSha : null;
+  const sinceSha = lastSha && lastSha !== pr.headSha && await isAncestor(gh, repo, lastSha, pr.headSha) ? lastSha : null;
   const stickyId = await startProgress(ctx, pr, {
     doing: `reviewing \`${shortSha(pr.headSha)}\``,
     login: pr.authorLogin,
@@ -48019,7 +48040,10 @@ async function runReview(ctx, prNumber) {
       agents,
       attachments,
       stickyId,
-      failingChecks
+      failingChecks,
+      lastSha,
+      sinceSha,
+      self: sticky?.author ?? null
     });
   } catch (error63) {
     try {
@@ -48043,9 +48067,8 @@ async function runReview(ctx, prNumber) {
 }
 async function reviewInProgress(ctx, p) {
   const { gh, repo, inputs, log } = ctx;
-  const { pr, files, previous, incremental, agents, attachments, failingChecks } = p;
+  const { pr, files, previous, incremental, agents, attachments, failingChecks, lastSha, sinceSha } = p;
   const previousFindings = previous?.findings ?? [];
-  const sinceSha = previous?.verdict && previous.reviewedSha && previous.reviewedSha !== pr.headSha ? previous.reviewedSha : null;
   const message = renderBrief("review", {
     repo: fullName(repo),
     number: pr.number,
@@ -48054,7 +48077,7 @@ async function reviewInProgress(ctx, p) {
     headSha: pr.headSha,
     baseSha: pr.baseSha,
     summaryWords: summaryWords(files.reduce((sum, file2) => sum + file2.additions + file2.deletions, 0)),
-    reviewScope: sinceSha ? `This is a re-review. The last review covered ${sinceSha}; write the summary about what changed since then (\`git diff ${sinceSha} ${pr.headSha}\`), not about the whole pull request again.` : "This is the first review of this pull request."
+    reviewScope: reviewScope(lastSha, sinceSha, pr.headSha)
   });
   const outcome = await launch(ctx, {
     agents,
@@ -48149,6 +48172,7 @@ async function reviewInProgress(ctx, p) {
       await dismissChangeRequests(gh, repo, {
         pr: pr.number,
         message: `The review of ${shortSha(pr.headSha)} finds nothing that blocks the merge.`,
+        self: p.self,
         log
       });
     }
@@ -48250,6 +48274,18 @@ async function reviewInProgress(ctx, p) {
     )
   });
 }
+function reviewScope(lastSha, sinceSha, headSha) {
+  if (sinceSha) {
+    return `This is a re-review. The last review covered ${sinceSha}; write the summary about what changed since then (\`git diff ${sinceSha} ${headSha}\`), not about the whole pull request again.`;
+  }
+  if (lastSha === headSha) {
+    return "This review repeats the last one on the same commit: check the previous findings again, and write the summary about the whole pull request.";
+  }
+  if (lastSha) {
+    return `The commit of the last review (${lastSha}) is no longer in the history of this pull request (a force-push or a rebase): review the whole pull request again.`;
+  }
+  return "This is the first review of this pull request.";
+}
 function summaryWords(changedLines) {
   if (changedLines <= 50) return 60;
   if (changedLines <= 400) return 120;
@@ -48302,7 +48338,7 @@ async function updatePreviousThreads(ctx, pr, p) {
       if (update.action === "unresolve") {
         reply2 = `The review of \`${head}\` finds this problem again.`;
       } else if (!done) {
-        const when = p.sinceSha ? `between \`${shortSha(p.sinceSha)}\` and \`${head}\`` : `by \`${head}\``;
+        const when = p.sinceSha ? `between \`${shortSha(p.sinceSha)}\` and \`${head}\`` : `at \`${head}\``;
         const note = notes.get(update.findingId);
         reply2 = `Fixed ${when}${note ? `: ${escapeHtml(truncate(note.replace(/\s+/g, " ").trim(), 500))}` : "."}`;
       }
@@ -48369,7 +48405,8 @@ async function recordStoppedJob(p) {
         durationMs,
         startedAt: job.startedAt,
         workflowRunUrl: job.workflowRunUrl,
-        outcome
+        outcome: "error",
+        stop: outcome
       };
     }
     addJob(state, {
@@ -48442,6 +48479,7 @@ async function main() {
       savedJob = job;
       saveState(JOB_STATE, JSON.stringify(job));
     },
+    isStopping: () => stopping,
     startedAt: Date.now()
   };
   let liveRunId = null;
@@ -48455,7 +48493,8 @@ async function main() {
       if (liveRunId) await cancelIfLive(ctx.archestra, liveRunId, log);
       if (savedJob) {
         await recordStoppedJob({
-          gh: ctx.gh,
+          // Short retries: the runner kills the step a few seconds after the signal.
+          gh: createOctokit(inputs.githubToken, { baseUrl: environment.apiUrl, retryDelaysMs: [500] }),
           repo: ctx.repo,
           job: savedJob,
           render: { repoUrl: repoUrl(ctx), command: commentCommand(inputs), progressImageUrl: ctx.progressImageUrl },

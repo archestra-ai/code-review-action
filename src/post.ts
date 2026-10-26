@@ -4,6 +4,8 @@ import { ArchestraClient } from "./archestra/client";
 import { cancelIfLive } from "./cancel";
 import { readEnvironment } from "./env";
 import { createOctokit } from "./github/octokit";
+import { readInputs } from "./inputs";
+import { commentCommand } from "./modes/common";
 import { parseSavedJob, recordStoppedJob } from "./stopped";
 import { errorMessage } from "./util";
 
@@ -33,18 +35,21 @@ async function post(): Promise<void> {
     await cancelIfLive(client, runId, log);
   }
   const job = parseSavedJob(core.getState("job"));
-  const githubToken = core.getInput("github-token");
-  if (!job || !githubToken) return;
-  core.setSecret(githubToken);
+  if (!job) return;
+  // The main step read these inputs already; they are valid.
+  const inputs = readInputs(
+    (name) => core.getInput(name),
+    (path) => readFileSync(path, "utf8"),
+  );
+  core.setSecret(inputs.githubToken);
   const environment = readEnvironment(process.env, (path) => readFileSync(path, "utf8"));
-  const fixCommands = !/^(false|no|0)$/i.test(core.getInput("fix-commands").trim());
   await recordStoppedJob({
-    gh: createOctokit(githubToken, { baseUrl: environment.apiUrl, retryDelaysMs: [1_000] }),
+    gh: createOctokit(inputs.githubToken, { baseUrl: environment.apiUrl, retryDelaysMs: [1_000] }),
     repo: environment.repo,
     job,
     render: {
       repoUrl: `${environment.serverUrl}/${environment.repo.owner}/${environment.repo.repo}`,
-      command: fixCommands ? core.getInput("fix-command").trim() || "/archestra" : null,
+      command: commentCommand(inputs),
       progressImageUrl: environment.progressImageUrl,
     },
     now: Date.now(),

@@ -12,6 +12,7 @@ import {
 } from "../context";
 import { CONTRACTS } from "../contracts";
 import { countFailingChecks } from "../github/ci";
+import { isAncestor } from "../github/commits";
 import { buildDiffIndex, excerptFor, isRangeInDiff } from "../github/diff";
 import { httpStatus } from "../github/octokit";
 import {
@@ -129,6 +130,11 @@ export async function runReview(ctx: ActionContext, prNumber: number): Promise<A
       ),
     );
   }
+  // The commit the last review covered. A re-review writes about what changed since then, when that
+  // commit is still in the history of the pull request.
+  const lastSha = previous?.verdict ? previous.reviewedSha : null;
+  const sinceSha =
+    lastSha && lastSha !== pr.headSha && (await isAncestor(gh, repo, lastSha, pr.headSha)) ? lastSha : null;
   const stickyId = await startProgress(ctx, pr, {
     doing: `reviewing \`${shortSha(pr.headSha)}\``,
     login: pr.authorLogin,
@@ -145,6 +151,9 @@ export async function runReview(ctx: ActionContext, prNumber: number): Promise<A
       attachments,
       stickyId,
       failingChecks,
+      lastSha,
+      sinceSha,
+      self: sticky?.author ?? null,
     });
   } catch (error) {
     // The comment must not keep a progress header for a job that is gone: it says the job stopped,
@@ -182,14 +191,17 @@ async function reviewInProgress(
     attachments: Attachment[];
     stickyId: number;
     failingChecks: number;
+    /** The commit of the last completed review; null before the first. */
+    lastSha: string | null;
+    /** `lastSha` when it is in the history of the head commit and differs from it. */
+    sinceSha: string | null;
+    /** The login of the action's token, from its review comment; null on a first review. */
+    self: string | null;
   },
 ): Promise<ActionResult> {
   const { gh, repo, inputs, log } = ctx;
-  const { pr, files, previous, incremental, agents, attachments, failingChecks } = p;
+  const { pr, files, previous, incremental, agents, attachments, failingChecks, lastSha, sinceSha } = p;
   const previousFindings = previous?.findings ?? [];
-  // The commit the last review covered: a re-review writes about what changed since then.
-  const sinceSha =
-    previous?.verdict && previous.reviewedSha && previous.reviewedSha !== pr.headSha ? previous.reviewedSha : null;
   const message = renderBrief("review", {
     repo: fullName(repo),
     number: pr.number,
@@ -198,9 +210,7 @@ async function reviewInProgress(
     headSha: pr.headSha,
     baseSha: pr.baseSha,
     summaryWords: summaryWords(files.reduce((sum, file) => sum + file.additions + file.deletions, 0)),
-    reviewScope: sinceSha
-      ? `This is a re-review. The last review covered ${sinceSha}; write the summary about what changed since then (\`git diff ${sinceSha} ${pr.headSha}\`), not about the whole pull request again.`
-      : "This is the first review of this pull request.",
+    reviewScope: reviewScope(lastSha, sinceSha, pr.headSha),
   });
 
   const outcome = await launch(ctx, {
@@ -313,6 +323,7 @@ async function reviewInProgress(
       await dismissChangeRequests(gh, repo, {
         pr: pr.number,
         message: `The review of ${shortSha(pr.headSha)} finds nothing that blocks the merge.`,
+        self: p.self,
         log,
       });
     }
@@ -424,6 +435,20 @@ async function reviewInProgress(
   });
 }
 
+/** What the summary covers: the whole change, or what changed since the last reviewed commit. */
+export function reviewScope(lastSha: string | null, sinceSha: string | null, headSha: string): string {
+  if (sinceSha) {
+    return `This is a re-review. The last review covered ${sinceSha}; write the summary about what changed since then (\`git diff ${sinceSha} ${headSha}\`), not about the whole pull request again.`;
+  }
+  if (lastSha === headSha) {
+    return "This review repeats the last one on the same commit: check the previous findings again, and write the summary about the whole pull request.";
+  }
+  if (lastSha) {
+    return `The commit of the last review (${lastSha}) is no longer in the history of this pull request (a force-push or a rebase): review the whole pull request again.`;
+  }
+  return "This is the first review of this pull request.";
+}
+
 /** About 60 words for a small change, up to 300 for a large one. */
 export function summaryWords(changedLines: number): number {
   if (changedLines <= 50) return 60;
@@ -523,7 +548,7 @@ async function updatePreviousThreads(
       if (update.action === "unresolve") {
         reply = `The review of \`${head}\` finds this problem again.`;
       } else if (!done) {
-        const when = p.sinceSha ? `between \`${shortSha(p.sinceSha)}\` and \`${head}\`` : `by \`${head}\``;
+        const when = p.sinceSha ? `between \`${shortSha(p.sinceSha)}\` and \`${head}\`` : `at \`${head}\``;
         const note = notes.get(update.findingId);
         reply = `Fixed ${when}${note ? `: ${escapeHtml(truncate(note.replace(/\s+/g, " ").trim(), 500))}` : "."}`;
       }

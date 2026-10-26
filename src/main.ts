@@ -73,6 +73,7 @@ async function main(): Promise<void> {
       savedJob = job;
       core.saveState(JOB_STATE, JSON.stringify(job));
     },
+    isStopping: () => stopping,
     startedAt: Date.now(),
   };
 
@@ -87,7 +88,8 @@ async function main(): Promise<void> {
       if (liveRunId) await cancelIfLive(ctx.archestra, liveRunId, log);
       if (savedJob) {
         await recordStoppedJob({
-          gh: ctx.gh,
+          // Short retries: the runner kills the step a few seconds after the signal.
+          gh: createOctokit(inputs.githubToken, { baseUrl: environment.apiUrl, retryDelaysMs: [500] }),
           repo: ctx.repo,
           job: savedJob,
           render: { repoUrl: repoUrl(ctx), command: commentCommand(inputs), progressImageUrl: ctx.progressImageUrl },

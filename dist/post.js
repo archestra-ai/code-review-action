@@ -44831,6 +44831,134 @@ function httpStatus(error63) {
   return null;
 }
 
+// src/inputs.ts
+var InputError = class extends Error {
+  constructor(message) {
+    super(message);
+    this.name = "InputError";
+  }
+};
+var UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+var MAX_INSTRUCTIONS_BYTES = 64 * 1024;
+function readInputs(get, readFile) {
+  const value = (name) => get(name).trim();
+  const required2 = (name) => {
+    const v = value(name);
+    if (!v) throw new InputError(`Input "${name}" is required and is not set.`);
+    return v;
+  };
+  const gatewayUrl = required2("archestra-gateway-url");
+  let parsedUrl;
+  try {
+    parsedUrl = new URL(gatewayUrl);
+  } catch {
+    throw new InputError(`Input "archestra-gateway-url" is not a valid URL.`);
+  }
+  if (!["https:", "http:"].includes(parsedUrl.protocol)) {
+    throw new InputError(`Input "archestra-gateway-url" must use https or http.`);
+  }
+  if (!/\/mcp\/[^/]+\/?$/.test(parsedUrl.pathname)) {
+    throw new InputError(
+      `Input "archestra-gateway-url" must be the MCP gateway endpoint, for example https://archestra.example.com/v1/mcp/code-review.`
+    );
+  }
+  const actorToken = value("archestra-token");
+  const fallbackToken = value("fallback-token");
+  const tokenSource = actorToken ? "actor" : fallbackToken ? "fallback" : null;
+  let agents = agentList("agents", required2("agents"));
+  const fallbackAgents = value("fallback-agents");
+  if (tokenSource === "fallback" && fallbackAgents) agents = agentList("fallback-agents", fallbackAgents);
+  const maxFallbacksRaw = value("max-fallbacks");
+  const maxFallbacks = maxFallbacksRaw === "" || maxFallbacksRaw === "all" ? agents.length - 1 : integer2("max-fallbacks", maxFallbacksRaw, 0, 100);
+  let instructions = value("instructions");
+  const instructionsFile = value("instructions-file");
+  if (instructionsFile) {
+    let fileText;
+    try {
+      fileText = readFile(instructionsFile);
+    } catch {
+      throw new InputError(`Input "instructions-file": cannot read "${instructionsFile}".`);
+    }
+    instructions = [instructions, fileText.trim()].filter(Boolean).join("\n\n");
+  }
+  if (Buffer.byteLength(instructions, "utf8") > MAX_INSTRUCTIONS_BYTES) {
+    throw new InputError(`The review instructions are larger than ${MAX_INSTRUCTIONS_BYTES / 1024} KB.`);
+  }
+  const prNumberRaw = value("pr-number");
+  const maxAutoFixRounds = integer2("max-auto-fix-rounds", value("max-auto-fix-rounds") || "0", 0, 0);
+  return {
+    gatewayUrl,
+    token: actorToken || fallbackToken,
+    tokenSource,
+    agents,
+    strategy: oneOf("strategy", value("strategy") || "rotate", ["rotate", "ordered", "random"]),
+    retries: integer2("retries", value("retries") || "1", 0, 5),
+    maxFallbacks,
+    timeoutMs: integer2("timeout-minutes", value("timeout-minutes") || "30", 1, 360) * 6e4,
+    overallTimeoutMs: integer2("overall-timeout-minutes", value("overall-timeout-minutes") || "120", 1, 1440) * 6e4,
+    instructions,
+    githubToken: required2("github-token"),
+    post: oneOf("post", value("post") || "review", ["review", "comment", "none"]),
+    reviewEvent: oneOf("review-event", value("review-event") || "comment", ["comment", "request-changes"]),
+    failOn: oneOf("fail-on", value("fail-on") || "error", ["never", "findings", "error"]),
+    mode: oneOf("mode", value("mode") || "auto", ["auto", "review", "fix", "fix-ci", "fix-ci-main"]),
+    prNumber: prNumberRaw ? integer2("pr-number", prNumberRaw, 1, Number.MAX_SAFE_INTEGER) : null,
+    fixCommand: commandPrefix(value("fix-command") || "/archestra"),
+    fixCommands: boolean4("fix-commands", value("fix-commands") || "true"),
+    fixToken: value("fix-token"),
+    cloneToken: value("clone-token"),
+    fixTimeoutMs: integer2("fix-timeout-minutes", value("fix-timeout-minutes") || "45", 1, 360) * 6e4,
+    ciRerun: boolean4("ci-rerun", value("ci-rerun") || "false"),
+    maxAutoFixRounds,
+    incrementalReview: boolean4("incremental-review", value("incremental-review") || "true")
+  };
+}
+function agentList(name, raw) {
+  const agents = [
+    ...new Set(
+      raw.split(/[\s,]+/).map((agent) => agent.trim()).filter(Boolean)
+    )
+  ];
+  for (const agent of agents) {
+    if (!UUID.test(agent)) {
+      throw new InputError(`Input "${name}" has a value that is not an agent ID: "${agent}".`);
+    }
+  }
+  if (agents.length === 0) throw new InputError(`Input "${name}" has no agent IDs.`);
+  return agents;
+}
+function integer2(name, raw, min, max) {
+  if (!/^\d+$/.test(raw)) throw new InputError(`Input "${name}" must be a whole number.`);
+  const parsed = Number(raw);
+  if (parsed < min || parsed > max) {
+    throw new InputError(
+      min === max ? `Input "${name}" supports only ${min} in this version.` : `Input "${name}" must be from ${min} to ${max}.`
+    );
+  }
+  return parsed;
+}
+function boolean4(name, raw) {
+  if (/^(true|yes|1)$/i.test(raw)) return true;
+  if (/^(false|no|0)$/i.test(raw)) return false;
+  throw new InputError(`Input "${name}" must be true or false.`);
+}
+function oneOf(name, raw, allowed) {
+  if (allowed.includes(raw)) return raw;
+  throw new InputError(`Input "${name}" must be one of: ${allowed.join(", ")}.`);
+}
+function commandPrefix(raw) {
+  if (!/^\/[\w-]{1,40}$/.test(raw)) {
+    throw new InputError(`Input "fix-command" must be a slash and a word, for example /archestra.`);
+  }
+  return raw;
+}
+
+// src/run-attempt.ts
+var MAX_WORKSPACE_FILE_BYTES = 4 * 1024 * 1024;
+
+// src/github/pr.ts
+var MAX_DIFF_BYTES = 5 * 1024 * 1024;
+
 // src/github/sticky.ts
 import { createHash } from "node:crypto";
 
@@ -45072,9 +45200,7 @@ var ProgressSchema = external_exports.object({
   workflowRunUrl: external_exports.string(),
   /** The current step: "starting a run on agent 1 of 2", "waiting for the run". */
   step: external_exports.string().max(300).nullable(),
-  runUrl: external_exports.string().nullable(),
-  /** The head commit the job works on; null for comments written before this field. */
-  sha: external_exports.string().nullable().default(null)
+  runUrl: external_exports.string().nullable()
 });
 var LastJobSchema = external_exports.object({
   /** What the job did, in a few words: "reviewed", "applied 2 findings". */
@@ -45084,8 +45210,13 @@ var LastJobSchema = external_exports.object({
   /** ISO time of the start; null in comments written before this field existed. */
   startedAt: external_exports.string().nullable().default(null),
   workflowRunUrl: external_exports.string(),
-  /** Picks the header's wording. "superseded": a newer push canceled the job; "canceled": anything else did. */
-  outcome: external_exports.enum(["ok", "unavailable", "error", "superseded", "canceled"])
+  /** "ok", "unavailable" or "error": picks the header's wording. A stopped job is an "error" with a `stop` reason. */
+  outcome: external_exports.enum(["ok", "unavailable", "error"]),
+  /**
+   * Why a job stopped before it finished: a newer push replaced it, or something else canceled it.
+   * A field of its own, so that an older version of the action still reads the state.
+   */
+  stop: external_exports.enum(["superseded", "canceled"]).nullable().default(null)
 });
 var DeltaSchema = external_exports.object({
   /** The commit the review before this one covered. */
@@ -45205,20 +45336,20 @@ function encodeState(state) {
   return `<!-- archestra-state:${Buffer.from(JSON.stringify(state), "utf8").toString("base64url")} -->`;
 }
 var MAX_BODY_CHARS = 65e3;
-function fileUrl(repoUrl, pr, file2) {
-  return `${repoUrl}/pull/${pr}/files#diff-${createHash("sha256").update(file2).digest("hex")}`;
+function fileUrl(repoUrl2, pr, file2) {
+  return `${repoUrl2}/pull/${pr}/files#diff-${createHash("sha256").update(file2).digest("hex")}`;
 }
-function diffUrl(repoUrl, pr, finding) {
+function diffUrl(repoUrl2, pr, finding) {
   const end = finding.end_line ?? finding.line;
-  return `${fileUrl(repoUrl, pr, finding.file)}R${finding.line}${end > finding.line ? `-R${end}` : ""}`;
+  return `${fileUrl(repoUrl2, pr, finding.file)}R${finding.line}${end > finding.line ? `-R${end}` : ""}`;
 }
-function blobUrl(repoUrl, sha2, finding) {
+function blobUrl(repoUrl2, sha2, finding) {
   const path = finding.file.split("/").map((segment) => encodeURIComponent(segment).replace(/[()]/g, (char) => char === "(" ? "%28" : "%29")).join("/");
   const end = finding.end_line ?? finding.line;
-  return `${repoUrl}/blob/${sha2}/${path}#L${finding.line}${end > finding.line ? `-L${end}` : ""}`;
+  return `${repoUrl2}/blob/${sha2}/${path}#L${finding.line}${end > finding.line ? `-L${end}` : ""}`;
 }
-function commentUrl(repoUrl, pr, commentId) {
-  return `${repoUrl}/pull/${pr}#discussion_r${commentId}`;
+function commentUrl(repoUrl2, pr, commentId) {
+  return `${repoUrl2}/pull/${pr}#discussion_r${commentId}`;
 }
 function locationLink(state, context3, finding, table) {
   const path = table ? pathCell(finding.file) : oneLine(finding.file, 200).replace(/[`[\]]/g, "'");
@@ -45265,19 +45396,17 @@ function renderHeader(state, context3) {
   if (last) {
     const did = oneLine(last.did, 200);
     const duration3 = formatDuration(last.durationMs);
-    const text = {
+    const text = last.stop === "superseded" ? `Archestra stopped ${did} for @${last.login} after ${duration3}: a newer push replaced it` : last.stop === "canceled" ? `Archestra stopped ${did} for @${last.login} after ${duration3}: the job was canceled` : {
       ok: `Archestra ${did} for @${last.login} in ${duration3}`,
       unavailable: `Archestra could not finish ${did} for @${last.login} in ${duration3}`,
-      error: `Archestra stopped ${did} for @${last.login} with an error after ${duration3}`,
-      superseded: `Archestra stopped ${did} for @${last.login} after ${duration3}: a newer push replaced it`,
-      canceled: `Archestra stopped ${did} for @${last.login} after ${duration3}: the job was canceled`
+      error: `Archestra stopped ${did} for @${last.login} with an error after ${duration3}`
     }[last.outcome];
     return [`**${text}** \u2014\u2014 [View job](${last.workflowRunUrl})`, ""];
   }
   return [];
 }
 function renderBody(state, context3) {
-  const { command, repoUrl } = context3;
+  const { command, repoUrl: repoUrl2 } = context3;
   const pr = context3.marker.pr;
   const out = [
     serializeMarker(context3.marker),
@@ -45307,7 +45436,7 @@ function renderBody(state, context3) {
       `| --- | --- | --- | --- |${statuses ? " --- |" : ""}`
     );
     for (const finding of state.findings) {
-      const number4 = finding.commentId === null ? String(finding.n) : `[${finding.n}](${commentUrl(repoUrl, pr, finding.commentId)})`;
+      const number4 = finding.commentId === null ? String(finding.n) : `[${finding.n}](${commentUrl(repoUrl2, pr, finding.commentId)})`;
       const location = `${locationLink(state, context3, finding, true)}${finding.inline ? "" : " (outside the diff)"}`;
       out.push(
         `| ${number4} | ${finding.severity} | ${cell(findingTitle(finding), HEADING_MAX)} | ${location} |${statuses ? ` ${finding.status} |` : ""}`
@@ -45372,7 +45501,7 @@ function renderBody(state, context3) {
     for (const entry of state.applied) {
       const what = entry.finding ? `finding ${findingNumber(state, entry.finding)}` : `check \`${oneLine(entry.check ?? "", 120).replace(/`/g, "'")}\``;
       out.push(
-        `- [\`${shortSha(entry.commit)}\`](${repoUrl}/commit/${entry.commit}) ${what}: pushed by the review runtime on behalf of @${entry.login}${entry.runUrl ? ` ([run](${entry.runUrl}))` : ""}`
+        `- [\`${shortSha(entry.commit)}\`](${repoUrl2}/commit/${entry.commit}) ${what}: pushed by the review runtime on behalf of @${entry.login}${entry.runUrl ? ` ([run](${entry.runUrl}))` : ""}`
       );
     }
     out.push("");
@@ -45419,7 +45548,7 @@ function renderDelta(delta) {
   return lines;
 }
 function reviewNotes(state, context3) {
-  const { repoUrl } = context3;
+  const { repoUrl: repoUrl2 } = context3;
   const pr = context3.marker.pr;
   const body = [];
   if (state.reviewed.length > 0) {
@@ -45429,7 +45558,7 @@ function reviewNotes(state, context3) {
     body.push("**Change map**", "", "| File | What changed |", "| --- | --- |");
     for (const change of state.changes) {
       const text = `\`${pathCell(change.file)}${change.line === null ? "" : `:${change.line}`}\``;
-      const url2 = change.link === "line" && change.line !== null ? diffUrl(repoUrl, pr, { file: change.file, line: change.line }) : change.link === "file" ? fileUrl(repoUrl, pr, change.file) : null;
+      const url2 = change.link === "line" && change.line !== null ? diffUrl(repoUrl2, pr, { file: change.file, line: change.line }) : change.link === "file" ? fileUrl(repoUrl2, pr, change.file) : null;
       body.push(`| ${url2 ? `[${text}](${url2})` : text} | ${cell(change.what, 160)} |`);
     }
     body.push("");
@@ -45443,7 +45572,7 @@ function reviewNotes(state, context3) {
       body.push("| File | Lines | Focus |", "| --- | --- | --- |");
       for (const test of state.tests) {
         const path = `\`${pathCell(test.file)}\``;
-        const file2 = test.additions === null ? path : `[${path}](${fileUrl(repoUrl, pr, test.file)})`;
+        const file2 = test.additions === null ? path : `[${path}](${fileUrl(repoUrl2, pr, test.file)})`;
         const lines = test.additions === null ? "-" : `+${test.additions} \u2212${test.deletions ?? 0}`;
         body.push(`| ${file2} | ${lines} | ${cell(test.focus, 160)} |`);
       }
@@ -45631,7 +45760,7 @@ async function findSticky(gh, repo, pr) {
       if (comment.user && !isBotUser(comment.user)) continue;
       const marker = parseMarker(body);
       if (!marker) continue;
-      return { id: comment.id, body, marker, state: parseState(body) };
+      return { id: comment.id, body, marker, state: parseState(body), author: comment.user?.login ?? null };
     }
   }
   return null;
@@ -45643,6 +45772,11 @@ async function writeSticky(gh, repo, pr, existingId, body) {
   }
   const { data } = await gh.rest.issues.createComment({ ...repo, issue_number: pr, body });
   return data.id;
+}
+
+// src/modes/common.ts
+function commentCommand(inputs) {
+  return inputs.fixCommands ? inputs.fixCommand : null;
 }
 
 // src/stopped.ts
@@ -45680,7 +45814,8 @@ async function recordStoppedJob(p) {
         durationMs,
         startedAt: job.startedAt,
         workflowRunUrl: job.workflowRunUrl,
-        outcome
+        outcome: "error",
+        stop: outcome
       };
     }
     addJob(state, {
@@ -45719,18 +45854,20 @@ async function post() {
     await cancelIfLive(client, runId, log);
   }
   const job = parseSavedJob(getState("job"));
-  const githubToken = getInput("github-token");
-  if (!job || !githubToken) return;
-  setSecret(githubToken);
+  if (!job) return;
+  const inputs = readInputs(
+    (name) => getInput(name),
+    (path) => readFileSync2(path, "utf8")
+  );
+  setSecret(inputs.githubToken);
   const environment = readEnvironment(process.env, (path) => readFileSync2(path, "utf8"));
-  const fixCommands = !/^(false|no|0)$/i.test(getInput("fix-commands").trim());
   await recordStoppedJob({
-    gh: createOctokit(githubToken, { baseUrl: environment.apiUrl, retryDelaysMs: [1e3] }),
+    gh: createOctokit(inputs.githubToken, { baseUrl: environment.apiUrl, retryDelaysMs: [1e3] }),
     repo: environment.repo,
     job,
     render: {
       repoUrl: `${environment.serverUrl}/${environment.repo.owner}/${environment.repo.repo}`,
-      command: fixCommands ? getInput("fix-command").trim() || "/archestra" : null,
+      command: commentCommand(inputs),
       progressImageUrl: environment.progressImageUrl
     },
     now: Date.now(),

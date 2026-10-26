@@ -249,8 +249,6 @@ const ProgressSchema = z.object({
   /** The current step: "starting a run on agent 1 of 2", "waiting for the run". */
   step: z.string().max(300).nullable(),
   runUrl: z.string().nullable(),
-  /** The head commit the job works on; null for comments written before this field. */
-  sha: z.string().nullable().default(null),
 });
 
 const LastJobSchema = z.object({
@@ -261,8 +259,13 @@ const LastJobSchema = z.object({
   /** ISO time of the start; null in comments written before this field existed. */
   startedAt: z.string().nullable().default(null),
   workflowRunUrl: z.string(),
-  /** Picks the header's wording. "superseded": a newer push canceled the job; "canceled": anything else did. */
-  outcome: z.enum(["ok", "unavailable", "error", "superseded", "canceled"]),
+  /** "ok", "unavailable" or "error": picks the header's wording. A stopped job is an "error" with a `stop` reason. */
+  outcome: z.enum(["ok", "unavailable", "error"]),
+  /**
+   * Why a job stopped before it finished: a newer push replaced it, or something else canceled it.
+   * A field of its own, so that an older version of the action still reads the state.
+   */
+  stop: z.enum(["superseded", "canceled"]).nullable().default(null),
 });
 
 /** What changed since the review before this one; null for a first review. */
@@ -547,13 +550,16 @@ export function renderHeader(state: StickyState, context?: Pick<RenderContext, "
   if (last) {
     const did = oneLine(last.did, 200);
     const duration = formatDuration(last.durationMs);
-    const text = {
-      ok: `Archestra ${did} for @${last.login} in ${duration}`,
-      unavailable: `Archestra could not finish ${did} for @${last.login} in ${duration}`,
-      error: `Archestra stopped ${did} for @${last.login} with an error after ${duration}`,
-      superseded: `Archestra stopped ${did} for @${last.login} after ${duration}: a newer push replaced it`,
-      canceled: `Archestra stopped ${did} for @${last.login} after ${duration}: the job was canceled`,
-    }[last.outcome];
+    const text =
+      last.stop === "superseded"
+        ? `Archestra stopped ${did} for @${last.login} after ${duration}: a newer push replaced it`
+        : last.stop === "canceled"
+          ? `Archestra stopped ${did} for @${last.login} after ${duration}: the job was canceled`
+          : {
+              ok: `Archestra ${did} for @${last.login} in ${duration}`,
+              unavailable: `Archestra could not finish ${did} for @${last.login} in ${duration}`,
+              error: `Archestra stopped ${did} for @${last.login} with an error after ${duration}`,
+            }[last.outcome];
     return [`**${text}** —— [View job](${last.workflowRunUrl})`, ""];
   }
   return [];
@@ -1018,6 +1024,8 @@ export interface StickyComment {
   body: string;
   marker: StickyMarker;
   state: StickyState | null;
+  /** The login that wrote the comment: the identity of the action's GitHub token. */
+  author: string | null;
 }
 
 /** Finds the sticky comment of this pull request (a bot comment with the marker). */
@@ -1034,7 +1042,7 @@ export async function findSticky(gh: Octokit, repo: RepoRef, pr: number): Promis
       if (comment.user && !isBotUser(comment.user)) continue;
       const marker = parseMarker(body);
       if (!marker) continue;
-      return { id: comment.id, body, marker, state: parseState(body) };
+      return { id: comment.id, body, marker, state: parseState(body), author: comment.user?.login ?? null };
     }
   }
   return null;

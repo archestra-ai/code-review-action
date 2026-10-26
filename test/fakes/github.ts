@@ -105,6 +105,10 @@ export class FakeGitHub {
   rejectReview = false;
   /** An HTTP status that every new review gets, as a server error would. */
   reviewError: number | null = null;
+  /** GitHub refuses a change request on a pull request that the token's identity opened. */
+  refuseChangeRequests = false;
+  /** The status of every compare: "ahead", or "diverged" after a force-push. */
+  compareStatus = "ahead";
   private nextId = 5000;
 
   get fullName() {
@@ -172,6 +176,9 @@ export class FakeGitHub {
           event: string;
           comments: Array<{ path: string; line: number; start_line?: number; body: string }>;
         };
+        if (this.refuseChangeRequests && body.event === "REQUEST_CHANGES") {
+          return HttpResponse.json({ message: "Can not request changes on your own pull request" }, { status: 422 });
+        }
         if (this.reviewError !== null) {
           return HttpResponse.json({ message: "Server Error" }, { status: this.reviewError });
         }
@@ -268,7 +275,7 @@ export class FakeGitHub {
         const [, head] = String(params.basehead).split("...");
         const commits = this.branchCommits.get(head ?? "") ?? [];
         return HttpResponse.json({
-          status: "ahead",
+          status: this.compareStatus,
           commits: commits.map((commit) => ({
             sha: commit.sha,
             commit: { author: { email: commit.authorEmail, name: "x" }, message: "fix" },

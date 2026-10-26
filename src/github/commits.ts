@@ -24,6 +24,23 @@ export interface CommitCheck {
 }
 
 /**
+ * True when `base` is in the history of `head`. False after a force-push or a rebase that dropped
+ * it, and when GitHub cannot tell (the commit is gone, or the request fails).
+ */
+export async function isAncestor(gh: Octokit, repo: RepoRef, base: string, head: string): Promise<boolean> {
+  try {
+    const { data } = await gh.rest.repos.compareCommitsWithBasehead({
+      ...repo,
+      basehead: `${base}...${head}`,
+      per_page: 1,
+    });
+    return data.status === "ahead" || data.status === "identical";
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Checks commits that the runtime reported against GitHub: each one must be
  * between `base` and `head` (compare API) and have the expected author
  * email. Only verified commits are reported as applied.

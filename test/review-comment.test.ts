@@ -120,11 +120,45 @@ describe("change requests", () => {
     expect(harness.github.dismissed).toEqual([701]);
   });
 
+  it("posts a comment review when GitHub refuses the change request, so no finding loses its inline comment", async () => {
+    const harness = setup();
+    harness.github.refuseChangeRequests = true;
+    harness.archestra.script(AGENT_A, { end: "completed", files: { "review.json": reviewJson([FINDING_IN_DIFF]) } });
+    await run(harness.context("pull_request", prEvent(harness.github), { "review-event": "request-changes" }));
+    expect(harness.github.reviews.map((review) => review.event)).toEqual(["COMMENT"]);
+    expect(parseState(harness.github.stickyBody()!)!.findings[0]).toMatchObject({ inline: true });
+    expect(parseState(harness.github.stickyBody()!)!.findings[0]!.commentId).not.toBeNull();
+  });
+
   it("posts only comment reviews by default", async () => {
     const harness = setup();
     harness.archestra.script(AGENT_A, { end: "completed", files: { "review.json": reviewJson([FINDING_IN_DIFF]) } });
     await run(harness.context("pull_request", prEvent(harness.github)));
     expect(harness.github.reviews.map((review) => review.event)).toEqual(["COMMENT"]);
+  });
+});
+
+describe("review scope", () => {
+  it("reviews the whole pull request again after a force-push dropped the last reviewed commit", async () => {
+    const harness = setup();
+    harness.archestra.script(AGENT_A, { end: "completed", files: { "review.json": reviewJson([FINDING_IN_DIFF]) } });
+    await run(harness.context("pull_request", prEvent(harness.github)));
+    harness.github.pr.head.sha = "d".repeat(40);
+    harness.github.compareStatus = "diverged";
+    harness.archestra.script(AGENT_A, { end: "completed", files: { "review.json": reviewJson([]) } });
+    await run(harness.context("pull_request", prEvent(harness.github, "synchronize")));
+    expect(harness.archestra.starts[1]!.message).toContain("is no longer in the history of this pull request");
+    expect(parseState(harness.github.stickyBody()!)!.delta).toBeNull();
+  });
+
+  it("checks the previous findings again when the same commit is reviewed again", async () => {
+    const harness = setup();
+    harness.archestra.script(AGENT_A, { end: "completed", files: { "review.json": reviewJson([FINDING_IN_DIFF]) } });
+    await run(harness.context("pull_request", prEvent(harness.github)));
+    harness.archestra.script(AGENT_A, { end: "completed", files: { "review.json": reviewJson([FINDING_IN_DIFF]) } });
+    await run(harness.context("pull_request", prEvent(harness.github, "reopened")));
+    expect(harness.archestra.starts[1]!.message).toContain("This review repeats the last one on the same commit");
+    expect(harness.archestra.starts[1]!.attachmentNames).toContain("previous-findings.json");
   });
 });
 
@@ -178,6 +212,34 @@ describe("failures", () => {
 });
 
 describe("stopped jobs", () => {
+  it("starts no run and writes nothing once the runner cancels the job", async () => {
+    const harness = setup();
+    harness.archestra.script(AGENT_A, { end: "completed", files: { "review.json": reviewJson() } });
+    const ctx = { ...harness.context("pull_request", prEvent(harness.github)), isStopping: () => true };
+    await expect(run(ctx)).rejects.toThrow(/canceled/);
+    expect(harness.archestra.starts).toHaveLength(0);
+    expect(harness.github.stickyBody()).toBeNull();
+  });
+
+  it("finishes only its own progress header, never a newer job's", async () => {
+    const { finishProgress } = await import("../src/modes/common");
+    const { emptyState } = await import("../src/github/sticky");
+    const harness = setup();
+    const ctx = harness.context("pull_request", prEvent(harness.github));
+    const state = emptyState("main");
+    state.progress = {
+      doing: "reviewing `eeeeeee`",
+      login: "alice",
+      startedAt: new Date(harness.clock.now()).toISOString(),
+      workflowRunUrl: "https://github.com/acme/widgets/actions/runs/99",
+      step: "waiting for the runtime to finish",
+      runUrl: null,
+    };
+    finishProgress(ctx, state, { did: "the review of `aaaaaaa`", login: "alice", outcome: "error" });
+    expect(state.progress?.workflowRunUrl).toBe("https://github.com/acme/widgets/actions/runs/99");
+    expect(state.last?.workflowRunUrl).toBe(ctx.workflowRunUrl);
+  });
+
   async function inProgress() {
     const harness = setup();
     harness.archestra.script(AGENT_A, { end: "completed", files: { "review.json": reviewJson([FINDING_IN_DIFF]) } });
@@ -211,7 +273,7 @@ describe("stopped jobs", () => {
       attempts: [],
     });
     // The header still belongs to the job that finished.
-    expect(state.last?.outcome).toBe("ok");
+    expect(state.last).toMatchObject({ outcome: "ok", stop: null });
     // A second call (the post step after the signal handler) adds nothing.
     expect(await record(job)).toBe("skipped");
     expect(parseState(harness.github.stickyBody()!)!.jobs).toHaveLength(2);
@@ -232,7 +294,6 @@ describe("stopped jobs", () => {
       workflowRunUrl: job.workflowRunUrl,
       step: "waiting for the runtime to finish",
       runUrl: null,
-      sha: job.sha,
     };
     state.jobs = [];
     const { renderSticky, parseMarker } = await import("../src/github/sticky");
@@ -248,5 +309,7 @@ describe("stopped jobs", () => {
       "**Archestra stopped reviewing `aaaaaaa` for @alice after 2 min 5 s: the job was canceled** —— [View job](https://github.com/acme/widgets/actions/runs/1)",
     );
     expect(parseState(sticky)!.jobs.at(-1)!.outcome).toBe("canceled");
+    // An older version of the action still reads this state: the outcome stays in its old set.
+    expect(parseState(sticky)!.last).toMatchObject({ outcome: "error", stop: "canceled" });
   });
 });

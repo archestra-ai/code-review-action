@@ -225,33 +225,35 @@ export async function postReview(
 ): Promise<{ posted: boolean; reviewId: number | null }> {
   const event = params.event ?? "COMMENT";
   if (params.comments.length === 0 && event === "COMMENT") return { posted: true, reviewId: null };
-  const create = (comments: InlineComment[]) =>
-    gh.rest.pulls.createReview({
+  const create = async (kind: "COMMENT" | "REQUEST_CHANGES", comments: InlineComment[]) => {
+    const { data } = await gh.rest.pulls.createReview({
       ...repo,
       pull_number: params.pr,
       commit_id: params.headSha,
-      event,
+      event: kind,
       body: `${params.body}\n\n${REVIEW_MARKER}`,
       ...(comments.length > 0 ? { comments } : {}),
     });
+    return data.id;
+  };
   try {
-    const { data } = await create(params.comments);
-    return { posted: true, reviewId: data.id };
+    return { posted: true, reviewId: await create(event, params.comments) };
   } catch (error) {
-    if (httpStatus(error) === 422 && params.comments.length > 0) {
-      params.log.warning(
-        `GitHub rejected the inline comments; the findings go into the summary: ${errorMessage(error)}`,
-      );
-      if (event !== "COMMENT") {
-        try {
-          await create([]);
-        } catch (retryError) {
-          params.log.warning(`Could not post the change request: ${errorMessage(retryError)}`);
-        }
+    if (httpStatus(error) !== 422) throw error;
+    // GitHub refuses a change request on a pull request that the token's identity opened; post the
+    // same comments as a comment review.
+    if (event !== "COMMENT") {
+      params.log.warning(`GitHub refused the change request; posting a comment review: ${errorMessage(error)}`);
+      if (params.comments.length === 0) return { posted: true, reviewId: null };
+      try {
+        return { posted: true, reviewId: await create("COMMENT", params.comments) };
+      } catch (retryError) {
+        if (httpStatus(retryError) !== 422) throw retryError;
+        error = retryError;
       }
-      return { posted: false, reviewId: null };
     }
-    throw error;
+    params.log.warning(`GitHub rejected the inline comments; the findings go into the summary: ${errorMessage(error)}`);
+    return { posted: false, reviewId: null };
   }
 }
 
@@ -262,14 +264,16 @@ export async function postReview(
 export async function dismissChangeRequests(
   gh: Octokit,
   repo: RepoRef,
-  params: { pr: number; message: string; log: Logger },
+  /** `self`: the login of the action's token (the author of its review comment); null when unknown. */
+  params: { pr: number; message: string; self: string | null; log: Logger },
 ): Promise<number> {
   let dismissed = 0;
   try {
     const reviews = await gh.paginate(gh.rest.pulls.listReviews, { ...repo, pull_number: params.pr, per_page: 100 });
     for (const review of reviews) {
       if (review.state !== "CHANGES_REQUESTED" || !(review.body ?? "").includes(REVIEW_MARKER)) continue;
-      if (review.user && !isBot(review.user)) continue;
+      // Only the action's own requests: by its login when known, else by a bot.
+      if (params.self ? review.user?.login !== params.self : review.user && !isBot(review.user)) continue;
       await gh.rest.pulls.dismissReview({
         ...repo,
         pull_number: params.pr,

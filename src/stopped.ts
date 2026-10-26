@@ -64,7 +64,8 @@ export async function recordStoppedJob(p: {
         durationMs,
         startedAt: job.startedAt,
         workflowRunUrl: job.workflowRunUrl,
-        outcome,
+        outcome: "error",
+        stop: outcome,
       };
     }
     addJob(state, {

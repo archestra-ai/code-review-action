@@ -142,6 +142,8 @@ export async function updateSticky(
   mutate: (state: StickyState, marker: StickyMarker) => void,
 ): Promise<number> {
   const sticky = await findSticky(ctx.gh, ctx.repo, pr.number);
+  // A canceled job records itself once, from the signal handler; the work still in flight writes nothing.
+  if (ctx.isStopping()) return sticky?.id ?? 0;
   const state = sticky?.state ?? emptyState(pr.baseRef);
   const marker: StickyMarker = sticky?.marker ?? {
     repo: fullName(ctx.repo),
@@ -190,7 +192,6 @@ export async function startProgress(
       workflowRunUrl: ctx.workflowRunUrl,
       step: "preparing the inputs",
       runUrl: null,
-      sha: pr.headSha,
     };
   });
 }
@@ -223,16 +224,19 @@ export function finishProgress(
   state: StickyState,
   job: { did: string; login: string; outcome: LastJob["outcome"] },
 ): void {
-  const startedAt = state.progress ? Date.parse(state.progress.startedAt) : Number.NaN;
+  // A newer job may have put up its own progress header; this job leaves it alone.
+  const mine = state.progress?.workflowRunUrl === ctx.workflowRunUrl ? state.progress : null;
+  const startedAt = mine ? mine.startedAt : new Date(ctx.startedAt).toISOString();
   state.last = {
     did: job.did,
     login: job.login,
-    durationMs: Number.isFinite(startedAt) ? Math.max(0, ctx.clock.now() - startedAt) : 0,
-    startedAt: state.progress?.startedAt ?? null,
+    durationMs: Math.max(0, ctx.clock.now() - Date.parse(startedAt)),
+    startedAt,
     workflowRunUrl: ctx.workflowRunUrl,
     outcome: job.outcome,
+    stop: null,
   };
-  state.progress = null;
+  if (mine) state.progress = null;
 }
 
 /**
@@ -244,12 +248,12 @@ export function recordJob(
   state: StickyState,
   job: { label: string; outcome: string | null; attempts: AttemptRecord[] },
 ): void {
-  const startedAt = state.progress?.startedAt ?? state.last?.startedAt ?? new Date(ctx.clock.now()).toISOString();
+  const own = state.progress?.workflowRunUrl === ctx.workflowRunUrl ? state.progress : null;
+  const last = state.last?.workflowRunUrl === ctx.workflowRunUrl ? state.last : null;
+  const startedAt = own?.startedAt ?? last?.startedAt ?? new Date(ctx.startedAt).toISOString();
   // The same duration as the header, when finishProgress already ran for this job.
   const durationMs =
-    !state.progress && state.last?.startedAt === startedAt
-      ? state.last.durationMs
-      : Math.max(0, ctx.clock.now() - Date.parse(startedAt));
+    !own && last?.startedAt === startedAt ? last.durationMs : Math.max(0, ctx.clock.now() - Date.parse(startedAt));
   addJob(state, {
     label: job.label,
     startedAt,
