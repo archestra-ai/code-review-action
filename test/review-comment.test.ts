@@ -274,6 +274,47 @@ describe("progress checklist", () => {
   });
 });
 
+describe("checks", () => {
+  it("gives the reviewer the checks of the head commit, with the details of the failing ones", async () => {
+    const harness = setup();
+    harness.github.checkRuns = [
+      {
+        id: 301,
+        name: "Supply Chain Policy",
+        app: "github-actions",
+        conclusion: "failure",
+        log: "",
+        baseBranchConclusion: "success",
+        annotations: [
+          {
+            path: "release.yml",
+            start_line: 3,
+            end_line: 3,
+            annotation_level: "failure",
+            message: "agent-kimi archives are not relayed",
+          },
+        ],
+      },
+      { id: 302, name: "lint", app: "github-actions", conclusion: "success", log: "", baseBranchConclusion: "success" },
+    ];
+    harness.archestra.script(AGENT_A, { end: "completed", files: { "review.json": reviewJson() } });
+    await run(harness.context("pull_request", prEvent(harness.github)));
+    const start = harness.archestra.starts[0]!;
+    expect(start.attachmentNames).toContain("checks.json");
+    const checks = JSON.parse(start.attachments["checks.json"]!) as Array<{
+      name: string;
+      conclusion: string;
+      annotations?: Array<{ message: string }>;
+    }>;
+    expect(checks.map((check) => [check.name, check.conclusion])).toEqual([
+      ["Supply Chain Policy", "failure"],
+      ["lint", "success"],
+    ]);
+    expect(checks[0]!.annotations?.[0]?.message).toBe("agent-kimi archives are not relayed");
+    expect(start.message).toContain("Read `checks.json`");
+  });
+});
+
 describe("review scope", () => {
   it("reviews the whole pull request again after a force-push dropped the last reviewed commit", async () => {
     const harness = setup();

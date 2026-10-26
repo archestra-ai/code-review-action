@@ -46,27 +46,64 @@ export const FAILING_CONCLUSIONS = new Set(["failure", "timed_out", "startup_fai
 export const DEFAULT_LOG_CAP_BYTES = 200 * 1024;
 const MAX_ANNOTATIONS = 50;
 
+/** One check of the reviewed commit, as the review sees it at the start. */
+export interface CheckSnapshotEntry {
+  name: string;
+  /** queued, in_progress or completed. */
+  status: string;
+  conclusion: string | null;
+  url: string | null;
+  /** For a failing check: its summary and annotations, bounded. */
+  summary?: string;
+  annotations?: CiAnnotation[];
+}
+
+/**
+ * The checks of the reviewed commit, for the reviewer: every check's state, and the summary and
+ * annotations of the failing ones, so that a failure the pull request causes becomes a finding.
+ * Cheap: one listing, and the annotations of at most five failing checks; no logs. A failure to
+ * read the checks gives an empty list, so the review still runs.
+ */
+export async function checkSnapshot(
+  gh: Octokit,
+  repo: RepoRef,
+  ref: string,
+  log: Logger,
+): Promise<{ failing: number; checks: CheckSnapshotEntry[] }> {
+  try {
+    const runs = await gh.paginate(gh.rest.checks.listForRef, { ...repo, ref, filter: "latest", per_page: 100 });
+    const checks: CheckSnapshotEntry[] = [];
+    let detailed = 0;
+    for (const run of runs.slice(0, 100)) {
+      const entry: CheckSnapshotEntry = {
+        name: run.name,
+        status: run.status,
+        conclusion: run.conclusion ?? null,
+        url: run.html_url ?? null,
+      };
+      if (run.conclusion && FAILING_CONCLUSIONS.has(run.conclusion) && detailed < 5) {
+        detailed++;
+        if (run.output?.summary) entry.summary = run.output.summary.slice(0, 2000);
+        if ((run.output?.annotations_count ?? 0) > 0) {
+          entry.annotations = (await annotations(gh, repo, run.id, log)).slice(0, 10);
+        }
+      }
+      checks.push(entry);
+    }
+    const failing = runs.filter((run) => run.conclusion && FAILING_CONCLUSIONS.has(run.conclusion)).length;
+    return { failing, checks };
+  } catch (error) {
+    log.warning(`Could not read the checks of ${ref.slice(0, 7)}: ${errorMessage(error)}`);
+    return { failing: 0, checks: [] };
+  }
+}
+
 /**
  * Collects the evidence for the triage: failing check runs of the head
  * commit, their annotations and, for GitHub Actions jobs, the log tail and
  * the latest result of the same job on the base branch. Non-Actions checks
  * give annotations and the summary only.
  */
-/**
- * How many check runs fail on `ref`. Cheap: one listing, no logs. A failure
- * to read the checks counts as zero, so the review still posts; the log
- * says why the triage command is missing.
- */
-export async function countFailingChecks(gh: Octokit, repo: RepoRef, ref: string, log: Logger): Promise<number> {
-  try {
-    const checkRuns = await gh.paginate(gh.rest.checks.listForRef, { ...repo, ref, filter: "latest", per_page: 100 });
-    return checkRuns.filter((run) => run.conclusion && FAILING_CONCLUSIONS.has(run.conclusion)).length;
-  } catch (error) {
-    log.warning(`Could not read the checks of ${ref.slice(0, 7)}: ${errorMessage(error)}`);
-    return 0;
-  }
-}
-
 export async function collectCiEvidence(
   gh: Octokit,
   repo: RepoRef,

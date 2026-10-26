@@ -12,7 +12,7 @@ import {
   repoUrl,
 } from "../context";
 import { CONTRACTS } from "../contracts";
-import { countFailingChecks } from "../github/ci";
+import { checkSnapshot } from "../github/ci";
 import { isAncestor } from "../github/commits";
 import { buildDiffIndex, excerptFor, isRangeInDiff } from "../github/diff";
 import { httpStatus } from "../github/octokit";
@@ -78,12 +78,13 @@ export async function runReview(ctx: ActionContext, prNumber: number): Promise<A
     return makeResult("review", { status: "skipped", summary: `No review: ${skip}.` });
   }
 
-  const [files, diff, sticky, failingChecks] = await Promise.all([
+  const [files, diff, sticky, checks] = await Promise.all([
     loadChangedFiles(gh, repo, pr.number),
     loadDiff(gh, repo, pr.number),
     findSticky(gh, repo, pr.number),
-    countFailingChecks(gh, repo, pr.headSha, log),
+    checkSnapshot(gh, repo, pr.headSha, log),
   ]);
+  const failingChecks = checks.failing;
   const previous = sticky?.state ?? null;
   const marker = sticky?.marker ?? null;
 
@@ -109,6 +110,7 @@ export async function runReview(ctx: ActionContext, prNumber: number): Promise<A
     textAttachment("pr.diff", diff.diff, "text/x-diff"),
   ];
   if (inputs.instructions) attachments.push(textAttachment("instructions.md", inputs.instructions, "text/markdown"));
+  if (checks.checks.length > 0) attachments.push(jsonAttachment("checks.json", checks.checks));
   const previousFindings = previous?.findings ?? [];
   if (previousFindings.length > 0) {
     attachments.push(
