@@ -1,5 +1,5 @@
 name: Archestra code review
-description: Review a pull request on an Archestra Agent Runtime, and apply fixes or fix failing checks when a maintainer asks.
+description: Review pull requests using Archestra Agent Runtimes, with interactive fixes and CI triage.
 author: Archestra
 branding:
   icon: check-circle
@@ -7,130 +7,104 @@ branding:
 
 inputs:
   archestra-gateway-url:
-    description: >-
-      The Archestra MCP gateway that exposes the Remote Agents tools, for example
-      https://archestra.example.com/v1/mcp/code-review.
+    description: Archestra MCP gateway endpoint (e.g. https://archestra.example.com/v1/mcp/code-review).
     required: true
   archestra-token:
-    description: >-
-      The Archestra platform token of the person who caused this event (the pull request author, the
-      pusher, or the commenter). The runs act as this person: their credentials, their Claude account,
-      their costs. Empty skips the event with a warning, unless "fallback-token" is set.
+    description: Archestra platform token of the actor. If empty, the action skips execution unless fallback-token is set.
     default: ""
   fallback-token:
-    description: >-
-      A shared platform token (for example a team token) for actors without their own token. The runs
-      act as the token's owner, who pays for them. Empty disables the fallback.
+    description: Shared platform token used when the actor has no personal token.
     default: ""
   agents:
-    description: The IDs of the Archestra agents to use, one for each line. Each agent must have a dedicated runtime.
+    description: Archestra agent IDs, one per line. Each agent must have a dedicated runtime.
     required: true
   fallback-agents:
-    description: >-
-      The agents to use with "fallback-token". Empty means "agents". Leave out agents that use a person's
-      own subscription.
+    description: Agent IDs to use with fallback-token. Defaults to agents.
     default: ""
   strategy:
-    description: >-
-      How to select the first agent. "rotate": agent number (PR number + run attempt) mod N.
-      "ordered": the first agent, then the next ones. "random": a random order.
+    description: Agent selection strategy ("rotate", "ordered", or "random").
     default: rotate
   retries:
-    description: How many times to try the same agent again after a temporary failure (0 to 5).
+    description: Number of retries on the same agent after a temporary failure (0 to 5).
     default: "1"
   max-fallbacks:
-    description: How many more agents to try after a permanent failure. Empty means all remaining agents.
+    description: Number of alternative agents to try after a permanent failure. Defaults to all remaining agents.
     default: ""
   timeout-minutes:
-    description: >-
-      The time limit for one review attempt, in minutes. A cold start of a node can take 5 minutes, and the
-      runtime spends up to 10 minutes on checks of the changed code.
+    description: Timeout for a single review attempt, in minutes.
     default: "30"
   overall-timeout-minutes:
-    description: The time limit for all attempts together, in minutes.
+    description: Total timeout across all attempts, in minutes.
     default: "120"
   instructions:
-    description: More review rules, added to the review brief as instructions.md.
+    description: Additional review instructions passed to the agent.
     default: ""
   instructions-file:
-    description: A file in the workspace with more review rules. The action adds its text after "instructions".
+    description: Path to a workspace file containing review instructions.
     default: ""
   github-token:
-    description: The token that posts the review and the comments. It needs "pull-requests write".
+    description: GitHub token for posting review comments. Requires pull-requests write.
     default: ${{ github.token }}
   post:
-    description: >-
-      Where to post the review. "review": a review comment with the summary, and inline comments.
-      "comment": the review comment only. "none": no posting (outputs only; fixes then are not available).
+    description: Where to post review output ("review", "comment", or "none").
     default: review
   fail-on:
-    description: >-
-      When the step fails. "never": the step does not fail because of the review. "findings": the step fails when
-      the review has findings. "error": the step fails when no runtime completes the work.
+    description: Step failure condition ("never", "findings", or "error").
     default: never
   mode:
-    description: >-
-      The mode: "auto" (from the event), "review", "fix", "fix-ci" or "fix-ci-main".
-      Set it for workflow_dispatch together with "pr-number".
+    description: Execution mode ("auto", "review", "fix", "fix-ci", or "fix-ci-main").
     default: auto
   pr-number:
-    description: The pull request number, for events without a pull request (for example workflow_dispatch).
+    description: Pull request number for workflow_dispatch events.
     default: ""
   fix-command:
-    description: The comment command prefix.
+    description: Comment command prefix.
     default: /archestra
   fix-commands:
-    description: >-
-      Set to false when no workflow listens to the comment commands (for example, when there is no
-      GitHub App for pushes). The review comment and the inline comments then show no commands.
+    description: Set to false to hide command instructions when fix workflows are not configured.
     default: "true"
   fix-token:
-    description: >-
-      A GitHub App installation token for this repository (contents write, pull-requests write, actions read;
-      actions write if ci-rerun is true). The runtime pushes fixes with it. Without it, fixes are not available.
+    description: GitHub App installation token for pushing fixes.
     default: ""
   clone-token:
-    description: >-
-      A read-only GitHub token (contents read) for a private repository. Before each review, the action
-      stores it as the actor's CODE_REVIEW_GITHUB_TOKEN credential on the agent, so the runtime can clone. Empty: the
-      review uses the value that is already stored. Public repositories do not need it.
+    description: Read-only GitHub token for cloning private repositories.
     default: ""
   fix-timeout-minutes:
-    description: The time limit for one fix or CI triage attempt, in minutes.
+    description: Timeout for a single fix or CI triage attempt, in minutes.
     default: "45"
   ci-rerun:
-    description: Set to true to re-run the failed jobs that the CI triage finds flaky. The fix token then needs "actions write".
+    description: Set to true to re-run failed jobs classified as flaky. Requires actions write.
     default: "false"
   max-auto-fix-rounds:
-    description: Automatic fix rounds without a person. Only 0 is supported; each fix needs a person.
+    description: Maximum automatic fix rounds without human approval. Currently supports 0 only.
     default: "0"
   incremental-review:
-    description: Set to false to start a fresh run for each review instead of continuing the workspace of the last review.
+    description: Set to false to start a fresh run for each review instead of continuing the previous workspace.
     default: "true"
 
 outputs:
   status:
-    description: "The result: success, skipped, nothing-to-do, unauthorized, unavailable, aborted or error."
+    description: Execution status (success, skipped, nothing-to-do, unauthorized, unavailable, aborted, or error).
   mode:
-    description: The mode that ran.
+    description: Mode executed.
   agent-id:
-    description: The agent that completed the work.
+    description: Agent ID that completed the run.
   run-id:
-    description: The Archestra run (task) ID of the completed work.
+    description: Archestra task/run ID.
   run-url:
-    description: The link to the run page in Archestra.
+    description: URL to the Archestra run dashboard.
   findings-count:
-    description: The number of review findings.
+    description: Number of review findings.
   attempts:
-    description: The attempts as JSON (agent, run, result, reason, duration).
+    description: JSON array of attempt history (agent, run, result, reason, duration).
   pushed-commits:
-    description: The verified commits that the runtime pushed, as a JSON array.
+    description: JSON array of commit SHAs pushed by fix mode.
   applied:
-    description: The applied findings as JSON ([{finding, commit}]).
+    description: JSON array of applied findings [{finding, commit}].
   skipped:
-    description: The skipped findings as JSON ([{finding, reason}]).
+    description: JSON array of skipped findings [{finding, reason}].
   triage:
-    description: The CI triage result as JSON.
+    description: JSON object containing CI triage results.
 
 runs:
   using: node24

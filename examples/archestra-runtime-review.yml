@@ -1,23 +1,13 @@
-# Adoption workflow for archestra-ai/archestra.
-# Copy to .github/workflows/archestra-runtime-review.yml beside
-# claude-coreteam-review.yml, and copy archestra-runtime-review-run.yml beside
-# it. Same triggers and filters as the Claude review (opened, synchronize,
-# ready_for_review, reopened; same repository; not a draft; no "[WIP]"), plus
-# comment events for the fix commands.
+# Pull request review and fix workflow.
+# Resolves the actor's Archestra token, then invokes the review job workflow.
 #
-# Each run acts as the person who caused the event, with that person's
-# Archestra platform token: their credentials, their Claude account, their
-# costs. The "actor" job finds the name of that person's token secret. The
-# review and fix jobs call the reusable job workflow and pass it only that
-# one token, so no job gets the whole secrets context.
-#
-# Secrets: ARCHESTRA_TOKEN_<LOGIN> for each person (organization secrets, for
-# example ARCHESTRA_TOKEN_OCTO_CAT for octo-cat), ARCHESTRA_REVIEW_APP_ID and
-# ARCHESTRA_REVIEW_APP_PRIVATE_KEY (GitHub App with contents: write,
-# pull-requests: write, actions: read).
-# Variables: ARCHESTRA_REVIEW_GATEWAY_URL (the MCP gateway endpoint, for
-# example https://archestra.example.com/v1/mcp/code-review),
-# ARCHESTRA_REVIEW_AGENTS (agent IDs, one per line).
+# Secrets:
+#   ARCHESTRA_TOKEN_<LOGIN>: Platform token per contributor (e.g. ARCHESTRA_TOKEN_OCTO_CAT).
+#   ARCHESTRA_REVIEW_APP_ID: GitHub App ID for pushing fixes.
+#   ARCHESTRA_REVIEW_APP_PRIVATE_KEY: GitHub App private key for pushing fixes.
+# Variables:
+#   ARCHESTRA_REVIEW_GATEWAY_URL: MCP gateway endpoint (e.g. https://archestra.example.com/v1/mcp/code-review).
+#   ARCHESTRA_REVIEW_AGENTS: Agent IDs, one per line.
 name: Archestra Runtime Review
 
 on:
