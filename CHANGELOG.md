@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.4.0 (2026-10-27)
+
+- Shorter review comment: the verdict and what to do first come first, then the findings table. A finding with an inline comment is written out only there; the table links to it. What the review read, the change map, observations, tests and limitations fold into "Review notes".
+- A re-review leads with what changed since the last reviewed commit: fixed findings with their evidence, findings still open, and new ones.
+- The verdict follows from the severities (medium or above requests changes; low and nit only comment), so the same findings always get the same verdict.
+- The review body names the verdict and links the review comment as the summary.
+- New `review-event` input: `request-changes` submits a change request for blocking findings and dismisses it once a later review finds nothing that blocks.
+- A fixed finding's thread names the two reviewed commits and the evidence, not a single fix commit.
+- The brief drops the required diagrams, gives the summary a word budget that grows with the diff, asks for evidence before a finding counts as fixed, and keeps tools, paths, input files and Guardrails out of the review.
+- `fail-on` defaults to `error`: the step fails when the review is unavailable or stops with an error.
+- A canceled job stops its runtime run while the job can still reach the gateway, and records itself in History ("superseded by …" or "canceled"). History has one row per job with the duration the header shows.
+- GitHub requests that fail before reaching GitHub (DNS, TLS, refused connections) are retried, as are reads after a dropped connection or a 502, 503 or 504.
+
 ## 0.3.1 (2026-10-26)
 
 - Display animated Archestra mark in the in-progress review header (`assets/progress.gif`) with dark theme support.

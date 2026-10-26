@@ -3,13 +3,14 @@ import { ArchestraClient } from "../src/archestra/client";
 import type { ActionContext } from "../src/context";
 import { createOctokit } from "../src/github/octokit";
 import { type Inputs, readInputs } from "../src/inputs";
+import type { SavedJob } from "../src/stopped";
 import type { Logger } from "../src/util";
 import { FakeArchestra } from "./fakes/archestra";
 import { FakeGitHub } from "./fakes/github";
 
 /** An Octokit whose requests go through the global fetch, which msw intercepts. */
-export function testOctokit(token: string) {
-  return createOctokit(token, { fetch: (input, init) => globalThis.fetch(input, init) });
+export function testOctokit(token: string, retryDelaysMs: readonly number[] = []) {
+  return createOctokit(token, { fetch: (input, init) => globalThis.fetch(input, init), retryDelaysMs });
 }
 
 export const AGENT_A = "11111111-1111-4111-8111-111111111111";
@@ -57,6 +58,7 @@ export interface Harness {
   clock: FakeClock;
   log: MemoryLogger;
   live: Array<string | null>;
+  jobs: SavedJob[];
   context(eventName: string, payload: unknown, inputOverrides?: Record<string, string>): ActionContext;
 }
 
@@ -66,12 +68,14 @@ export function createHarness(): Harness {
   const clock = new FakeClock();
   const log = new MemoryLogger();
   const live: Array<string | null> = [];
+  const jobs: SavedJob[] = [];
   return {
     archestra,
     github,
     clock,
     log,
     live,
+    jobs,
     context(eventName, payload, inputOverrides = {}) {
       const inputs = testInputs(inputOverrides, archestra);
       return {
@@ -91,6 +95,7 @@ export function createHarness(): Harness {
         clock,
         random: () => 0.5,
         saveLiveRun: (runId) => void live.push(runId),
+        saveJob: (job) => void jobs.push(job),
         startedAt: clock.now(),
       };
     },

@@ -4,6 +4,7 @@ import { type AttemptRecord, type FallbackResult, type ProgressReporter, runWith
 import type { Octokit } from "./github/octokit";
 import type { Inputs } from "./inputs";
 import { type AttemptValue, type Clock, continueRun, executeAttempt, readContract } from "./run-attempt";
+import type { SavedJob } from "./stopped";
 import type { Attachment, Logger, RepoRef } from "./util";
 
 export interface ActionContext {
@@ -24,8 +25,10 @@ export interface ActionContext {
   log: Logger;
   clock: Clock;
   random: () => number;
-  /** Records the live run, so the post step can cancel it. */
+  /** Records the live run, so that a canceled job can cancel it. */
   saveLiveRun: (runId: string | null) => void;
+  /** Records the job in progress, so that a canceled job can still record itself in the review comment. */
+  saveJob: (job: SavedJob) => void;
   startedAt: number;
 }
 

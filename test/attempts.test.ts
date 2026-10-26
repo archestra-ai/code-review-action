@@ -283,7 +283,7 @@ describe("executeAttempt against the fake Archestra gateway", () => {
       { end: "completed", files: {} },
       { end: "completed", files: { "review.json": { verdict: "maybe" } } },
     );
-    for (const reason of [/missing/, /does not match the schema/]) {
+    for (const reason of [/without writing its result/, /does not match the contract/]) {
       const outcome = await run(AGENT_A);
       expect(outcome.ok).toBe(false);
       if (!outcome.ok) {
@@ -328,7 +328,7 @@ describe("executeAttempt against the fake Archestra gateway", () => {
     const second = await resume(first.ok ? first.value.runId : "");
     expect(second.ok ? null : second.classification).toMatchObject({
       source: "contract",
-      reason: "review.json was not written in this turn",
+      reason: "the run did not write a new result in this turn",
     });
   });
 

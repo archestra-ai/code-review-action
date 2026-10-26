@@ -41,7 +41,8 @@ export const PreviousFindingStatusSchema = z.enum(["fixed", "still_present", "re
 
 export const ReviewResultSchema = z
   .object({
-    verdict: z.enum(["approve", "comment", "request_changes"]),
+    // The action derives the verdict from the severities; a runtime that still writes one is accepted.
+    verdict: z.enum(["approve", "comment", "request_changes"]).optional(),
     // The brief asks for 8000 characters at most; the contract leaves room for a runtime that overshoots.
     summary: z.string().max(12_000),
     // The brief asks for short entries and few of them; the limits here only stop pathological output,
@@ -86,7 +87,7 @@ export const ReviewResultSchema = z
         z.object({
           id: z.string().min(1).max(100),
           status: PreviousFindingStatusSchema,
-          note: z.string().max(1000).optional(),
+          note: z.string().max(1000).optional().describe("For fixed: the file and line that show the fix"),
         }),
       )
       .max(100)

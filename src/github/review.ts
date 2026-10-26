@@ -1,4 +1,5 @@
-import type { ReviewFinding } from "../contracts";
+import type { ReviewFinding, Severity } from "../contracts";
+import type { ReviewEvent } from "../inputs";
 import { errorMessage, type Logger, type RepoRef, truncate } from "../util";
 import { type DiffIndex, isRangeInDiff } from "./diff";
 import { httpStatus, type Octokit } from "./octokit";
@@ -179,37 +180,113 @@ export function inlineBody(
   return parts.join("\n");
 }
 
+export type Verdict = "approve" | "comment" | "request_changes";
+
+const BLOCKING: ReadonlySet<Severity> = new Set(["critical", "high", "medium"]);
+
 /**
- * Posts one review with the inline comments. `posted` is false when GitHub
- * rejects the comments (for example, a line that is no longer in the diff);
- * the caller then moves those findings into the summary. `reviewId` names
- * the posted review; null when there was nothing to post.
+ * The verdict of a set of findings: changes requested for a finding of medium or above, comments
+ * for low and nit findings only, approval for none. The runtime's own verdict is not used, so the
+ * same findings always get the same verdict.
+ */
+export function verdictFor(findings: Pick<ReviewFinding, "severity">[]): Verdict {
+  if (findings.some((finding) => BLOCKING.has(finding.severity))) return "request_changes";
+  return findings.length > 0 ? "comment" : "approve";
+}
+
+/** The GitHub review event: a change request only when the input allows it and a finding blocks the merge. */
+export function reviewEventFor(mode: ReviewEvent, verdict: Verdict): "COMMENT" | "REQUEST_CHANGES" {
+  return mode === "request-changes" && verdict === "request_changes" ? "REQUEST_CHANGES" : "COMMENT";
+}
+
+/** Marks the reviews this action posts, so that it finds its own change requests again. */
+export const REVIEW_MARKER = "<!-- archestra-review -->";
+
+/**
+ * Posts one review with the inline comments. A comment review with no new
+ * inline comment is not posted: the review comment already shows the result.
+ * A change request is posted without new comments too, so that the pull
+ * request shows it. `posted` is false when GitHub rejects the comments (for
+ * example, a line that is no longer in the diff); the caller then moves
+ * those findings into the summary, and the review is posted without them.
+ * `reviewId` names the posted review; null when there was nothing to post.
  */
 export async function postReview(
   gh: Octokit,
   repo: RepoRef,
-  params: { pr: number; headSha: string; body: string; comments: InlineComment[]; log: Logger },
+  params: {
+    pr: number;
+    headSha: string;
+    body: string;
+    event?: "COMMENT" | "REQUEST_CHANGES";
+    comments: InlineComment[];
+    log: Logger;
+  },
 ): Promise<{ posted: boolean; reviewId: number | null }> {
-  if (params.comments.length === 0) return { posted: true, reviewId: null };
-  try {
-    const { data } = await gh.rest.pulls.createReview({
+  const event = params.event ?? "COMMENT";
+  if (params.comments.length === 0 && event === "COMMENT") return { posted: true, reviewId: null };
+  const create = (comments: InlineComment[]) =>
+    gh.rest.pulls.createReview({
       ...repo,
       pull_number: params.pr,
       commit_id: params.headSha,
-      event: "COMMENT",
-      body: params.body,
-      comments: params.comments,
+      event,
+      body: `${params.body}\n\n${REVIEW_MARKER}`,
+      ...(comments.length > 0 ? { comments } : {}),
     });
+  try {
+    const { data } = await create(params.comments);
     return { posted: true, reviewId: data.id };
   } catch (error) {
-    if (httpStatus(error) === 422) {
+    if (httpStatus(error) === 422 && params.comments.length > 0) {
       params.log.warning(
         `GitHub rejected the inline comments; the findings go into the summary: ${errorMessage(error)}`,
       );
+      if (event !== "COMMENT") {
+        try {
+          await create([]);
+        } catch (retryError) {
+          params.log.warning(`Could not post the change request: ${errorMessage(retryError)}`);
+        }
+      }
       return { posted: false, reviewId: null };
     }
     throw error;
   }
+}
+
+/**
+ * Dismisses the change requests that this action posted on the pull request: the latest review
+ * finds nothing that blocks the merge. A failure is logged; the review goes on.
+ */
+export async function dismissChangeRequests(
+  gh: Octokit,
+  repo: RepoRef,
+  params: { pr: number; message: string; log: Logger },
+): Promise<number> {
+  let dismissed = 0;
+  try {
+    const reviews = await gh.paginate(gh.rest.pulls.listReviews, { ...repo, pull_number: params.pr, per_page: 100 });
+    for (const review of reviews) {
+      if (review.state !== "CHANGES_REQUESTED" || !(review.body ?? "").includes(REVIEW_MARKER)) continue;
+      if (review.user && !isBot(review.user)) continue;
+      await gh.rest.pulls.dismissReview({
+        ...repo,
+        pull_number: params.pr,
+        review_id: review.id,
+        message: params.message,
+        event: "DISMISS",
+      });
+      dismissed++;
+    }
+  } catch (error) {
+    params.log.warning(`Could not dismiss the earlier change requests: ${errorMessage(error)}`);
+  }
+  return dismissed;
+}
+
+function isBot(user: { login: string; type?: string }): boolean {
+  return user.type === "Bot" || user.login.endsWith("[bot]");
 }
 
 /** The inline comments of a posted review, by finding id. */

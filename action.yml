@@ -48,9 +48,17 @@ inputs:
   post:
     description: Where to post review output ("review", "comment", or "none").
     default: review
+  review-event:
+    description: >-
+      The GitHub review event. "comment" posts every review as a comment. "request-changes" requests changes
+      when a finding of medium severity or above blocks the merge, and dismisses that request once a later
+      review finds nothing that blocks it. The action never approves.
+    default: comment
   fail-on:
-    description: Step failure condition ("never", "findings", or "error").
-    default: never
+    description: >-
+      When the step fails. "error" (the default): the review could not finish (unavailable, or an error).
+      "findings": also when the review has findings. "never": the step always passes.
+    default: error
   mode:
     description: Execution mode ("auto", "review", "fix", "fix-ci", or "fix-ci-main").
     default: auto
