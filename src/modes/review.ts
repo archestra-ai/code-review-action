@@ -8,9 +8,11 @@ import {
   launch,
   makeResult,
   preferAgent,
+  repoUrl,
 } from "../context";
 import { CONTRACTS } from "../contracts";
 import { countFailingChecks } from "../github/ci";
+import { isAncestor } from "../github/commits";
 import { buildDiffIndex, excerptFor, isRangeInDiff } from "../github/diff";
 import { httpStatus } from "../github/octokit";
 import {
@@ -18,19 +20,32 @@ import {
   loadChangedFiles,
   loadDiff,
   loadPullRequest,
+  type PullRequestInfo,
   prAttachmentData,
   skipReason,
 } from "../github/pr";
 import {
   coversFinding,
+  dismissChangeRequests,
   inlineBody,
   inlineComments,
   placeFindings,
   postReview,
   reviewCommentIds,
+  reviewEventFor,
   updateInlineComment,
+  verdictFor,
 } from "../github/review";
-import { findSticky, type StoredFinding } from "../github/sticky";
+import {
+  escapeHtml,
+  findingCounts,
+  findingTitle,
+  findSticky,
+  type ReviewDelta,
+  type StickyState,
+  type StoredFinding,
+  verdictLabel,
+} from "../github/sticky";
 import {
   type FindingThread,
   listFindingThreads,
@@ -38,7 +53,7 @@ import {
   replyToThread,
   tryThreadUpdate,
 } from "../github/threads";
-import { errorMessage, fullName, jsonAttachment, shortSha, textAttachment } from "../util";
+import { type Attachment, errorMessage, fullName, jsonAttachment, shortSha, textAttachment, truncate } from "../util";
 import {
   commentCommand,
   failureForError,
@@ -115,7 +130,78 @@ export async function runReview(ctx: ActionContext, prNumber: number): Promise<A
       ),
     );
   }
-  await startProgress(ctx, pr, { doing: `reviewing \`${shortSha(pr.headSha)}\``, login: pr.authorLogin });
+  // The commit the last review covered. A re-review writes about what changed since then, when that
+  // commit is still in the history of the pull request.
+  const lastSha = previous?.verdict ? previous.reviewedSha : null;
+  const sinceSha =
+    lastSha && lastSha !== pr.headSha && (await isAncestor(gh, repo, lastSha, pr.headSha)) ? lastSha : null;
+  const stickyId = await startProgress(ctx, pr, {
+    doing: `reviewing \`${shortSha(pr.headSha)}\``,
+    login: pr.authorLogin,
+    label: `review of ${shortSha(pr.headSha)}`,
+  });
+  try {
+    return await reviewInProgress(ctx, {
+      pr,
+      files,
+      diff,
+      previous,
+      incremental,
+      agents,
+      attachments,
+      stickyId,
+      failingChecks,
+      lastSha,
+      sinceSha,
+      self: sticky?.author ?? null,
+    });
+  } catch (error) {
+    // The comment must not keep a progress header for a job that is gone: it says the job stopped,
+    // without the error text, which can name internal hosts; the job log has it.
+    try {
+      await updateSticky(ctx, pr, (state) => {
+        finishProgress(ctx, state, {
+          did: `the review of \`${shortSha(pr.headSha)}\``,
+          login: pr.authorLogin,
+          outcome: "error",
+        });
+        recordJob(ctx, state, {
+          label: `review of ${shortSha(pr.headSha)}`,
+          outcome: "stopped with an error",
+          attempts: [],
+        });
+      });
+    } catch (stickyError) {
+      log.warning(`Could not record the error in the review comment: ${errorMessage(stickyError)}`);
+    }
+    throw error;
+  }
+}
+
+/** The review after the progress header is up: the brief, the runtime, and the comment, review and threads. */
+async function reviewInProgress(
+  ctx: ActionContext,
+  p: {
+    pr: PullRequestInfo;
+    files: ChangedFile[];
+    diff: { diff: string; truncated: boolean };
+    previous: StickyState | null;
+    incremental: { agentId: string; runId: string } | null;
+    agents: string[];
+    attachments: Attachment[];
+    stickyId: number;
+    failingChecks: number;
+    /** The commit of the last completed review; null before the first. */
+    lastSha: string | null;
+    /** `lastSha` when it is in the history of the head commit and differs from it. */
+    sinceSha: string | null;
+    /** The login of the action's token, from its review comment; null on a first review. */
+    self: string | null;
+  },
+): Promise<ActionResult> {
+  const { gh, repo, inputs, log } = ctx;
+  const { pr, files, previous, incremental, agents, attachments, failingChecks, lastSha, sinceSha } = p;
+  const previousFindings = previous?.findings ?? [];
   const message = renderBrief("review", {
     repo: fullName(repo),
     number: pr.number,
@@ -123,6 +209,8 @@ export async function runReview(ctx: ActionContext, prNumber: number): Promise<A
     cloneUrl: cloneUrl(ctx),
     headSha: pr.headSha,
     baseSha: pr.baseSha,
+    summaryWords: summaryWords(files.reduce((sum, file) => sum + file.additions + file.deletions, 0)),
+    reviewScope: reviewScope(lastSha, sinceSha, pr.headSha),
   });
 
   const outcome = await launch(ctx, {
@@ -152,7 +240,11 @@ export async function runReview(ctx: ActionContext, prNumber: number): Promise<A
       });
       if (inputs.post === "none") return;
       state.status = "unavailable";
-      recordJob(ctx, state, { label: `review of ${shortSha(pr.headSha)}`, outcome: null, attempts: outcome.attempts });
+      recordJob(ctx, state, {
+        label: `review of ${shortSha(pr.headSha)}`,
+        outcome: "unavailable",
+        attempts: outcome.attempts,
+      });
       state.notice = `Review unavailable for \`${shortSha(pr.headSha)}\`: ${reason}`;
     });
     const failure = failureForError(ctx, `The review is unavailable: ${reason}`);
@@ -166,6 +258,7 @@ export async function runReview(ctx: ActionContext, prNumber: number): Promise<A
 
   const { result: review, runId } = outcome.value;
   const agentId = outcome.agentId ?? null;
+  const summaryUrl = `${repoUrl(ctx)}/pull/${pr.number}#issuecomment-${p.stickyId}`;
   const index = buildDiffIndex(files);
   // The threads of the findings reported before: their comments are rewritten in place below, and
   // the threads of fixed and regressed findings are resolved or reopened at the end.
@@ -179,6 +272,8 @@ export async function runReview(ctx: ActionContext, prNumber: number): Promise<A
     reservedIds: threads.keys(),
   }).map((finding) => ({ ...finding, excerpt: excerptFor(index, finding) }));
   const count = findings.length;
+  // The verdict follows from the severities, so the same findings always get the same verdict.
+  const verdict = verdictFor(findings);
 
   if (inputs.post === "review") {
     // A finding reported before keeps its inline comment: the comment is rewritten in place, and
@@ -210,10 +305,12 @@ export async function runReview(ctx: ActionContext, prNumber: number): Promise<A
         }
       }
     }
+    const event = reviewEventFor(inputs.reviewEvent, verdict);
     const posting = await postReview(gh, repo, {
       pr: pr.number,
       headSha: pr.headSha,
-      body: `Archestra review of \`${shortSha(pr.headSha)}\`: ${count} finding${count === 1 ? "" : "s"}${kept.length > 0 ? ` (${fresh.size} new; the others were updated in place)` : ""}. The summary is in the review comment of this pull request.`,
+      body: reviewBody(pr.headSha, verdict, findings, fresh.size, kept.length, summaryUrl),
+      event,
       comments: inlineComments(
         findings.filter((finding) => fresh.has(finding.id)),
         index,
@@ -221,6 +318,15 @@ export async function runReview(ctx: ActionContext, prNumber: number): Promise<A
       ),
       log,
     });
+    // Nothing blocks the merge any more: the change requests of earlier reviews stop blocking it.
+    if (inputs.reviewEvent === "request-changes" && event !== "REQUEST_CHANGES") {
+      await dismissChangeRequests(gh, repo, {
+        pr: pr.number,
+        message: `The review of ${shortSha(pr.headSha)} finds nothing that blocks the merge.`,
+        self: p.self,
+        log,
+      });
+    }
     if (posting.reviewId !== null) {
       try {
         for (const [id, commentId] of await reviewCommentIds(gh, repo, pr.number, posting.reviewId)) {
@@ -239,9 +345,10 @@ export async function runReview(ctx: ActionContext, prNumber: number): Promise<A
   }
 
   const statuses = review.previous ?? [];
-  const known = new Set(previousFindings.map((finding) => finding.id));
-  const fixedIds = statuses.filter((s) => s.status === "fixed" && known.has(s.id)).map((s) => s.id);
+  const known = new Map(previousFindings.map((finding) => [finding.id, finding]));
+  const fixed = statuses.filter((s) => s.status === "fixed" && known.has(s.id));
   const regressedIds = statuses.filter((s) => s.status === "regressed" && known.has(s.id)).map((s) => s.id);
+  const delta = sinceSha ? reviewDelta(sinceSha, previousFindings, findings, fixed, regressedIds.length) : null;
 
   await updateSticky(ctx, pr, (state, stickyMarker) => {
     finishProgress(ctx, state, { did: `reviewed \`${shortSha(pr.headSha)}\``, login: pr.authorLogin, outcome: "ok" });
@@ -254,7 +361,7 @@ export async function runReview(ctx: ActionContext, prNumber: number): Promise<A
       sha: pr.headSha,
     });
     state.status = "reviewed";
-    state.verdict = review.verdict;
+    state.verdict = verdict;
     state.title = pr.title;
     state.summary = review.summary;
     state.reviewed = review.reviewed ?? [];
@@ -282,13 +389,14 @@ export async function runReview(ctx: ActionContext, prNumber: number): Promise<A
     state.coverage = review.coverage ?? "";
     state.limitations = review.limitations ?? "";
     state.conclusion = review.conclusion ?? "";
+    state.delta = delta;
     state.reviewedSha = pr.headSha;
     state.baseBranch = pr.baseRef;
     state.findings = findings;
     state.failingChecks = failingChecks;
     recordJob(ctx, state, {
       label: `review of ${shortSha(pr.headSha)}`,
-      outcome: `${VERDICT_WORDS[review.verdict]}, ${findings.length} finding${findings.length === 1 ? "" : "s"}`,
+      outcome: `${VERDICT_WORDS[verdict]}, ${findings.length} finding${findings.length === 1 ? "" : "s"}`,
       attempts: outcome.attempts,
     });
     state.skipped = [];
@@ -299,7 +407,15 @@ export async function runReview(ctx: ActionContext, prNumber: number): Promise<A
     }
     state.applied = state.applied.slice(-50);
   });
-  if (inputs.post !== "none") await updatePreviousThreads(ctx, pr.number, fixedIds, regressedIds, pr.headSha, threads);
+  if (inputs.post !== "none") {
+    await updatePreviousThreads(ctx, pr.number, {
+      fixed: fixed.map((status) => ({ id: status.id, note: status.note ?? null })),
+      regressedIds,
+      sinceSha,
+      headSha: pr.headSha,
+      threads,
+    });
+  }
 
   const failure =
     inputs.failOn === "findings" && count > 0 ? `The review has ${count} finding${count === 1 ? "" : "s"}.` : null;
@@ -313,10 +429,69 @@ export async function runReview(ctx: ActionContext, prNumber: number): Promise<A
     failure,
     summary: summarize(
       "Archestra review",
-      [`Verdict: ${review.verdict}. Findings: ${count}. Run: ${ctx.archestra.runUrl(runId)}`],
+      [`${verdictLabel(verdict)}: ${findingCounts(findings)}. Run: ${ctx.archestra.runUrl(runId)}`],
       outcome.attempts,
     ),
   });
+}
+
+/** What the summary covers: the whole change, or what changed since the last reviewed commit. */
+export function reviewScope(lastSha: string | null, sinceSha: string | null, headSha: string): string {
+  if (sinceSha) {
+    return `This is a re-review. The last review covered ${sinceSha}; write the summary about what changed since then (\`git diff ${sinceSha} ${headSha}\`), not about the whole pull request again.`;
+  }
+  if (lastSha === headSha) {
+    return "This review repeats the last one on the same commit: check the previous findings again, and write the summary about the whole pull request.";
+  }
+  if (lastSha) {
+    return `The commit of the last review (${lastSha}) is no longer in the history of this pull request (a force-push or a rebase): review the whole pull request again.`;
+  }
+  return "This is the first review of this pull request.";
+}
+
+/** About 60 words for a small change, up to 300 for a large one. */
+export function summaryWords(changedLines: number): number {
+  if (changedLines <= 50) return 60;
+  if (changedLines <= 400) return 120;
+  if (changedLines <= 2000) return 200;
+  return 300;
+}
+
+/** The body of the GitHub review: the verdict, the counts and a link to the review comment. */
+export function reviewBody(
+  headSha: string,
+  verdict: ReturnType<typeof verdictFor>,
+  findings: Pick<StoredFinding, "severity">[],
+  fresh: number,
+  kept: number,
+  summaryUrl: string,
+): string {
+  const update = kept > 0 ? ` ${fresh} new; ${kept} updated in place.` : "";
+  return `**${verdictLabel(verdict)}** · Archestra review of \`${shortSha(headSha)}\` · ${findingCounts(findings)}.${update} [Summary](${summaryUrl})`;
+}
+
+/** What changed since the last review, for the head of the review comment. */
+export function reviewDelta(
+  sinceSha: string,
+  previous: StoredFinding[],
+  findings: StoredFinding[],
+  fixed: Array<{ id: string; note?: string }>,
+  regressed: number,
+): ReviewDelta {
+  const previousIds = new Set(previous.map((finding) => finding.id));
+  const repeated = findings.filter((finding) => previousIds.has(finding.id)).length;
+  return {
+    sinceSha,
+    fixed: fixed.flatMap((status) => {
+      const finding = previous.find((candidate) => candidate.id === status.id);
+      return finding
+        ? [{ title: findingTitle(finding), severity: finding.severity, note: status.note?.trim() || null }]
+        : [];
+    }),
+    stillOpen: Math.max(0, repeated - regressed),
+    regressed,
+    added: findings.length - repeated,
+  };
 }
 
 /**
@@ -344,28 +519,40 @@ async function findingThreads(ctx: ActionContext, pr: number, wanted: boolean): 
   }
 }
 
-/** Resolves the threads of fixed findings and reopens the threads of regressed ones. */
+/**
+ * Resolves the threads of fixed findings and reopens the threads of regressed ones. A thread the
+ * token cannot resolve gets a reply instead. The reply names the two reviewed commits, not one fix
+ * commit: commits between them were not reviewed one by one.
+ */
 async function updatePreviousThreads(
   ctx: ActionContext,
   pr: number,
-  fixedIds: string[],
-  regressedIds: string[],
-  headSha: string,
-  threads: Map<string, FindingThread>,
+  p: {
+    fixed: Array<{ id: string; note: string | null }>;
+    regressedIds: string[];
+    sinceSha: string | null;
+    headSha: string;
+    threads: Map<string, FindingThread>;
+  },
 ): Promise<void> {
-  if (fixedIds.length === 0 && regressedIds.length === 0) return;
+  if (p.fixed.length === 0 && p.regressedIds.length === 0) return;
   const gh = ctx.ghFix ?? ctx.gh;
+  const notes = new Map(p.fixed.map((status) => [status.id, status.note]));
+  const head = shortSha(p.headSha);
   try {
-    for (const update of planThreadUpdates(threads, { resolve: fixedIds, unresolve: regressedIds })) {
+    const updates = planThreadUpdates(p.threads, { resolve: [...notes.keys()], unresolve: p.regressedIds });
+    for (const update of updates) {
       const done = await tryThreadUpdate(gh, update, ctx.log);
       // A reopened thread gets a reply in any case; a thread that could not be resolved gets one instead.
-      const note =
-        update.action === "unresolve"
-          ? `The re-review of \`${shortSha(headSha)}\` found this problem again.`
-          : done
-            ? null
-            : `Fixed in \`${shortSha(headSha)}\`: the re-review no longer finds this problem.`;
-      if (note) await replyToThread(ctx.gh, ctx.repo, pr, update.commentId, note);
+      let reply: string | null = null;
+      if (update.action === "unresolve") {
+        reply = `The review of \`${head}\` finds this problem again.`;
+      } else if (!done) {
+        const when = p.sinceSha ? `between \`${shortSha(p.sinceSha)}\` and \`${head}\`` : `at \`${head}\``;
+        const note = notes.get(update.findingId);
+        reply = `Fixed ${when}${note ? `: ${escapeHtml(truncate(note.replace(/\s+/g, " ").trim(), 500))}` : "."}`;
+      }
+      if (reply) await replyToThread(ctx.gh, ctx.repo, pr, update.commentId, reply);
     }
   } catch (error) {
     ctx.log.warning(`Could not update the review threads: ${errorMessage(error)}`);

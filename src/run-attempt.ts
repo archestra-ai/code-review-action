@@ -185,15 +185,16 @@ export async function readContract<T>(
   schema: z.ZodType<T>,
 ): Promise<ContractResult<T>> {
   const data = await client.readWorkspaceFile(runId, path);
-  if (!data) return { ok: false, reason: `${path} is missing after the run completed` };
+  // The reasons reach the review comment's history: they say what went wrong, not which file.
+  if (!data) return { ok: false, reason: "the run finished without writing its result" };
   let json: unknown;
   try {
     json = JSON.parse(data.toString("utf8"));
   } catch {
-    return { ok: false, reason: `${path} is not valid JSON` };
+    return { ok: false, reason: "the result is not valid JSON" };
   }
   if (json && typeof json === "object" && (json as Record<string, unknown>).archestra_pending === true) {
-    return { ok: false, reason: `${path} was not written in this turn` };
+    return { ok: false, reason: "the run did not write a new result in this turn" };
   }
   const parsed = schema.safeParse(json);
   if (!parsed.success) {
@@ -201,7 +202,7 @@ export async function readContract<T>(
       .slice(0, 5)
       .map((issue) => `${issue.path.join(".") || "(root)"}: ${issue.message}`)
       .join("; ");
-    return { ok: false, reason: `${path} does not match the schema: ${issues}` };
+    return { ok: false, reason: `the result does not match the contract: ${issues}` };
   }
   return { ok: true, value: parsed.data };
 }

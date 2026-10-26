@@ -8,6 +8,7 @@ import { detectTrigger } from "../src/github/event";
 import { inlineBody, linkPrevious, placeFindings } from "../src/github/review";
 import {
   balanceBackticks,
+  cell,
   codeLanguage,
   emptyState,
   escapeHtml,
@@ -101,19 +102,18 @@ describe("sticky state and rendering", () => {
     const diff = `https://github.com/acme/widgets/pull/7/files#diff-${anchor}R3-R5`;
     const blob = `https://github.com/acme/widgets/blob/${"a".repeat(40)}/src/b%7Cc.ts#L9`;
     expect(rendered).toContain(
-      `| [1](https://github.com/acme/widgets/pull/7#discussion_r4360045075) | high | [\`src/a.ts:3-5\`](${diff}) |`,
+      `| [1](https://github.com/acme/widgets/pull/7#discussion_r4360045075) | high | S \\| pipe | [\`src/a.ts:3-5\`](${diff}) |`,
     );
     // The pipe is escaped in the table cell, and left alone in the section below it.
-    expect(rendered).toContain(`| 2 | high | [\`src/b\\|c.ts:9\`](${blob}) (outside the diff) |`);
-    expect(rendered).toContain(
-      `#### 1. S | pipe\n\n**File:** [\`src/a.ts:3-5\`](${diff}) · **Severity:** high · [inline comment](https://github.com/acme/widgets/pull/7#discussion_r4360045075)\n`,
-    );
+    expect(rendered).toContain(`| 2 | high | S \\| pipe | [\`src/b\\|c.ts:9\`](${blob}) (outside the diff) |`);
+    // A finding with an inline comment is written out there only; the others get a section here.
+    expect(rendered).not.toContain("#### 1.");
     expect(rendered).toContain(
       `#### 2. S | pipe\n\n**File:** [\`src/b|c.ts:9\`](${blob}) (outside the diff) · **Severity:** high\n`,
     );
   });
 
-  it("renders the title, what was reviewed, the observations, the test table, the limitations and the verdict", () => {
+  it("puts the verdict and what to do first on top, and folds what the review read, its tests and its limits", () => {
     const detailed = {
       ...state,
       title: "Add retry <b>",
@@ -133,29 +133,35 @@ describe("sticky state and rendering", () => {
       command: "/archestra",
     });
     expect(rendered).toContain(
-      "### Archestra code review: #7 — Add retry &lt;b>\n\n**Needs changes before merge.** · reviewed",
+      "### Archestra code review\n\n**Needs changes before merge** · reviewed `aaaaaaa` · 1 finding: 1 high\n\nFix #1 first; the rest can follow.\n",
     );
-    expect(rendered).toContain("**Reviewed**\n\n- Guidelines (`AGENTS.md`)\n- The uploader (`src/a.ts`)\n");
+    // The title of the pull request is not repeated.
+    expect(rendered).not.toContain("Add retry");
     expect(rendered).toContain(
-      "### Observations\n\n- **Adapter** (`x.ts`): marks estimates &lt;i>.\n- **Docs**: complete.\n",
+      "<details><summary>Review notes</summary>\n\n**Reviewed**\n\n- Guidelines (`AGENTS.md`)\n- The uploader (`src/a.ts`)\n",
+    );
+    expect(rendered).toContain(
+      "**Observations**\n\n- **Adapter** (`x.ts`): marks estimates &lt;i>.\n- **Docs**: complete.\n",
     );
     const anchor = createHash("sha256").update("test/a.test.ts").digest("hex");
     expect(rendered).toContain(
-      `### Test coverage\n\n| File | Lines | Focus |\n| --- | --- | --- |\n| [\`test/a.test.ts\`](https://github.com/acme/widgets/pull/7/files#diff-${anchor}) | +10 −2 | retries \\| backoff |\n| \`test/b.test.ts\` | - | unchanged |\n\nThe rejection after the last attempt has no test.\n`,
+      `**Tests**\n\n| File | Lines | Focus |\n| --- | --- | --- |\n| [\`test/a.test.ts\`](https://github.com/acme/widgets/pull/7/files#diff-${anchor}) | +10 −2 | retries \\| backoff |\n| \`test/b.test.ts\` | - | unchanged |\n\nThe rejection after the last attempt has no test.\n`,
     );
-    expect(rendered).toContain("### Limitations\n\nNo lint: the repository defines none.\n");
-    expect(rendered).toContain("### Verdict\n\nFix #1 first; the rest can follow.\n\n### CI triage");
+    expect(rendered).toContain("**Not covered**\n\nNo lint: the repository defines none.\n\n</details>");
+    expect(rendered).not.toContain("### Verdict");
     expect(parseState(rendered)).toEqual(detailed);
-    // The sections come in reading order: what was read, the summary, the findings, the rest.
+    // Reading order: the verdict and the first step, the findings, the commands, then the folded notes.
     const order = [
-      "**Reviewed**",
-      "### Findings",
+      "**Needs changes before merge**",
+      "Fix #1 first",
+      "| # | Severity | Finding | Location |",
       "#### 1.",
-      "### Observations",
-      "### Test coverage",
-      "### Limitations",
-      "### Verdict",
       "### Next",
+      "<details><summary>Review notes</summary>",
+      "**Reviewed**",
+      "**Observations**",
+      "**Tests**",
+      "**Not covered**",
     ];
     const positions = order.map((heading) => rendered.indexOf(heading));
     expect(positions).toEqual([...positions].sort((a, b) => a - b));
@@ -174,9 +180,9 @@ describe("sticky state and rendering", () => {
     const anchor = createHash("sha256").update("src/a.ts").digest("hex");
     const anchorB = createHash("sha256").update("src/b.ts").digest("hex");
     expect(rendered).toContain(
-      `### Change map\n\n| File | What changed |\n| --- | --- |\n| [\`src/a.ts:12\`](https://github.com/acme/widgets/pull/7/files#diff-${anchor}R12) | removed cache reads from the sum &lt;b> |\n| [\`src/b.ts:3\`](https://github.com/acme/widgets/pull/7/files#diff-${anchorB}) | line outside the hunks |\n| \`docs/x.md\` | explains the rule |\n`,
+      `**Change map**\n\n| File | What changed |\n| --- | --- |\n| [\`src/a.ts:12\`](https://github.com/acme/widgets/pull/7/files#diff-${anchor}R12) | removed cache reads from the sum &lt;b> |\n| [\`src/b.ts:3\`](https://github.com/acme/widgets/pull/7/files#diff-${anchorB}) | line outside the hunks |\n| \`docs/x.md\` | explains the rule |\n`,
     );
-    expect(rendered.indexOf("### Change map")).toBeLessThan(rendered.indexOf("### Findings"));
+    expect(rendered.indexOf("**Change map**")).toBeGreaterThan(rendered.indexOf("| # | Severity"));
     expect(parseState(rendered)).toEqual(mapped);
     expect(
       ReviewResultSchema.parse({ verdict: "approve", summary: "", findings: [], changes: [{ file: "a", what: "b" }] })
@@ -199,7 +205,7 @@ describe("sticky state and rendering", () => {
     expect(rendered).toContain(
       `\n\`\`\`\`ts\n${code}\n\`\`\`\`\n\nS | pipe\n\nx -> y\n\n**Recommendation:**\n\nFix it.\n`,
     );
-    expect(rendered).toContain("| Short title | open |");
+    expect(rendered).toContain("| high | Short title |");
     expect(parseState(rendered)).toEqual(withCode);
     expect(codeLanguage("a/b.yml")).toBe("yaml");
     expect(codeLanguage("Makefile")).toBe("");
@@ -226,6 +232,14 @@ describe("sticky state and rendering", () => {
     );
     expect(rendered).toContain(`- ${"r".repeat(199)}…\n`);
     expect(rendered).toContain(`- ${"o".repeat(599)}…\n`);
+  });
+
+  it("keeps a pipe after a backslash escaped, so a cell cannot split", () => {
+    expect(cell("a | b", 50)).toBe("a \\| b");
+    // `\\` is an escaped backslash for GitHub: the pipe after it would end the cell.
+    expect(cell("a \\| b", 50)).toBe("a \\\\\\| b");
+    expect(cell("a \\\\| b", 50)).toBe("a \\\\\\\\\\| b");
+    expect(cell("C:\\path", 50)).toBe("C:\\path");
   });
 
   it("shows no commands when no workflow listens to them", () => {
@@ -358,8 +372,8 @@ describe("sticky state and rendering", () => {
     expect(body).toContain("- Comment `/archestra fix-ci-main 1` to open a fix PR against main for `lint`.");
     expect(body).toContain("Only users with write access can start a fix.");
     expect(body).not.toContain("- [ ]");
-    expect(body).toContain("| # | Severity | Location | Finding | Status |");
-    expect(body).toContain("| S \\| pipe | open |");
+    expect(body).toContain("| # | Severity | Finding | Location |\n");
+    expect(body).toContain("| 1 | high | S \\| pipe |");
     expect(body).toContain("**Recommendation:**\n\nFix it.\n");
   });
   it("shows the triage command only when checks fail", () => {
@@ -387,7 +401,9 @@ describe("sticky state and rendering", () => {
       },
       { marker, repoUrl: "", command: "/archestra" },
     );
-    const header = inProgress.split("\n").slice(1, 4).join("\n");
+    const header = inProgress.split("\n").slice(1, 6).join("\n");
+    // The last result stays below the progress header, and says which commit it is for.
+    expect(header).toContain("_The result below is from the review of `aaaaaaa`._");
     expect(header).toContain("**Archestra is reviewing `aaaaaaa` for @alice…**");
     expect(header).toContain(
       '<img src="https://raw.githubusercontent.com/archestra-ai/code-review-action/main/assets/progress.gif" width="14" height="14" alt="Archestra is working" />',
@@ -425,6 +441,7 @@ describe("sticky state and rendering", () => {
           startedAt: null,
           workflowRunUrl: "https://github.com/acme/widgets/actions/runs/1",
           outcome: "ok",
+          stop: null,
         },
       },
       { marker, repoUrl: "", command: "/archestra" },
@@ -441,6 +458,7 @@ describe("sticky state and rendering", () => {
           startedAt: null,
           workflowRunUrl: "u",
           outcome: "unavailable",
+          stop: null,
         },
       },
       { marker, repoUrl: "", command: "/archestra" },
@@ -798,6 +816,7 @@ describe("job history", () => {
           }),
           attempt({ agentId: "22222222-2222-4222-8222-222222222222", durationMs: 320_000 }),
         ],
+        durationMs: null,
       },
       {
         label: "review of 533b302",
@@ -805,22 +824,22 @@ describe("job history", () => {
         workflowRunUrl: "https://github.com/acme/widgets/actions/runs/2",
         outcome: "changes requested, 5 findings",
         attempts: [attempt({ continued: true })],
+        durationMs: 110_000,
       },
     ],
   };
   const context = { marker, repoUrl: "https://github.com/acme/widgets", command: "/archestra" };
 
-  it("lists every attempt of every job on the pull request, oldest first", () => {
+  it("lists every job on the pull request, oldest first, with its attempts when there were several", () => {
     const body = renderSticky(state, context);
-    expect(body).toContain("<details><summary>History: 2 jobs (3 attempts)</summary>");
+    expect(body).toContain("<details><summary>History: 2 jobs</summary>");
+    expect(body).toContain("| # | Started (UTC) | Job | Result | Duration |");
     expect(body).toContain(
-      "| 1 | 2026-10-23 11:35 | review of 9ae3795 ([job](https://github.com/acme/widgets/actions/runs/1)) | `11111111` | [run](https://archestra.example/runs/run-1) | non_retriable (message-pattern): run ended in failed: Budget exceeded | 12 s |",
+      "| 1 | 2026-10-23 11:35 | review of 9ae3795 ([job](https://github.com/acme/widgets/actions/runs/1)) | changes requested, 4 findings · 2 attempts: 1. `11111111` non_retriable (message-pattern): run ended in failed: Budget exceeded, 12 s ([run](https://archestra.example/runs/run-1)); 2. `22222222` completed, 5 min 20 s ([run](https://archestra.example/runs/run-1)) | 5 min 32 s |",
     );
+    // The job's own duration, the one the header showed, wins over the sum of the attempts.
     expect(body).toContain(
-      "| 2 | 2026-10-23 11:35 | attempt 2 | `22222222` | [run](https://archestra.example/runs/run-1) | completed · changes requested, 4 findings | 5 min 20 s |",
-    );
-    expect(body).toContain(
-      "| 3 | 2026-10-23 13:27 | review of 533b302 ([job](https://github.com/acme/widgets/actions/runs/2)) | `11111111` | [run](https://archestra.example/runs/run-1) (continued) | completed · changes requested, 5 findings | 1 min 43 s |",
+      "| 2 | 2026-10-23 13:27 | review of 533b302 ([job](https://github.com/acme/widgets/actions/runs/2)) | changes requested, 5 findings ([run](https://archestra.example/runs/run-1), continued) | 1 min 50 s |",
     );
     expect(body).not.toContain("completed: completed");
     expect(parseState(body)?.jobs).toEqual(state.jobs);
@@ -839,6 +858,7 @@ describe("job history", () => {
         startedAt: null,
         workflowRunUrl: "https://github.com/acme/widgets/actions/runs/1",
         outcome: "ok" as const,
+        stop: null,
       },
     };
     const body = renderSticky(legacy, context);
@@ -849,6 +869,7 @@ describe("job history", () => {
         workflowRunUrl: "https://github.com/acme/widgets/actions/runs/1",
         outcome: null,
         attempts: [attempt()],
+        durationMs: null,
       },
     ]);
   });

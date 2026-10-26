@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { z } from "zod";
 import type { AttemptRecord } from "../attempts";
-import { ReviewFindingSchema, TriageClassSchema } from "../contracts";
+import { ReviewFindingSchema, SeveritySchema, TriageClassSchema } from "../contracts";
 import { DEFAULT_PROGRESS_IMAGE_URL } from "../env";
 import { fullName, isBotUser, type RepoRef, shortSha, truncate } from "../util";
 import type { Octokit } from "./octokit";
@@ -231,6 +231,8 @@ const JobRecordSchema = z.object({
   /** The result in a few words ("changes requested, 5 findings"); null when the job did not complete. */
   outcome: z.string().max(200).nullable(),
   attempts: z.array(AttemptRecordSchema),
+  /** From the start of the job to its end, the same time the header shows; null for jobs recorded before this field. */
+  durationMs: z.number().nullable().default(null),
 });
 export type JobRecord = z.infer<typeof JobRecordSchema>;
 
@@ -257,9 +259,26 @@ const LastJobSchema = z.object({
   /** ISO time of the start; null in comments written before this field existed. */
   startedAt: z.string().nullable().default(null),
   workflowRunUrl: z.string(),
-  /** "ok", "unavailable" or "error": picks the header's wording. */
+  /** "ok", "unavailable" or "error": picks the header's wording. A stopped job is an "error" with a `stop` reason. */
   outcome: z.enum(["ok", "unavailable", "error"]),
+  /**
+   * Why a job stopped before it finished: a newer push replaced it, or something else canceled it.
+   * A field of its own, so that an older version of the action still reads the state.
+   */
+  stop: z.enum(["superseded", "canceled"]).nullable().default(null),
 });
+
+/** What changed since the review before this one; null for a first review. */
+const DeltaSchema = z.object({
+  /** The commit the review before this one covered. */
+  sinceSha: z.string(),
+  /** The findings that review reported and this one no longer finds, with the evidence the runtime gave. */
+  fixed: z.array(z.object({ title: z.string(), severity: z.string(), note: z.string().nullable() })),
+  stillOpen: z.number().int().nonnegative(),
+  regressed: z.number().int().nonnegative(),
+  added: z.number().int().nonnegative(),
+});
+export type ReviewDelta = z.infer<typeof DeltaSchema>;
 
 /** One row of the change map: a place the change reached. */
 const ChangeSchema = z.object({
@@ -296,8 +315,10 @@ const StateSchema = z.object({
   tests: z.array(TestFileSchema).default([]),
   coverage: z.string().default(""),
   limitations: z.string().default(""),
-  /** The closing judgement; rendered as the Verdict section. */
+  /** What to do first, in one or two sentences; rendered under the verdict. */
   conclusion: z.string().default(""),
+  /** The change since the review before; null for a first review. */
+  delta: DeltaSchema.nullable().default(null),
   reviewedSha: z.string().nullable(),
   baseBranch: z.string(),
   findings: z.array(StoredFindingSchema),
@@ -351,6 +372,7 @@ export function emptyState(baseBranch: string): StickyState {
     coverage: "",
     limitations: "",
     conclusion: "",
+    delta: null,
     reviewedSha: null,
     baseBranch,
     findings: [],
@@ -399,6 +421,7 @@ function withLegacyAttempts(state: StickyState, json: unknown): StickyState {
     workflowRunUrl: state.last?.workflowRunUrl ?? null,
     outcome: null,
     attempts: legacy.data.attempts,
+    durationMs: null,
   };
   return { ...state, jobs: [job] };
 }
@@ -518,16 +541,26 @@ export function renderHeader(state: StickyState, context?: Pick<RenderContext, "
         "",
       );
     }
+    // A re-review shows the last result until it finishes; say which commit that result is for.
+    if (state.status === "reviewed" && state.verdict && state.reviewedSha) {
+      lines.push(`_The result below is from the review of \`${shortSha(state.reviewedSha)}\`._`, "");
+    }
     return lines;
   }
   if (last) {
-    const verb =
-      last.outcome === "ok"
-        ? `Archestra ${oneLine(last.did, 200)} for @${last.login}`
-        : last.outcome === "unavailable"
-          ? `Archestra could not finish ${oneLine(last.did, 200)} for @${last.login}`
-          : `Archestra stopped ${oneLine(last.did, 200)} for @${last.login} with an error`;
-    return [`**${verb} in ${formatDuration(last.durationMs)}** —— [View job](${last.workflowRunUrl})`, ""];
+    const did = oneLine(last.did, 200);
+    const duration = formatDuration(last.durationMs);
+    const text =
+      last.stop === "superseded"
+        ? `Archestra stopped ${did} for @${last.login} after ${duration}: a newer push replaced it`
+        : last.stop === "canceled"
+          ? `Archestra stopped ${did} for @${last.login} after ${duration}: the job was canceled`
+          : {
+              ok: `Archestra ${did} for @${last.login} in ${duration}`,
+              unavailable: `Archestra could not finish ${did} for @${last.login} in ${duration}`,
+              error: `Archestra stopped ${did} for @${last.login} with an error after ${duration}`,
+            }[last.outcome];
+    return [`**${text}** —— [View job](${last.workflowRunUrl})`, ""];
   }
   return [];
 }
@@ -535,83 +568,54 @@ export function renderHeader(state: StickyState, context?: Pick<RenderContext, "
 function renderBody(state: StickyState, context: RenderContext): string {
   const { command, repoUrl } = context;
   const pr = context.marker.pr;
-  const heading = state.title
-    ? `### Archestra code review: #${pr} — ${oneLine(state.title, 200)}`
-    : "### Archestra code review";
-  const out: string[] = [serializeMarker(context.marker), ...renderHeader(state, context), heading, ""];
+  const out: string[] = [
+    serializeMarker(context.marker),
+    ...renderHeader(state, context),
+    "### Archestra code review",
+    "",
+  ];
 
+  // The verdict first, then what to do first: a reader who stops after two lines knows where the PR stands.
   if (state.status === "unavailable") {
-    out.push("**Review unavailable.** No runtime completed the review. The attempts are listed below.", "");
+    out.push("**Review unavailable.** No runtime completed the review; the attempts are under History.", "");
+    if (state.verdict && state.reviewedSha) {
+      out.push(`_The result below is from the last completed review, of \`${shortSha(state.reviewedSha)}\`._`, "");
+    }
   } else if (state.verdict) {
     out.push(
-      `**${verdictLabel(state.verdict)}** · reviewed \`${shortSha(state.reviewedSha)}\` · ${state.findings.length} finding${state.findings.length === 1 ? "" : "s"}`,
+      `**${verdictLabel(state.verdict)}** · reviewed \`${shortSha(state.reviewedSha)}\` · ${findingCounts(state.findings)}`,
       "",
     );
+    if (state.conclusion) out.push(paragraphs(state.conclusion), "");
   }
   if (state.notice) out.push(`> ${oneLine(state.notice, 1000)}`, "");
-  // What the review covered, so that a reader can check that the parts that matter were read.
-  if (state.reviewed.length > 0) {
-    out.push("**Reviewed**", "", ...state.reviewed.map((item) => `- ${oneLine(item, 200)}`), "");
-  }
+  if (state.delta) out.push(...renderDelta(state.delta), "");
   // The summary keeps its Markdown; only HTML is disarmed.
   if (state.summary) out.push(paragraphs(state.summary), "");
 
-  // The change map: every place a rule of the change reached, so a reader sees it reached all of them.
-  if (state.changes.length > 0) {
-    out.push("### Change map", "", "| File | What changed |", "| --- | --- |");
-    for (const change of state.changes) {
-      const text = `\`${pathCell(change.file)}${change.line === null ? "" : `:${change.line}`}\``;
-      const url =
-        change.link === "line" && change.line !== null
-          ? diffUrl(repoUrl, pr, { file: change.file, line: change.line })
-          : change.link === "file"
-            ? fileUrl(repoUrl, pr, change.file)
-            : null;
-      const file = url ? `[${text}](${url})` : text;
-      out.push(`| ${file} | ${cell(change.what, 160)} |`);
-    }
-    out.push("");
-  }
-
   if (state.findings.length > 0) {
-    out.push("### Findings", "", "| # | Severity | Location | Finding | Status |", "| --- | --- | --- | --- | --- |");
+    const statuses = state.findings.some((finding) => finding.status !== "open");
+    out.push(
+      `| # | Severity | Finding | Location |${statuses ? " Status |" : ""}`,
+      `| --- | --- | --- | --- |${statuses ? " --- |" : ""}`,
+    );
     for (const finding of state.findings) {
-      // The number opens the inline comment; the location opens the diff.
+      // The number opens the inline comment, which holds the full text; the location opens the diff.
       const number =
         finding.commentId === null
           ? String(finding.n)
           : `[${finding.n}](${commentUrl(repoUrl, pr, finding.commentId)})`;
       const location = `${locationLink(state, context, finding, true)}${finding.inline ? "" : " (outside the diff)"}`;
       out.push(
-        `| ${number} | ${finding.severity} | ${location} | ${cell(findingTitle(finding), HEADING_MAX)} | ${finding.status} |`,
+        `| ${number} | ${finding.severity} | ${cell(findingTitle(finding), HEADING_MAX)} | ${location} |${statuses ? ` ${finding.status} |` : ""}`,
       );
     }
     out.push("");
-    for (const finding of state.findings) out.push(...findingSection(state, context, finding));
-  }
-
-  if (state.observations.length > 0) {
-    out.push("### Observations", "", ...state.observations.map((item) => `- ${oneLine(item, 600)}`), "");
-  }
-
-  if (state.tests.length > 0 || state.coverage) {
-    out.push("### Test coverage", "");
-    if (state.tests.length > 0) {
-      out.push("| File | Lines | Focus |", "| --- | --- | --- |");
-      for (const test of state.tests) {
-        const path = `\`${pathCell(test.file)}\``;
-        // A file in the diff links to it; its line counts come from the pull request.
-        const file = test.additions === null ? path : `[${path}](${fileUrl(repoUrl, pr, test.file)})`;
-        const lines = test.additions === null ? "-" : `+${test.additions} −${test.deletions ?? 0}`;
-        out.push(`| ${file} | ${lines} | ${cell(test.focus, 160)} |`);
-      }
-      out.push("");
+    // Only a finding without an inline comment is written out here; the others are on the diff.
+    for (const finding of state.findings) {
+      if (finding.commentId === null) out.push(...findingSection(state, context, finding));
     }
-    if (state.coverage) out.push(paragraphs(state.coverage), "");
   }
-
-  if (state.limitations) out.push("### Limitations", "", paragraphs(state.limitations), "");
-  if (state.conclusion) out.push("### Verdict", "", paragraphs(state.conclusion), "");
 
   const triageRows = state.triage;
   if (triageRows.length > 0) {
@@ -692,11 +696,11 @@ function renderBody(state: StickyState, context: RenderContext): string {
     out.push("", "</details>", "");
   }
 
+  out.push(...reviewNotes(state, context));
+
   if (state.jobs.length > 0) {
-    const attempts = state.jobs.reduce((count, job) => count + job.attempts.length, 0);
-    const jobs = `${state.jobs.length} job${state.jobs.length === 1 ? "" : "s"}`;
     out.push(
-      `<details><summary>History: ${jobs}${attempts > state.jobs.length ? ` (${attempts} attempts)` : ""}</summary>`,
+      `<details><summary>History: ${state.jobs.length} job${state.jobs.length === 1 ? "" : "s"}</summary>`,
       "",
       historyTable(state.jobs),
       "",
@@ -706,6 +710,81 @@ function renderBody(state: StickyState, context: RenderContext): string {
   }
   out.push(encodeState(state));
   return out.join("\n");
+}
+
+/** "2 findings: 1 medium, 1 nit", or "no findings". */
+export function findingCounts(findings: Pick<StoredFinding, "severity">[]): string {
+  if (findings.length === 0) return "no findings";
+  const counts = SeveritySchema.options
+    .map((severity) => ({ severity, count: findings.filter((finding) => finding.severity === severity).length }))
+    .filter(({ count }) => count > 0)
+    .map(({ severity, count }) => `${count} ${severity}`);
+  return `${findings.length} finding${findings.length === 1 ? "" : "s"}: ${counts.join(", ")}`;
+}
+
+/** What changed since the review before: the counts, then each fixed finding with its evidence. */
+function renderDelta(delta: ReviewDelta): string[] {
+  const parts = [
+    `${delta.fixed.length} fixed`,
+    `${delta.stillOpen} still open`,
+    ...(delta.regressed > 0 ? [`${delta.regressed} back again`] : []),
+    `${delta.added} new`,
+  ];
+  const lines = [`**Since \`${shortSha(delta.sinceSha)}\`:** ${parts.join(" · ")}`];
+  for (const fixed of delta.fixed.slice(0, 10)) {
+    const note = fixed.note ? `: ${oneLine(fixed.note, 300)}` : "";
+    lines.push(`- Fixed: ${oneLine(fixed.title, HEADING_MAX)} (${fixed.severity})${note}`);
+  }
+  if (delta.fixed.length > 10) lines.push(`- and ${delta.fixed.length - 10} more fixed`);
+  return lines;
+}
+
+/**
+ * What the review read, where the change reached, what it does right, its tests and what the review
+ * could not do, folded: a reader opens it to check the review, not to learn its result.
+ */
+function reviewNotes(state: StickyState, context: RenderContext): string[] {
+  const { repoUrl } = context;
+  const pr = context.marker.pr;
+  const body: string[] = [];
+  if (state.reviewed.length > 0) {
+    body.push("**Reviewed**", "", ...state.reviewed.map((item) => `- ${oneLine(item, 200)}`), "");
+  }
+  if (state.changes.length > 0) {
+    body.push("**Change map**", "", "| File | What changed |", "| --- | --- |");
+    for (const change of state.changes) {
+      const text = `\`${pathCell(change.file)}${change.line === null ? "" : `:${change.line}`}\``;
+      const url =
+        change.link === "line" && change.line !== null
+          ? diffUrl(repoUrl, pr, { file: change.file, line: change.line })
+          : change.link === "file"
+            ? fileUrl(repoUrl, pr, change.file)
+            : null;
+      body.push(`| ${url ? `[${text}](${url})` : text} | ${cell(change.what, 160)} |`);
+    }
+    body.push("");
+  }
+  if (state.observations.length > 0) {
+    body.push("**Observations**", "", ...state.observations.map((item) => `- ${oneLine(item, 600)}`), "");
+  }
+  if (state.tests.length > 0 || state.coverage) {
+    body.push("**Tests**", "");
+    if (state.tests.length > 0) {
+      body.push("| File | Lines | Focus |", "| --- | --- | --- |");
+      for (const test of state.tests) {
+        const path = `\`${pathCell(test.file)}\``;
+        // A file in the diff links to it; its line counts come from the pull request.
+        const file = test.additions === null ? path : `[${path}](${fileUrl(repoUrl, pr, test.file)})`;
+        const lines = test.additions === null ? "-" : `+${test.additions} −${test.deletions ?? 0}`;
+        body.push(`| ${file} | ${lines} | ${cell(test.focus, 160)} |`);
+      }
+      body.push("");
+    }
+    if (state.coverage) body.push(paragraphs(state.coverage), "");
+  }
+  if (state.limitations) body.push("**Not covered**", "", paragraphs(state.limitations), "");
+  if (body.length === 0) return [];
+  return ["<details><summary>Review notes</summary>", "", ...body, "</details>", ""];
 }
 
 /** The heading of a finding: its title, or its one-sentence summary for findings written without one. */
@@ -806,26 +885,32 @@ export function codeLanguage(file: string): string {
   return extension && Object.hasOwn(LANGUAGES, extension) ? (LANGUAGES[extension] as string) : "";
 }
 
-/** Every attempt of every job, oldest first: the history in the review comment. */
+/**
+ * One row for each job, oldest first: the history in the review comment. The duration is the job's,
+ * the same the header shows; a job with more than one attempt lists them in its result.
+ */
 export function historyTable(jobs: JobRecord[]): string {
-  const rows: string[] = [];
-  for (const job of jobs) {
+  const rows = jobs.map((job, index) => {
+    // The label is runtime-free text, but it may hold a branch name; it stays outside the link.
     const label = cell(job.label, 120);
-    for (const [index, attempt] of job.attempts.entries()) {
-      // The label is runtime-free text, but it may hold a branch name; it stays outside the link.
-      const what =
-        index > 0 ? `attempt ${index + 1}` : job.workflowRunUrl ? `${label} ([job](${job.workflowRunUrl}))` : label;
-      const outcome = attempt.result === "completed" && job.outcome ? ` · ${cell(job.outcome, 200)}` : "";
-      rows.push(
-        `| ${rows.length + 1} | ${formatTime(job.startedAt)} | ${what} | \`${attempt.agentId.slice(0, 8)}\` | ${runCell(attempt)} | ${attemptResult(attempt)}${outcome} | ${formatDuration(attempt.durationMs)} |`,
+    const what = job.workflowRunUrl ? `${label} ([job](${job.workflowRunUrl}))` : label;
+    const result = [job.outcome === null ? "did not complete" : cell(job.outcome, 200)];
+    const [only] = job.attempts;
+    if (job.attempts.length === 1 && only?.result === "completed") {
+      if (only.runUrl) result.push(`([run](${only.runUrl})${only.continued ? ", continued" : ""})`);
+    } else if (job.attempts.length > 0) {
+      const attempts = job.attempts.map(
+        (attempt, n) =>
+          `${n + 1}. \`${attempt.agentId.slice(0, 8)}\` ${attemptResult(attempt)}, ${formatDuration(attempt.durationMs)}${attempt.runUrl ? ` ([run](${attempt.runUrl}))` : ""}`,
       );
+      result.push(`· ${job.attempts.length} attempts: ${attempts.join("; ")}`);
     }
-  }
-  return [
-    "| # | Started (UTC) | Job | Agent | Run | Result | Duration |",
-    "| --- | --- | --- | --- | --- | --- | --- |",
-    ...rows,
-  ].join("\n");
+    const duration =
+      job.durationMs ??
+      (job.attempts.length > 0 ? job.attempts.reduce((sum, attempt) => sum + attempt.durationMs, 0) : null);
+    return `| ${index + 1} | ${formatTime(job.startedAt)} | ${what} | ${result.join(" ")} | ${duration === null ? "-" : formatDuration(duration)} |`;
+  });
+  return ["| # | Started (UTC) | Job | Result | Duration |", "| --- | --- | --- | --- | --- |", ...rows].join("\n");
 }
 
 /** The attempts of one job: the step summary of the workflow run. */
@@ -902,12 +987,12 @@ function shortExcerpt(excerpt: string): string {
   return truncate(kept.join("\n"), 400);
 }
 
-function verdictLabel(verdict: string): string {
+export function verdictLabel(verdict: string): string {
   return (
     {
-      approve: "Looks good to merge.",
-      comment: "Comments only; nothing blocks the merge.",
-      request_changes: "Needs changes before merge.",
+      approve: "Looks good to merge",
+      comment: "Nothing blocks the merge",
+      request_changes: "Needs changes before merge",
     }[verdict] ?? verdict
   );
 }
@@ -917,10 +1002,14 @@ function pathCell(file: string): string {
   return cell(file, 120).replace(/[`[\]]/g, "'");
 }
 
-/** A table cell: one line, no stray backtick, pipes escaped. */
-function cell(text: string, max: number): string {
+/**
+ * A table cell: one line, no stray backtick, pipes escaped. GitHub reads `\\` as an escaped
+ * backslash, so a backslash run before a pipe is doubled first: the pipe stays escaped and the cell
+ * does not split.
+ */
+export function cell(text: string, max: number): string {
   const line = balanceBackticks(truncate(text.replace(/\s+/g, " ").trim(), max));
-  return escapeHtml(line, { fences: false }).replace(/\|/g, "\\|");
+  return escapeHtml(line, { fences: false }).replace(/(\\*)\|/g, (_, slashes: string) => `${slashes}${slashes}\\|`);
 }
 
 function oneLine(text: string, max: number): string {
@@ -939,6 +1028,8 @@ export interface StickyComment {
   body: string;
   marker: StickyMarker;
   state: StickyState | null;
+  /** The login that wrote the comment: the identity of the action's GitHub token. */
+  author: string | null;
 }
 
 /** Finds the sticky comment of this pull request (a bot comment with the marker). */
@@ -955,7 +1046,7 @@ export async function findSticky(gh: Octokit, repo: RepoRef, pr: number): Promis
       if (comment.user && !isBotUser(comment.user)) continue;
       const marker = parseMarker(body);
       if (!marker) continue;
-      return { id: comment.id, body, marker, state: parseState(body) };
+      return { id: comment.id, body, marker, state: parseState(body), author: comment.user?.login ?? null };
     }
   }
   return null;

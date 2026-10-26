@@ -3,6 +3,8 @@ import type { Strategy } from "./attempts";
 export type Mode = "review" | "fix" | "fix-ci" | "fix-ci-main";
 export type PostMode = "review" | "comment" | "none";
 export type FailOn = "never" | "findings" | "error";
+/** "comment": every review is a comment. "request-changes": a blocking finding requests changes. */
+export type ReviewEvent = "comment" | "request-changes";
 
 export interface Inputs {
   /** The Archestra MCP gateway endpoint, `<origin>/v1/mcp/<gateway>`. */
@@ -20,6 +22,7 @@ export interface Inputs {
   instructions: string;
   githubToken: string;
   post: PostMode;
+  reviewEvent: ReviewEvent;
   failOn: FailOn;
   mode: Mode | "auto";
   prNumber: number | null;
@@ -118,7 +121,8 @@ export function readInputs(get: (name: string) => string, readFile: (path: strin
     instructions,
     githubToken: required("github-token"),
     post: oneOf("post", value("post") || "review", ["review", "comment", "none"]),
-    failOn: oneOf("fail-on", value("fail-on") || "never", ["never", "findings", "error"]),
+    reviewEvent: oneOf("review-event", value("review-event") || "comment", ["comment", "request-changes"]),
+    failOn: oneOf("fail-on", value("fail-on") || "error", ["never", "findings", "error"]),
     mode: oneOf("mode", value("mode") || "auto", ["auto", "review", "fix", "fix-ci", "fix-ci-main"]),
     prNumber: prNumberRaw ? integer("pr-number", prNumberRaw, 1, Number.MAX_SAFE_INTEGER) : null,
     fixCommand: commandPrefix(value("fix-command") || "/archestra"),

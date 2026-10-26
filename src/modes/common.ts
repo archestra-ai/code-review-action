@@ -9,6 +9,7 @@ import {
   attemptsTable,
   emptyState,
   findSticky,
+  type LastJob,
   renderSticky,
   type StickyComment,
   type StickyMarker,
@@ -133,13 +134,16 @@ export function commentCommand(inputs: Pick<Inputs, "fixCommand" | "fixCommands"
 /**
  * Reads the sticky comment again, changes its state, and writes it. Reading
  * again keeps changes that another workflow run made in the meantime.
+ * Returns the id of the comment.
  */
 export async function updateSticky(
   ctx: ActionContext,
-  pr: PullRequestInfo,
+  pr: Pick<PullRequestInfo, "number" | "baseRef">,
   mutate: (state: StickyState, marker: StickyMarker) => void,
-): Promise<void> {
+): Promise<number> {
   const sticky = await findSticky(ctx.gh, ctx.repo, pr.number);
+  // A canceled job records itself once, from the signal handler; the work still in flight writes nothing.
+  if (ctx.isStopping()) return sticky?.id ?? 0;
   const state = sticky?.state ?? emptyState(pr.baseRef);
   const marker: StickyMarker = sticky?.marker ?? {
     repo: fullName(ctx.repo),
@@ -156,7 +160,7 @@ export async function updateSticky(
     command: commentCommand(ctx.inputs),
     progressImageUrl: ctx.progressImageUrl,
   });
-  await writeSticky(ctx.gh, ctx.repo, pr.number, sticky?.id ?? null, body);
+  return writeSticky(ctx.gh, ctx.repo, pr.number, sticky?.id ?? null, body);
 }
 
 /**
@@ -167,13 +171,24 @@ export async function updateSticky(
 export async function startProgress(
   ctx: ActionContext,
   pr: PullRequestInfo,
-  job: { doing: string; login: string },
-): Promise<void> {
-  await updateSticky(ctx, pr, (state) => {
+  job: { doing: string; login: string; label?: string },
+): Promise<number> {
+  const startedAt = new Date(ctx.clock.now()).toISOString();
+  // Saved first: a job canceled from now on still gets its row in the history.
+  ctx.saveJob({
+    pr: pr.number,
+    sha: pr.headSha,
+    label: job.label ?? job.doing,
+    doing: job.doing,
+    login: job.login,
+    startedAt,
+    workflowRunUrl: ctx.workflowRunUrl,
+  });
+  return updateSticky(ctx, pr, (state) => {
     state.progress = {
       doing: job.doing,
       login: job.login,
-      startedAt: new Date(ctx.clock.now()).toISOString(),
+      startedAt,
       workflowRunUrl: ctx.workflowRunUrl,
       step: "preparing the inputs",
       runUrl: null,
@@ -207,18 +222,21 @@ export async function stepProgress(
 export function finishProgress(
   ctx: ActionContext,
   state: StickyState,
-  job: { did: string; login: string; outcome: "ok" | "unavailable" | "error" },
+  job: { did: string; login: string; outcome: LastJob["outcome"] },
 ): void {
-  const startedAt = state.progress ? Date.parse(state.progress.startedAt) : Number.NaN;
+  // A newer job may have put up its own progress header; this job leaves it alone.
+  const mine = state.progress?.workflowRunUrl === ctx.workflowRunUrl ? state.progress : null;
+  const startedAt = mine ? mine.startedAt : new Date(ctx.startedAt).toISOString();
   state.last = {
     did: job.did,
     login: job.login,
-    durationMs: Number.isFinite(startedAt) ? Math.max(0, ctx.clock.now() - startedAt) : 0,
-    startedAt: state.progress?.startedAt ?? null,
+    durationMs: Math.max(0, ctx.clock.now() - Date.parse(startedAt)),
+    startedAt,
     workflowRunUrl: ctx.workflowRunUrl,
     outcome: job.outcome,
+    stop: null,
   };
-  state.progress = null;
+  if (mine) state.progress = null;
 }
 
 /**
@@ -230,13 +248,19 @@ export function recordJob(
   state: StickyState,
   job: { label: string; outcome: string | null; attempts: AttemptRecord[] },
 ): void {
-  const startedAt = state.progress?.startedAt ?? state.last?.startedAt ?? new Date(ctx.clock.now()).toISOString();
+  const own = state.progress?.workflowRunUrl === ctx.workflowRunUrl ? state.progress : null;
+  const last = state.last?.workflowRunUrl === ctx.workflowRunUrl ? state.last : null;
+  const startedAt = own?.startedAt ?? last?.startedAt ?? new Date(ctx.startedAt).toISOString();
+  // The same duration as the header, when finishProgress already ran for this job.
+  const durationMs =
+    !own && last?.startedAt === startedAt ? last.durationMs : Math.max(0, ctx.clock.now() - Date.parse(startedAt));
   addJob(state, {
     label: job.label,
     startedAt,
     workflowRunUrl: ctx.workflowRunUrl,
     outcome: job.outcome,
     attempts: job.attempts,
+    durationMs: Number.isFinite(durationMs) ? durationMs : null,
   });
 }
 
@@ -265,6 +289,7 @@ export function fatalReason(attempts: AttemptRecord[]): string {
   return `The Archestra gateway stopped all attempts (${reason}).`;
 }
 
+/** The failure for the job when the work could not finish: unless "fail-on" is "never", the job fails. */
 export function failureForError(ctx: ActionContext, message: string): string | null {
-  return ctx.inputs.failOn === "error" ? message : null;
+  return ctx.inputs.failOn === "never" ? null : message;
 }

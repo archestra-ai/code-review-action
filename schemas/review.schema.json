@@ -209,6 +209,7 @@
             ]
           },
           "note": {
+            "description": "For fixed: the file and line that show the fix",
             "type": "string",
             "maxLength": 1000
           }
@@ -221,7 +222,6 @@
     }
   },
   "required": [
-    "verdict",
     "summary",
     "findings"
   ]

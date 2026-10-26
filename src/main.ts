@@ -2,14 +2,27 @@ import { readFileSync } from "node:fs";
 import { setTimeout as sleep } from "node:timers/promises";
 import * as core from "@actions/core";
 import { ArchestraClient } from "./archestra/client";
-import type { ActionContext, ActionResult } from "./context";
+import { cancelIfLive } from "./cancel";
+import { type ActionContext, type ActionResult, repoUrl } from "./context";
 import { readEnvironment } from "./env";
 import { createOctokit } from "./github/octokit";
 import { InputError, readInputs } from "./inputs";
+import { commentCommand } from "./modes/common";
 import { run } from "./run";
+import { recordStoppedJob, type SavedJob } from "./stopped";
 import { errorMessage } from "./util";
 
 export const LIVE_RUN_STATE = "live-run-id";
+export const JOB_STATE = "job";
+/** Set when the main step finished or recorded its own cancellation: the post step has nothing left to do. */
+export const DONE_STATE = "done";
+
+/**
+ * The runner sends SIGINT to a canceled step and SIGTERM about 7.5 seconds later. The job's
+ * private network access (a tunnel step after this one) is gone by the time the post step runs,
+ * so the live run is canceled here, while it can still be reached.
+ */
+const STOP_BUDGET_MS = 6_500;
 
 async function main(): Promise<void> {
   let inputs: ReturnType<typeof readInputs>;
@@ -52,11 +65,52 @@ async function main(): Promise<void> {
     log,
     clock: { now: () => Date.now(), sleep: (ms) => sleep(ms).then(() => undefined) },
     random: Math.random,
-    saveLiveRun: (runId) => core.saveState(LIVE_RUN_STATE, runId ?? ""),
+    saveLiveRun: (runId) => {
+      liveRunId = runId;
+      core.saveState(LIVE_RUN_STATE, runId ?? "");
+    },
+    saveJob: (job) => {
+      savedJob = job;
+      core.saveState(JOB_STATE, JSON.stringify(job));
+    },
+    isStopping: () => stopping,
     startedAt: Date.now(),
   };
 
-  const result = await run(ctx);
+  let liveRunId: string | null = null;
+  let savedJob: SavedJob | null = null;
+  let stopping = false;
+  const stop = async (signal: string) => {
+    if (stopping) return;
+    stopping = true;
+    core.warning(`The job was canceled (${signal}): stopping the live run and recording the job.`);
+    const work = (async () => {
+      if (liveRunId) await cancelIfLive(ctx.archestra, liveRunId, log);
+      if (savedJob) {
+        await recordStoppedJob({
+          // Short retries: the runner kills the step a few seconds after the signal.
+          gh: createOctokit(inputs.githubToken, { baseUrl: environment.apiUrl, retryDelaysMs: [500] }),
+          repo: ctx.repo,
+          job: savedJob,
+          render: { repoUrl: repoUrl(ctx), command: commentCommand(inputs), progressImageUrl: ctx.progressImageUrl },
+          now: Date.now(),
+          log,
+        });
+      }
+      core.saveState(DONE_STATE, "true");
+    })();
+    await Promise.race([work, sleep(STOP_BUDGET_MS)]);
+    process.exit(1);
+  };
+  process.once("SIGINT", () => void stop("SIGINT"));
+  process.once("SIGTERM", () => void stop("SIGTERM"));
+
+  let result: ActionResult;
+  try {
+    result = await run(ctx);
+  } finally {
+    if (!stopping) core.saveState(DONE_STATE, "true");
+  }
   setOutputs(result);
   if (result.summary) {
     try {

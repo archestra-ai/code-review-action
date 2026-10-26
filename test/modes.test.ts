@@ -171,7 +171,10 @@ describe("review mode", () => {
     });
     await run(harness.context("pull_request", prEvent(harness.github)));
     const sticky = harness.github.stickyBody()!;
-    expect(sticky).toContain("### Archestra code review: #7 — Add retry to the uploader");
+    // The verdict follows from the severities (a high finding), then what to do first.
+    expect(sticky).toContain(
+      "### Archestra code review\n\n**Needs changes before merge** · reviewed `aaaaaaa` · 1 finding: 1 high\n\nFix #1 first.\n",
+    );
     expect(sticky).toContain("**Reviewed**\n\n- The uploader (`src/upload.ts`)");
     // A "./" prefix still finds the file; a line in the hunks links to the line, a line outside to the file.
     expect(sticky).toMatch(
@@ -181,21 +184,22 @@ describe("review mode", () => {
       /\| \[`src\/upload\.ts:2`\]\(https:\/\/github\.com\/acme\/widgets\/pull\/7\/files#diff-[0-9a-f]{64}\) \| a line outside the hunks \|/,
     );
     expect(sticky).toContain("| `src/other.ts` | not in the diff |");
-    expect(sticky).toContain("| Retries without a pause | open |");
-    expect(sticky).toContain("#### 1. Retries without a pause\n\n**File:** [`src/upload.ts:12-14`]");
-    // The code at the lines of the finding, from the patch of the fake pull request.
-    expect(sticky).toContain("```ts\n    send(a);\n  }\n  return a;\n```");
+    // The finding is on the diff: the row links its inline comment, and the comment holds the text.
+    expect(sticky).toMatch(
+      /\| \[1\]\(https:\/\/github\.com\/acme\/widgets\/pull\/7#discussion_r\d+\) \| high \| Retries without a pause \|/,
+    );
+    expect(sticky).not.toContain("#### 1.");
     expect(sticky).toContain(
-      "### Observations\n\n- **Loop bound** (`src/upload.ts`): three attempts is a sane default.",
+      "**Observations**\n\n- **Loop bound** (`src/upload.ts`): three attempts is a sane default.",
     );
     expect(sticky).toContain("| [`src/upload.ts`](https://github.com/acme/widgets/pull/7/files#diff-");
     expect(sticky).toContain(") | +3 −1 | the retry loop |\n| `test/other.test.ts` | - | not in the diff |");
-    expect(sticky).toContain("### Limitations\n\nNo lint: the repository defines none.");
-    expect(sticky).toContain("### Verdict\n\nFix #1 first.");
+    expect(sticky).toContain("**Not covered**\n\nNo lint: the repository defines none.");
     const [comment] = [...harness.github.reviewComments.values()];
     expect(comment!.body).toContain(
       `**1. [${FINDING_IN_DIFF.severity}] Retries without a pause**\n\n${FINDING_IN_DIFF.summary}\n\n`,
     );
+    // The code at the lines of the finding, from the patch of the fake pull request.
     expect(parseState(sticky)!.findings[0]!.excerpt).toBe("    send(a);\n  }\n  return a;");
   });
 
@@ -207,14 +211,19 @@ describe("review mode", () => {
     harness.github.pr.head.sha = "d".repeat(40);
     harness.archestra.script(AGENT_A, {
       end: "completed",
-      files: { "review.json": reviewJson([], { previous: [{ id: first.id, status: "fixed" }] }) },
+      files: {
+        "review.json": reviewJson([], {
+          previous: [{ id: first.id, status: "fixed", note: "src/upload.ts:13 now waits <1 s> between attempts." }],
+        }),
+      },
     });
     await run(harness.context("pull_request", prEvent(harness.github, "synchronize")));
     expect(harness.github.graphqlMutations).toEqual([]);
     expect(harness.github.resolved.has(commentId!)).toBe(false);
     const replies = [...harness.github.reviewComments.values()].filter((comment) => comment.inReplyTo === commentId);
     expect(replies.map((comment) => comment.body)).toEqual([
-      "Fixed in `ddddddd`: the re-review no longer finds this problem.",
+      // The reviews saw aaaaaaa and ddddddd, not the commits between them: the reply names the range.
+      "Fixed between `aaaaaaa` and `ddddddd`: src/upload.ts:13 now waits &lt;1 s> between attempts.",
     ]);
     expect(harness.log.lines.some((line) => line.includes("Could not resolve the thread"))).toBe(true);
   });
@@ -277,7 +286,9 @@ describe("review mode", () => {
     expect(rewritten).toContain("```suggestion");
     expect(harness.github.reviews).toHaveLength(2);
     expect(harness.github.reviews[1]!.comments).toHaveLength(1);
-    expect(harness.github.reviews[1]!.body).toContain("2 findings (1 new; the others were updated in place)");
+    expect(harness.github.reviews[1]!.body).toContain(
+      "**Needs changes before merge** · Archestra review of `ddddddd` · 2 findings: 1 high, 1 medium. 1 new; 1 updated in place. [Summary](https://github.com/acme/widgets/pull/7#issuecomment-",
+    );
     expect(harness.github.reviewComments.size).toBe(2);
     const state = parseState(harness.github.stickyBody()!)!;
     expect(state.findings.map((finding) => [finding.id, finding.n])).toEqual([
@@ -389,7 +400,7 @@ describe("review mode", () => {
       ["review of ddddddd", "changes requested, 1 finding", [[AGENT_B, "completed", true]]],
     ]);
     expect(state.jobs.every((job) => job.startedAt && job.workflowRunUrl)).toBe(true);
-    expect(sticky).toContain("History: 2 jobs (3 attempts)");
+    expect(sticky).toContain("History: 2 jobs");
     expect(sticky).not.toContain("completed: completed");
   });
 });
@@ -429,8 +440,8 @@ describe("triage command", () => {
     await run(harness.context("pull_request", prEvent(harness.github, "synchronize")));
     const body = harness.github.stickyBody()!;
     expect(body).toContain("- Comment `/archestra fix-ci` to triage and fix the 2 failing checks.");
-    expect(body).toContain("| # | Severity | Location | Finding | Status |");
-    expect(body).toContain(FINDING_IN_DIFF.recommendation);
+    expect(body).toContain("| # | Severity | Finding | Location |");
+    expect(parseState(body)?.findings[0]?.recommendation).toBe(FINDING_IN_DIFF.recommendation);
     expect(parseState(body)?.failingChecks).toBe(2);
   });
 });
