@@ -1,6 +1,7 @@
 import { orderAgents } from "../attempts";
 import { renderBrief } from "../briefs";
 import {
+  type AccessRefusalInfo,
   type ActionContext,
   type ActionResult,
   briefTitle,
@@ -447,6 +448,31 @@ export function reviewScope(lastSha: string | null, sinceSha: string | null, hea
     return `The commit of the last review (${lastSha}) is no longer in the history of this pull request (a force-push or a rebase): review the whole pull request again.`;
   }
   return "This is the first review of this pull request.";
+}
+
+/**
+ * Archestra refused the job's GitHub Actions sign-in. A review event says why in the review
+ * comment, so the author knows what to do; a pull request that is never reviewed (a draft, a bot's)
+ * gets nothing. Only a failed sign-in fails the job; a refusal is a skip.
+ */
+export async function refuseAccess(
+  ctx: ActionContext,
+  trigger: { kind: string; prNumber?: number },
+  refusal: AccessRefusalInfo,
+): Promise<ActionResult> {
+  const summary = `No Archestra review: ${refusal.message}`;
+  ctx.log.warning(summary);
+  const failure = refusal.reason === "unavailable" ? failureForError(ctx, summary) : null;
+  const status = refusal.reason === "unavailable" ? "unavailable" : "unauthorized";
+  if (trigger.kind !== "review" || trigger.prNumber === undefined || ctx.inputs.post === "none") {
+    return makeResult(trigger.kind, { status, failure, summary });
+  }
+  const pr = await loadPullRequest(ctx.gh, ctx.repo, trigger.prNumber);
+  if (skipReason(pr)) return makeResult("review", { status: "skipped", summary: `No review: ${skipReason(pr)}.` });
+  await updateSticky(ctx, pr, (state) => {
+    state.notice = `No review of \`${shortSha(pr.headSha)}\`: ${refusal.message}`;
+  });
+  return makeResult("review", { status, failure, summary });
 }
 
 /** About 60 words for a small change, up to 300 for a large one. */

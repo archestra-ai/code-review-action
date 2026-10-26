@@ -203,6 +203,7 @@ To allow agents to push fixes and trigger follow-up CI runs:
 | `instructions-file`       | `""`                  | Path to a workspace file containing review instructions.                                                       |
 | `github-token`            | `${{ github.token }}` | GitHub token for posting comments (`pull-requests: write`).                                                    |
 | `post`                    | `review`              | Posting mode: `review` (sticky comment + inline), `comment` (sticky only), or `none`.                          |
+| `archestra-auth`          | `token`               | `token` (use `archestra-token`), or `github-actions`: sign in with the job's identity and review as the PR author (needs `id-token: write`). |
 | `review-event`            | `comment`             | `comment`, or `request-changes`: a finding of medium or above requests changes, dismissed once nothing blocks. |
 | `fail-on`                 | `error`               | Step failure condition: `error` (the review could not finish), `findings` (also on findings), or `never`.      |
 | `mode`                    | `auto`                | Execution mode: `auto`, `review`, `fix`, `fix-ci`, or `fix-ci-main`.                                           |

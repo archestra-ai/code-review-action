@@ -3,7 +3,7 @@ import { detectTrigger } from "./github/event";
 import { runFix } from "./modes/fix";
 import { runFixCi } from "./modes/fix-ci";
 import { runFixCiMain } from "./modes/fix-ci-main";
-import { runReview } from "./modes/review";
+import { refuseAccess, runReview } from "./modes/review";
 
 /** Detects the mode from the event (or the "mode" input) and runs it. */
 export async function run(ctx: ActionContext): Promise<ActionResult> {
@@ -16,6 +16,7 @@ export async function run(ctx: ActionContext): Promise<ActionResult> {
     ctx.log.info(`Nothing to do: ${trigger.reason}.`);
     return makeResult("none", { status: "skipped", summary: `Nothing to do: ${trigger.reason}.` });
   }
+  if (ctx.accessRefusal) return refuseAccess(ctx, trigger, ctx.accessRefusal);
   if (!ctx.inputs.token) {
     // Runs act as the person who caused them; without that person's token
     // there is no one to run as.

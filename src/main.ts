@@ -2,7 +2,9 @@ import { readFileSync } from "node:fs";
 import { setTimeout as sleep } from "node:timers/promises";
 import * as core from "@actions/core";
 import { ArchestraClient } from "./archestra/client";
+import { exchangeGitHubActionsToken } from "./archestra/github-actions-auth";
 import { cancelIfLive } from "./cancel";
+import type { AccessRefusalInfo } from "./context";
 import { type ActionContext, type ActionResult, repoUrl } from "./context";
 import { readEnvironment } from "./env";
 import { createOctokit } from "./github/octokit";
@@ -16,6 +18,8 @@ export const LIVE_RUN_STATE = "live-run-id";
 export const JOB_STATE = "job";
 /** Set when the main step finished or recorded its own cancellation: the post step has nothing left to do. */
 export const DONE_STATE = "done";
+/** The Archestra token of a job that signed in with its GitHub Actions identity, for the post step. */
+export const TOKEN_STATE = "archestra-token";
 
 /**
  * The runner sends SIGINT to a canceled step and SIGTERM about 7.5 seconds later. The job's
@@ -37,6 +41,24 @@ async function main(): Promise<void> {
       return;
     }
     throw error;
+  }
+  // Sign in with the job's GitHub Actions identity: the token of the pull request author's user,
+  // and the review App's token for this repository.
+  let accessRefusal: AccessRefusalInfo | null = null;
+  if (inputs.archestraAuth === "github-actions") {
+    const exchange = await exchangeGitHubActionsToken({
+      gatewayUrl: inputs.gatewayUrl,
+      getIdToken: (audience) => core.getIDToken(audience),
+    });
+    if (exchange.ok) {
+      core.setSecret(exchange.accessToken);
+      if (exchange.githubToken) core.setSecret(exchange.githubToken);
+      core.saveState(TOKEN_STATE, exchange.accessToken);
+      inputs = { ...inputs, token: exchange.accessToken, githubToken: exchange.githubToken ?? inputs.githubToken };
+      core.info(`Signed in to Archestra as the GitHub user ${exchange.githubLogin ?? "(unknown)"}.`);
+    } else {
+      accessRefusal = { reason: exchange.reason, message: exchange.message, login: exchange.login };
+    }
   }
   // Mask the secrets in all log output, also in error messages.
   if (inputs.token) core.setSecret(inputs.token);
@@ -74,6 +96,7 @@ async function main(): Promise<void> {
       core.saveState(JOB_STATE, JSON.stringify(job));
     },
     isStopping: () => stopping,
+    accessRefusal,
     startedAt: Date.now(),
   };
 

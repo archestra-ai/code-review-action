@@ -4,7 +4,7 @@ import type { AttemptRecord } from "../attempts";
 import { ReviewFindingSchema, SeveritySchema, TriageClassSchema } from "../contracts";
 import { DEFAULT_PROGRESS_IMAGE_URL } from "../env";
 import { fullName, isBotUser, type RepoRef, shortSha, truncate } from "../util";
-import type { Octokit } from "./octokit";
+import { httpStatus, type Octokit } from "./octokit";
 
 // The sticky comment is the durable state between workflow runs: a visible
 // summary for people, a hidden marker line for the action, and a hidden
@@ -1049,9 +1049,14 @@ export interface StickyComment {
   author: string | null;
 }
 
-/** Finds the sticky comment of this pull request (a bot comment with the marker). */
+/**
+ * Finds the sticky comment of this pull request: the newest bot comment with the marker. A pull
+ * request can have two when the action's identity changed (from the workflow token to a GitHub
+ * App): the newer one, which the current identity can edit, carries the state.
+ */
 export async function findSticky(gh: Octokit, repo: RepoRef, pr: number): Promise<StickyComment | null> {
   const prefix = markerPrefix(repo, pr);
+  let found: StickyComment | null = null;
   for await (const page of gh.paginate.iterator(gh.rest.issues.listComments, {
     ...repo,
     issue_number: pr,
@@ -1063,10 +1068,10 @@ export async function findSticky(gh: Octokit, repo: RepoRef, pr: number): Promis
       if (comment.user && !isBotUser(comment.user)) continue;
       const marker = parseMarker(body);
       if (!marker) continue;
-      return { id: comment.id, body, marker, state: parseState(body), author: comment.user?.login ?? null };
+      found = { id: comment.id, body, marker, state: parseState(body), author: comment.user?.login ?? null };
     }
   }
-  return null;
+  return found;
 }
 
 export async function writeSticky(
@@ -1077,8 +1082,15 @@ export async function writeSticky(
   body: string,
 ): Promise<number> {
   if (existingId !== null) {
-    await gh.rest.issues.updateComment({ ...repo, comment_id: existingId, body });
-    return existingId;
+    try {
+      await gh.rest.issues.updateComment({ ...repo, comment_id: existingId, body });
+      return existingId;
+    } catch (error) {
+      // Another identity wrote it (the workflow token before a GitHub App), or a person deleted it:
+      // a new comment takes over, with the same state.
+      const status = httpStatus(error);
+      if (status !== 403 && status !== 404) throw error;
+    }
   }
   const { data } = await gh.rest.issues.createComment({ ...repo, issue_number: pr, body });
   return data.id;

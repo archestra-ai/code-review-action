@@ -9,6 +9,13 @@ inputs:
   archestra-gateway-url:
     description: Archestra MCP gateway endpoint (e.g. https://archestra.example.com/v1/mcp/code-review).
     required: true
+  archestra-auth:
+    description: >-
+      How the runs sign in. "token": with archestra-token (or fallback-token). "github-actions": with the job's
+      GitHub Actions identity (needs id-token: write). Archestra then runs the review as the pull request
+      author, who must have connected GitHub in Archestra, and returns its GitHub App's token for this
+      repository, which the action posts with.
+    default: token
   archestra-token:
     description: Archestra platform token of the actor. If empty, the action skips execution unless fallback-token is set.
     default: ""

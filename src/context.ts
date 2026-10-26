@@ -1,5 +1,6 @@
 import type { z } from "zod";
 import type { ArchestraClient } from "./archestra/client";
+import type { AccessRefusal } from "./archestra/github-actions-auth";
 import { type AttemptRecord, type FallbackResult, type ProgressReporter, runWithFallback } from "./attempts";
 import type { Octokit } from "./github/octokit";
 import type { Inputs } from "./inputs";
@@ -31,7 +32,16 @@ export interface ActionContext {
   saveJob: (job: SavedJob) => void;
   /** True once the runner canceled the job: no new run starts, and nothing more is written. */
   isStopping: () => boolean;
+  /** Why Archestra refused the job's GitHub Actions sign-in; null when it signed in, or used a token. */
+  accessRefusal: AccessRefusalInfo | null;
   startedAt: number;
+}
+
+export interface AccessRefusalInfo {
+  reason: AccessRefusal;
+  /** Archestra's explanation, written for the pull request author. */
+  message: string;
+  login: string | null;
 }
 
 export type ActionStatus =

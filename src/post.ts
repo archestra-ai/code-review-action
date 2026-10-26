@@ -27,8 +27,8 @@ async function post(): Promise<void> {
   if (core.getState("done") === "true") return;
   const runId = core.getState("live-run-id");
   const gatewayUrl = core.getInput("archestra-gateway-url");
-  // The same choice as the main step: the actor's token, else the fallback.
-  const token = core.getInput("archestra-token") || core.getInput("fallback-token");
+  // The same choice as the main step: the token of the GitHub Actions sign-in, the actor's token, else the fallback.
+  const token = core.getState("archestra-token") || core.getInput("archestra-token") || core.getInput("fallback-token");
   if (runId && gatewayUrl && token) {
     core.setSecret(token);
     const client = new ArchestraClient({ gatewayUrl, token, requestTimeoutMs: 20_000 });

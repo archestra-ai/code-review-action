@@ -1,5 +1,6 @@
 import { HttpResponse, http } from "msw";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { exchangeGitHubActionsToken, tokenEndpoint } from "../src/archestra/github-actions-auth";
 import { isTransient } from "../src/github/octokit";
 import { verdictFor } from "../src/github/review";
 import { parseState } from "../src/github/sticky";
@@ -135,6 +136,107 @@ describe("change requests", () => {
     harness.archestra.script(AGENT_A, { end: "completed", files: { "review.json": reviewJson([FINDING_IN_DIFF]) } });
     await run(harness.context("pull_request", prEvent(harness.github)));
     expect(harness.github.reviews.map((review) => review.event)).toEqual(["COMMENT"]);
+  });
+});
+
+describe("GitHub Actions sign-in", () => {
+  const gatewayUrl = "https://archestra.test/v1/mcp/11111111-1111-4111-8111-111111111111";
+  const getIdToken = async (audience: string) => `oidc-for-${audience}`;
+
+  it("trades the job's identity token for the author's Archestra token and the App's GitHub token", async () => {
+    let request: unknown = null;
+    server.use(
+      http.post(tokenEndpoint(gatewayUrl), async ({ request: req }) => {
+        request = await req.json();
+        return HttpResponse.json({ access_token: "arch-1", github_token: "ghs-app", github_login: "alice" });
+      }),
+    );
+    const result = await exchangeGitHubActionsToken({ gatewayUrl, getIdToken, retryDelaysMs: [] });
+    expect(result).toEqual({ ok: true, accessToken: "arch-1", githubToken: "ghs-app", githubLogin: "alice" });
+    // The audience is the deployment, and the resource names the gateway.
+    expect(request).toEqual({ token: "oidc-for-https://archestra.test", resource: gatewayUrl });
+  });
+
+  it("passes on why Archestra refused, and retries a server error once", async () => {
+    let calls = 0;
+    server.use(
+      http.post(tokenEndpoint(gatewayUrl), () => {
+        calls++;
+        return calls === 1
+          ? HttpResponse.json({ error: "server_error" }, { status: 503 })
+          : HttpResponse.json(
+              { error: "not_linked", login: "bob", message: "Connect GitHub under Credentials in Archestra." },
+              { status: 403 },
+            );
+      }),
+    );
+    const result = await exchangeGitHubActionsToken({ gatewayUrl, getIdToken, retryDelaysMs: [0] });
+    expect(result).toEqual({
+      ok: false,
+      reason: "not_linked",
+      message: "Connect GitHub under Credentials in Archestra.",
+      login: "bob",
+    });
+    expect(calls).toBe(2);
+  });
+
+  it("explains a job without an identity token", async () => {
+    const result = await exchangeGitHubActionsToken({
+      gatewayUrl,
+      getIdToken: async () => {
+        throw new Error("Unable to get ACTIONS_ID_TOKEN_REQUEST_URL env variable");
+      },
+    });
+    expect(result).toMatchObject({ ok: false, reason: "unavailable" });
+    expect(!result.ok && result.message).toContain("id-token: write");
+  });
+
+  it("tells an author who has not connected GitHub why there is no review, without failing the job", async () => {
+    const harness = setup();
+    const ctx = {
+      ...harness.context("pull_request", prEvent(harness.github), { "archestra-auth": "github-actions" }),
+      accessRefusal: {
+        reason: "not_linked" as const,
+        message: "@alice has not connected GitHub to Archestra.",
+        login: "alice",
+      },
+    };
+    const result = await run(ctx);
+    expect(result).toMatchObject({ status: "unauthorized", failure: null });
+    expect(harness.archestra.starts).toHaveLength(0);
+    expect(harness.github.stickyBody()).toContain(
+      "> No review of `aaaaaaa`: @alice has not connected GitHub to Archestra.",
+    );
+  });
+
+  it("says nothing on a pull request that is never reviewed, and fails the job when the sign-in failed", async () => {
+    const harness = setup();
+    harness.github.pr.draft = true;
+    const refusal = { reason: "not_linked" as const, message: "not connected", login: "alice" };
+    const draft = await run({ ...harness.context("pull_request", prEvent(harness.github)), accessRefusal: refusal });
+    expect(draft.status).toBe("skipped");
+    expect(harness.github.stickyBody()).toBeNull();
+    harness.github.pr.draft = false;
+    const failed = await run({
+      ...harness.context("pull_request", prEvent(harness.github)),
+      accessRefusal: { reason: "unavailable", message: "Archestra did not answer", login: null },
+    });
+    expect(failed.failure).toMatch(/did not answer/);
+  });
+
+  it("moves to a new review comment when the old one belongs to another identity", async () => {
+    const harness = setup();
+    harness.archestra.script(AGENT_A, { end: "completed", files: { "review.json": reviewJson([FINDING_IN_DIFF]) } });
+    await run(harness.context("pull_request", prEvent(harness.github)));
+    const [oldId] = [...harness.github.comments.keys()];
+    harness.github.foreignComments.add(oldId!);
+    harness.github.pr.head.sha = "d".repeat(40);
+    harness.archestra.script(AGENT_A, { end: "completed", files: { "review.json": reviewJson([]) } });
+    await run(harness.context("pull_request", prEvent(harness.github, "synchronize")));
+    const stickies = [...harness.github.comments.values()].filter((c) => c.body.includes("archestra-code-review"));
+    expect(stickies).toHaveLength(2);
+    // The new comment carries on: it knows the finding of the old one is gone.
+    expect(parseState(stickies[1]!.body)!.jobs).toHaveLength(2);
   });
 });
 
