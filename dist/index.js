@@ -40578,6 +40578,8 @@ function parse3(schema, data, operation) {
 }
 
 // src/env.ts
+var PUBLISHED_ACTION = "archestra-ai/code-review-action";
+var DEFAULT_PROGRESS_IMAGE_URL = `https://raw.githubusercontent.com/${PUBLISHED_ACTION}/main/assets/progress.gif`;
 function readEnvironment(env, readFile) {
   const repository = env.GITHUB_REPOSITORY ?? "";
   const [owner, repo] = repository.split("/");
@@ -40606,20 +40608,19 @@ function readEnvironment(env, readFile) {
     serverUrl,
     apiUrl: (env.GITHUB_API_URL ?? "https://api.github.com").replace(/\/+$/, ""),
     workflowRunUrl: `${serverUrl}/${owner}/${repo}/actions/runs/${runId}`,
-    progressImageUrl: progressImageUrl(env)
+    progressImageUrl: progressImageUrl(env, serverUrl)
   };
 }
-function progressImageUrl(env) {
-  const repository = env.GITHUB_ACTION_REPOSITORY ?? "";
+function progressImageUrl(env, serverUrl) {
   const ref = env.GITHUB_ACTION_REF ?? "";
-  const source = isPath(repository, 2) ? repository : "archestra-ai/code-review-action";
-  const revision = isPath(ref) ? ref : "main";
-  return `https://raw.githubusercontent.com/${source}/${revision}/assets/progress.gif`;
+  if (serverUrl !== "https://github.com" || env.GITHUB_ACTION_REPOSITORY !== PUBLISHED_ACTION || !isRef2(ref)) {
+    return DEFAULT_PROGRESS_IMAGE_URL;
+  }
+  return `https://raw.githubusercontent.com/${PUBLISHED_ACTION}/${ref}/assets/progress.gif`;
 }
-function isPath(value, segments) {
+function isRef2(value) {
   const parts = value.split("/");
-  if (segments !== void 0 && parts.length !== segments) return false;
-  return parts.every((part) => /^[\w.-]+$/.test(part) && !/^\.+$/.test(part));
+  return parts.length <= 3 && parts.every((part) => /^[\w.-]+$/.test(part) && !/^\.+$/.test(part));
 }
 
 // node_modules/@actions/github/lib/context.js
@@ -46083,9 +46084,7 @@ var ProgressSchema = external_exports.object({
   workflowRunUrl: external_exports.string(),
   /** The current step: "starting a run on agent 1 of 2", "waiting for the run". */
   step: external_exports.string().max(300).nullable(),
-  runUrl: external_exports.string().nullable(),
-  /** The animated mark next to the header; absent in comments written before this field existed. */
-  image: external_exports.string().nullable().optional()
+  runUrl: external_exports.string().nullable()
 });
 var LastJobSchema = external_exports.object({
   /** What the job did, in a few words: "reviewed", "applied 2 findings". */
@@ -46264,15 +46263,18 @@ function renderSticky(state, context3) {
   }
   return renderBody(fitted, context3);
 }
-var DEFAULT_PROGRESS_IMAGE = "https://raw.githubusercontent.com/archestra-ai/code-review-action/main/assets/progress.gif";
-function progressImage(url2) {
-  return `<img src="${escapeHtml(url2 ?? DEFAULT_PROGRESS_IMAGE)}" width="14" height="14" alt="Archestra is working" />`;
+function progressImage(context3) {
+  const url2 = escapeAttribute(context3?.progressImageUrl ?? DEFAULT_PROGRESS_IMAGE_URL);
+  return `<img src="${url2}" width="14" height="14" alt="Archestra is working" />`;
 }
-function renderHeader(state) {
+function escapeAttribute(value) {
+  return value.replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+function renderHeader(state, context3) {
   const { progress, last } = state;
   if (progress) {
     const lines = [
-      `**Archestra is ${oneLine(progress.doing, 200)} for @${progress.login}\u2026** ${progressImage(progress.image)} \u2014\u2014 [View job](${progress.workflowRunUrl})`,
+      `**Archestra is ${oneLine(progress.doing, 200)} for @${progress.login}\u2026** ${progressImage(context3)} \u2014\u2014 [View job](${progress.workflowRunUrl})`,
       ""
     ];
     const step = progress.step ? oneLine(progress.step, 300) : null;
@@ -46294,7 +46296,7 @@ function renderBody(state, context3) {
   const { command, repoUrl: repoUrl2 } = context3;
   const pr = context3.marker.pr;
   const heading = state.title ? `### Archestra code review: #${pr} \u2014 ${oneLine(state.title, 200)}` : "### Archestra code review";
-  const out = [serializeMarker(context3.marker), ...renderHeader(state), heading, ""];
+  const out = [serializeMarker(context3.marker), ...renderHeader(state, context3), heading, ""];
   if (state.status === "unavailable") {
     out.push("**Review unavailable.** No runtime completed the review. The attempts are listed below.", "");
   } else if (state.verdict) {
@@ -46812,7 +46814,12 @@ async function updateSticky(ctx, pr, mutate) {
     sha: null
   };
   mutate(state, marker);
-  const body = renderSticky(state, { marker, repoUrl: repoUrl(ctx), command: commentCommand(ctx.inputs) });
+  const body = renderSticky(state, {
+    marker,
+    repoUrl: repoUrl(ctx),
+    command: commentCommand(ctx.inputs),
+    progressImageUrl: ctx.progressImageUrl
+  });
   await writeSticky(ctx.gh, ctx.repo, pr.number, sticky?.id ?? null, body);
 }
 async function startProgress(ctx, pr, job) {
@@ -46822,7 +46829,6 @@ async function startProgress(ctx, pr, job) {
       login: job.login,
       startedAt: new Date(ctx.clock.now()).toISOString(),
       workflowRunUrl: ctx.workflowRunUrl,
-      image: ctx.progressImageUrl,
       step: "preparing the inputs",
       runUrl: null
     };

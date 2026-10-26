@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { z } from "zod";
 import type { AttemptRecord } from "../attempts";
 import { ReviewFindingSchema, TriageClassSchema } from "../contracts";
+import { DEFAULT_PROGRESS_IMAGE_URL } from "../env";
 import { fullName, isBotUser, type RepoRef, shortSha, truncate } from "../util";
 import type { Octokit } from "./octokit";
 
@@ -246,8 +247,6 @@ const ProgressSchema = z.object({
   /** The current step: "starting a run on agent 1 of 2", "waiting for the run". */
   step: z.string().max(300).nullable(),
   runUrl: z.string().nullable(),
-  /** The animated mark next to the header; absent in comments written before this field existed. */
-  image: z.string().nullable().optional(),
 });
 
 const LastJobSchema = z.object({
@@ -425,6 +424,8 @@ export interface RenderContext {
   repoUrl: string;
   /** The command prefix; null when no workflow listens to the commands, so the comment shows none. */
   command: string | null;
+  /** The animated mark of the progress header; the published action's main-branch image when absent. */
+  progressImageUrl?: string;
 }
 
 const MAX_BODY_CHARS = 65_000;
@@ -485,26 +486,29 @@ export function renderSticky(state: StickyState, context: RenderContext): string
 
 /**
  * The picture next to the in-progress header: the Archestra mark in a badge with a turning arc, an
- * animated GIF (`assets/progress.gif`) served from the action's own repository at the running
- * revision, visible on both GitHub themes. The action does not know which model an agent runs (agent
- * ids are opaque, and the run reports only its state), so it shows no provider's logo.
+ * animated GIF (`assets/progress.gif`) served from the published action at the revision the workflow
+ * pins, visible on both GitHub themes. The action does not know which model an agent runs (agent ids
+ * are opaque, and the run reports only its state), so it shows no provider's logo.
  */
-const DEFAULT_PROGRESS_IMAGE =
-  "https://raw.githubusercontent.com/archestra-ai/code-review-action/main/assets/progress.gif";
+function progressImage(context?: Pick<RenderContext, "progressImageUrl">): string {
+  const url = escapeAttribute(context?.progressImageUrl ?? DEFAULT_PROGRESS_IMAGE_URL);
+  return `<img src="${url}" width="14" height="14" alt="Archestra is working" />`;
+}
 
-function progressImage(url: string | null | undefined): string {
-  return `<img src="${escapeHtml(url ?? DEFAULT_PROGRESS_IMAGE)}" width="14" height="14" alt="Archestra is working" />`;
+/** Escapes a value for a double-quoted HTML attribute. */
+function escapeAttribute(value: string): string {
+  return value.replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 }
 
 /**
  * The first line: who the job acts for and where it is. A job in progress
  * shows the animated Archestra mark and its current step; a finished job shows its duration.
  */
-export function renderHeader(state: StickyState): string[] {
+export function renderHeader(state: StickyState, context?: Pick<RenderContext, "progressImageUrl">): string[] {
   const { progress, last } = state;
   if (progress) {
     const lines = [
-      `**Archestra is ${oneLine(progress.doing, 200)} for @${progress.login}…** ${progressImage(progress.image)} —— [View job](${progress.workflowRunUrl})`,
+      `**Archestra is ${oneLine(progress.doing, 200)} for @${progress.login}…** ${progressImage(context)} —— [View job](${progress.workflowRunUrl})`,
       "",
     ];
     const step = progress.step ? oneLine(progress.step, 300) : null;
@@ -534,7 +538,7 @@ function renderBody(state: StickyState, context: RenderContext): string {
   const heading = state.title
     ? `### Archestra code review: #${pr} — ${oneLine(state.title, 200)}`
     : "### Archestra code review";
-  const out: string[] = [serializeMarker(context.marker), ...renderHeader(state), heading, ""];
+  const out: string[] = [serializeMarker(context.marker), ...renderHeader(state, context), heading, ""];
 
   if (state.status === "unavailable") {
     out.push("**Review unavailable.** No runtime completed the review. The attempts are listed below.", "");
