@@ -114,10 +114,10 @@ export function planThreadUpdates(
 }
 
 /**
- * Applies a thread update and says whether it worked. GitHub does not let a
- * workflow's installation token resolve review threads ("Resource not
- * accessible by integration"); the caller then replies under the thread
- * instead, so that a reader still sees what happened.
+ * Applies a thread update and says whether it worked. An installation token
+ * resolves review threads only with contents: write besides pull-requests:
+ * write; without it GitHub answers "Resource not accessible by integration",
+ * and the thread stays as it is.
  */
 export async function tryThreadUpdate(gh: Octokit, update: ThreadUpdate, log: Logger): Promise<boolean> {
   try {
@@ -125,7 +125,7 @@ export async function tryThreadUpdate(gh: Octokit, update: ThreadUpdate, log: Lo
     return true;
   } catch (error) {
     log.warning(
-      `Could not ${update.action} the thread of finding ${update.findingId}; a reply says what happened instead: ${errorMessage(error)}`,
+      `Could not ${update.action} the thread of finding ${update.findingId} (the token needs contents: write): ${errorMessage(error)}`,
     );
     return false;
   }
