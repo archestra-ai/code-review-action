@@ -172,8 +172,9 @@ describe("review mode", () => {
     await run(harness.context("pull_request", prEvent(harness.github)));
     const sticky = harness.github.stickyBody()!;
     // The verdict follows from the severities (a high finding), then what to do first.
-    expect(sticky).toContain(
-      "### Archestra code review\n\n**Needs changes before merge** · reviewed `aaaaaaa` · 1 finding: 1 high\n\nFix #1 first.\n",
+    // "#1" links to the finding's inline comment, not to issue 1.
+    expect(sticky).toMatch(
+      /### Archestra code review\n\n\*\*Needs changes before merge\*\* · reviewed `aaaaaaa` · 1 finding: 1 high\n\nFix \[#1\]\(https:\/\/github\.com\/acme\/widgets\/pull\/7#discussion_r\d+\) first\.\n/,
     );
     expect(sticky).toContain("**Reviewed**\n\n- The uploader (`src/upload.ts`)");
     // A "./" prefix still finds the file; a line in the hunks links to the line, a line outside to the file.

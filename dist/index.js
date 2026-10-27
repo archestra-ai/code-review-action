@@ -47185,7 +47185,7 @@ function renderBody(state, context3) {
       `**${verdictLabel(state.verdict)}** \xB7 reviewed \`${shortSha(state.reviewedSha)}\` \xB7 ${findingCounts(state.findings)}`,
       ""
     );
-    if (state.conclusion) out.push(paragraphs(state.conclusion), "");
+    if (state.conclusion) out.push(linkFindingNumbers(paragraphs(state.conclusion), state, context3), "");
   }
   if (state.notice) out.push(`> ${oneLine(state.notice, 1e3)}`, "");
   if (state.delta) out.push(...renderDelta(state.delta), "");
@@ -47287,6 +47287,18 @@ function renderBody(state, context3) {
   }
   out.push(encodeState(state));
   return out.join("\n");
+}
+function linkFindingNumbers(text, state, context3) {
+  return mapCode(
+    text,
+    (prose) => prose.replace(/(^|[^\w/&[#])#(\d{1,2})\b/g, (match, before, digits) => {
+      const finding = state.findings.find((candidate) => candidate.n === Number(digits));
+      if (!finding) return match;
+      return finding.commentId === null ? `${before}finding ${finding.n}` : `${before}[#${finding.n}](${commentUrl(context3.repoUrl, context3.marker.pr, finding.commentId)})`;
+    }),
+    (code) => code,
+    { fences: true, closeFences: false }
+  );
 }
 function findingCounts(findings) {
   if (findings.length === 0) return "no findings";

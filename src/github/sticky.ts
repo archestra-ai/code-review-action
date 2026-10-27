@@ -603,7 +603,7 @@ function renderBody(state: StickyState, context: RenderContext): string {
       `**${verdictLabel(state.verdict)}** · reviewed \`${shortSha(state.reviewedSha)}\` · ${findingCounts(state.findings)}`,
       "",
     );
-    if (state.conclusion) out.push(paragraphs(state.conclusion), "");
+    if (state.conclusion) out.push(linkFindingNumbers(paragraphs(state.conclusion), state, context), "");
   }
   if (state.notice) out.push(`> ${oneLine(state.notice, 1000)}`, "");
   if (state.delta) out.push(...renderDelta(state.delta), "");
@@ -727,6 +727,27 @@ function renderBody(state: StickyState, context: RenderContext): string {
   }
   out.push(encodeState(state));
   return out.join("\n");
+}
+
+/**
+ * The conclusion names findings by number ("fix #1 first"); GitHub would link `#1` to issue 1 of
+ * the repository. A number of a finding links to its inline comment instead, or reads "finding 1"
+ * when it has none. Other numbers ("#9698") stay references; code stays as written.
+ */
+export function linkFindingNumbers(text: string, state: StickyState, context: RenderContext): string {
+  return mapCode(
+    text,
+    (prose) =>
+      prose.replace(/(^|[^\w/&[#])#(\d{1,2})\b/g, (match, before: string, digits: string) => {
+        const finding = state.findings.find((candidate) => candidate.n === Number(digits));
+        if (!finding) return match;
+        return finding.commentId === null
+          ? `${before}finding ${finding.n}`
+          : `${before}[#${finding.n}](${commentUrl(context.repoUrl, context.marker.pr, finding.commentId)})`;
+      }),
+    (code) => code,
+    { fences: true, closeFences: false },
+  );
 }
 
 /** "2 findings: 1 medium, 1 nit", or "no findings". */
