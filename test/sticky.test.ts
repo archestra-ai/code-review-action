@@ -133,7 +133,7 @@ describe("sticky state and rendering", () => {
       command: "/archestra",
     });
     expect(rendered).toContain(
-      "### Archestra code review\n\n**Needs changes before merge** · reviewed `aaaaaaa` · 1 finding: 1 high\n\nFix #1 first; the rest can follow.\n",
+      "### Archestra code review\n\n**Needs changes before merge** · reviewed `aaaaaaa` · 1 finding: 1 high\n\nFix finding 1 first; the rest can follow.\n",
     );
     // The title of the pull request is not repeated.
     expect(rendered).not.toContain("Add retry");
@@ -153,7 +153,7 @@ describe("sticky state and rendering", () => {
     // Reading order: the verdict and the first step, the findings, the commands, then the folded notes.
     const order = [
       "**Needs changes before merge**",
-      "Fix #1 first",
+      "Fix finding 1 first",
       "| # | Severity | Finding | Location |",
       "#### 1.",
       "### Next",
@@ -232,6 +232,18 @@ describe("sticky state and rendering", () => {
     );
     expect(rendered).toContain(`- ${"r".repeat(199)}…\n`);
     expect(rendered).toContain(`- ${"o".repeat(599)}…\n`);
+  });
+
+  it("links the finding numbers of the conclusion to their comments, not to issues", () => {
+    const linked = { ...state.findings[0]!, commentId: 4360045075 };
+    const outside = { ...state.findings[0]!, id: "aaaaaaa-2", n: 2, commentId: null };
+    const rendered = renderSticky(
+      { ...state, findings: [linked, outside], conclusion: "Fix #1 first, then #2; see #9698 and `#1`." },
+      { marker, repoUrl: "https://github.com/acme/widgets", command: null },
+    );
+    expect(rendered).toContain(
+      "Fix [#1](https://github.com/acme/widgets/pull/7#discussion_r4360045075) first, then finding 2; see #9698 and `#1`.",
+    );
   });
 
   it("keeps a pipe after a backslash escaped, so a cell cannot split", () => {

@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.5.1 (2026-10-27)
+
+- A finding number in the review's first step ("fix #1 first") links to that finding's inline comment, or reads "finding 1" when it has none. GitHub linked it to issue 1 of the repository before.
+
 ## 0.5.0 (2026-10-27)
 
 - New `archestra-auth: github-actions`: the job signs in with its GitHub Actions identity. Archestra runs the review as the pull request author, who must have connected GitHub to Archestra, and returns its GitHub App's token for the repository, so the review posts as the App. Authors who have not connected get a note in the review comment instead of a review.
