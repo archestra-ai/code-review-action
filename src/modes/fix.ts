@@ -266,17 +266,9 @@ async function updateFindingThreads(
   const commits = new Map(applied.map((entry) => [entry.finding, entry.commit]));
   try {
     const threads = await listFindingThreads(gh, ctx.repo, pr);
+    // An applied finding's thread is only resolved; the review comment names the commit.
     for (const update of planThreadUpdates(threads, { resolve: [...commits.keys()], unresolve: [] })) {
-      // A thread the token may not resolve gets a reply that names the commit instead.
-      if (!(await tryThreadUpdate(gh, update, ctx.log))) {
-        await replyToThread(
-          ctx.gh,
-          ctx.repo,
-          pr,
-          update.commentId,
-          `Applied in \`${shortSha(commits.get(update.findingId) ?? "")}\`.`,
-        );
-      }
+      await tryThreadUpdate(gh, update, ctx.log);
     }
     for (const entry of skipped) {
       const thread = threads.get(entry.finding);

@@ -48076,7 +48076,7 @@ async function tryThreadUpdate(gh, update, log) {
     return true;
   } catch (error63) {
     log.warning(
-      `Could not ${update.action} the thread of finding ${update.findingId}; a reply says what happened instead: ${errorMessage(error63)}`
+      `Could not ${update.action} the thread of finding ${update.findingId} (the token needs contents: write): ${errorMessage(error63)}`
     );
     return false;
   }
@@ -48289,15 +48289,7 @@ async function updateFindingThreads(ctx, pr, applied, skipped) {
   try {
     const threads = await listFindingThreads(gh, ctx.repo, pr);
     for (const update of planThreadUpdates(threads, { resolve: [...commits.keys()], unresolve: [] })) {
-      if (!await tryThreadUpdate(gh, update, ctx.log)) {
-        await replyToThread(
-          ctx.gh,
-          ctx.repo,
-          pr,
-          update.commentId,
-          `Applied in \`${shortSha(commits.get(update.findingId) ?? "")}\`.`
-        );
-      }
+      await tryThreadUpdate(gh, update, ctx.log);
     }
     for (const entry of skipped) {
       const thread = threads.get(entry.finding);
@@ -49324,9 +49316,8 @@ async function reviewInProgress(ctx, p) {
   });
   if (inputs.post !== "none") {
     await updatePreviousThreads(ctx, pr.number, {
-      fixed: fixed.map((status) => ({ id: status.id, note: status.note ?? null })),
+      fixedIds: fixed.map((status) => status.id),
       regressedIds,
-      sinceSha,
       headSha: pr.headSha,
       threads
     });
@@ -49419,23 +49410,22 @@ async function findingThreads(ctx, pr, wanted) {
   }
 }
 async function updatePreviousThreads(ctx, pr, p) {
-  if (p.fixed.length === 0 && p.regressedIds.length === 0) return;
+  if (p.fixedIds.length === 0 && p.regressedIds.length === 0) return;
   const gh = ctx.ghFix ?? ctx.gh;
-  const notes = new Map(p.fixed.map((status) => [status.id, status.note]));
   const head = shortSha(p.headSha);
   try {
-    const updates = planThreadUpdates(p.threads, { resolve: [...notes.keys()], unresolve: p.regressedIds });
+    const updates = planThreadUpdates(p.threads, { resolve: p.fixedIds, unresolve: p.regressedIds });
     for (const update of updates) {
-      const done = await tryThreadUpdate(gh, update, ctx.log);
-      let reply2 = null;
+      await tryThreadUpdate(gh, update, ctx.log);
       if (update.action === "unresolve") {
-        reply2 = `The review of \`${head}\` finds this problem again.`;
-      } else if (!done) {
-        const when = p.sinceSha ? `between \`${shortSha(p.sinceSha)}\` and \`${head}\`` : `at \`${head}\``;
-        const note = notes.get(update.findingId);
-        reply2 = `Fixed ${when}${note ? `: ${escapeHtml(truncate(note.replace(/\s+/g, " ").trim(), 500))}` : "."}`;
+        await replyToThread(
+          ctx.gh,
+          ctx.repo,
+          pr,
+          update.commentId,
+          `The review of \`${head}\` finds this problem again.`
+        );
       }
-      if (reply2) await replyToThread(ctx.gh, ctx.repo, pr, update.commentId, reply2);
     }
   } catch (error63) {
     ctx.log.warning(`Could not update the review threads: ${errorMessage(error63)}`);

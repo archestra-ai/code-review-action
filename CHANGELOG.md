@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.6.0 (2026-10-27)
+
+- A fixed finding's thread is resolved, with no reply under it. When the token may not resolve threads, the thread stays as it is and the review comment still lists the finding as fixed; the job log names the missing permission. An installation token resolves review threads only with `contents: write` besides `pull-requests: write`.
+- An applied fix resolves its finding's thread the same way, without an "Applied in" reply.
+
 ## 0.5.1 (2026-10-27)
 
 - A finding number in the review's first step ("fix #1 first") links to that finding's inline comment, or reads "finding 1" when it has none. GitHub linked it to issue 1 of the repository before.

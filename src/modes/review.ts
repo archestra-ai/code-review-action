@@ -38,7 +38,6 @@ import {
   verdictFor,
 } from "../github/review";
 import {
-  escapeHtml,
   findingCounts,
   findingTitle,
   findSticky,
@@ -54,7 +53,7 @@ import {
   replyToThread,
   tryThreadUpdate,
 } from "../github/threads";
-import { type Attachment, errorMessage, fullName, jsonAttachment, shortSha, textAttachment, truncate } from "../util";
+import { type Attachment, errorMessage, fullName, jsonAttachment, shortSha, textAttachment } from "../util";
 import {
   commentCommand,
   failureForError,
@@ -412,9 +411,8 @@ async function reviewInProgress(
   });
   if (inputs.post !== "none") {
     await updatePreviousThreads(ctx, pr.number, {
-      fixed: fixed.map((status) => ({ id: status.id, note: status.note ?? null })),
+      fixedIds: fixed.map((status) => status.id),
       regressedIds,
-      sinceSha,
       headSha: pr.headSha,
       threads,
     });
@@ -555,39 +553,35 @@ async function findingThreads(ctx: ActionContext, pr: number, wanted: boolean): 
 }
 
 /**
- * Resolves the threads of fixed findings and reopens the threads of regressed ones. A thread the
- * token cannot resolve gets a reply instead. The reply names the two reviewed commits, not one fix
- * commit: commits between them were not reviewed one by one.
+ * Resolves the threads of fixed findings and reopens the threads of regressed ones. A fixed finding
+ * gets no reply: the review comment lists it as fixed.
  */
 async function updatePreviousThreads(
   ctx: ActionContext,
   pr: number,
   p: {
-    fixed: Array<{ id: string; note: string | null }>;
+    fixedIds: string[];
     regressedIds: string[];
-    sinceSha: string | null;
     headSha: string;
     threads: Map<string, FindingThread>;
   },
 ): Promise<void> {
-  if (p.fixed.length === 0 && p.regressedIds.length === 0) return;
+  if (p.fixedIds.length === 0 && p.regressedIds.length === 0) return;
   const gh = ctx.ghFix ?? ctx.gh;
-  const notes = new Map(p.fixed.map((status) => [status.id, status.note]));
   const head = shortSha(p.headSha);
   try {
-    const updates = planThreadUpdates(p.threads, { resolve: [...notes.keys()], unresolve: p.regressedIds });
+    const updates = planThreadUpdates(p.threads, { resolve: p.fixedIds, unresolve: p.regressedIds });
     for (const update of updates) {
-      const done = await tryThreadUpdate(gh, update, ctx.log);
-      // A reopened thread gets a reply in any case; a thread that could not be resolved gets one instead.
-      let reply: string | null = null;
+      await tryThreadUpdate(gh, update, ctx.log);
       if (update.action === "unresolve") {
-        reply = `The review of \`${head}\` finds this problem again.`;
-      } else if (!done) {
-        const when = p.sinceSha ? `between \`${shortSha(p.sinceSha)}\` and \`${head}\`` : `at \`${head}\``;
-        const note = notes.get(update.findingId);
-        reply = `Fixed ${when}${note ? `: ${escapeHtml(truncate(note.replace(/\s+/g, " ").trim(), 500))}` : "."}`;
+        await replyToThread(
+          ctx.gh,
+          ctx.repo,
+          pr,
+          update.commentId,
+          `The review of \`${head}\` finds this problem again.`,
+        );
       }
-      if (reply) await replyToThread(ctx.gh, ctx.repo, pr, update.commentId, reply);
     }
   } catch (error) {
     ctx.log.warning(`Could not update the review threads: ${errorMessage(error)}`);

@@ -204,7 +204,7 @@ describe("review mode", () => {
     expect(parseState(sticky)!.findings[0]!.excerpt).toBe("    send(a);\n  }\n  return a;");
   });
 
-  it("replies that a finding is fixed when it may not resolve its thread", async () => {
+  it("posts no reply when it may not resolve the thread of a fixed finding", async () => {
     const { harness } = await reviewed();
     const first = parseState(harness.github.stickyBody()!)!.findings[0]!;
     const [commentId] = [...harness.github.reviewComments.keys()];
@@ -221,12 +221,12 @@ describe("review mode", () => {
     await run(harness.context("pull_request", prEvent(harness.github, "synchronize")));
     expect(harness.github.graphqlMutations).toEqual([]);
     expect(harness.github.resolved.has(commentId!)).toBe(false);
+    // The review comment lists the finding as fixed; the thread gets no acknowledgement.
     const replies = [...harness.github.reviewComments.values()].filter((comment) => comment.inReplyTo === commentId);
-    expect(replies.map((comment) => comment.body)).toEqual([
-      // The reviews saw aaaaaaa and ddddddd, not the commits between them: the reply names the range.
-      "Fixed between `aaaaaaa` and `ddddddd`: src/upload.ts:13 now waits &lt;1 s> between attempts.",
-    ]);
+    expect(replies).toEqual([]);
+    expect(parseState(harness.github.stickyBody()!)!.findings).toEqual([]);
     expect(harness.log.lines.some((line) => line.includes("Could not resolve the thread"))).toBe(true);
+    expect(harness.log.lines.some((line) => line.includes("contents: write"))).toBe(true);
   });
 
   it("quotes the code of a finding in the diff with post: comment, when no inline comment is posted", async () => {
