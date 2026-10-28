@@ -48994,6 +48994,10 @@ ${REVIEW_MARKER}`,
   );
   return { posted: false, reviewId: null };
 }
+function resolvedReviewBody(body, resolvedIn) {
+  const label = `**Changes requested, resolved in \`${resolvedIn}\`**`;
+  return /^\*\*[^*\n]+\*\*/.test(body) ? body.replace(/^\*\*[^*\n]+\*\*/, label) : `${label} \xB7 ${body}`;
+}
 async function dismissChangeRequests(gh, repo, params) {
   let dismissed = 0;
   try {
@@ -49009,6 +49013,16 @@ async function dismissChangeRequests(gh, repo, params) {
         event: "DISMISS"
       });
       dismissed++;
+      try {
+        await gh.rest.pulls.updateReview({
+          ...repo,
+          pull_number: params.pr,
+          review_id: review.id,
+          body: resolvedReviewBody(review.body ?? "", params.resolvedIn)
+        });
+      } catch (error63) {
+        params.log.warning(`Could not mark the dismissed change request as resolved: ${errorMessage(error63)}`);
+      }
     }
   } catch (error63) {
     params.log.warning(`Could not dismiss the earlier change requests: ${errorMessage(error63)}`);
@@ -49237,6 +49251,7 @@ async function reviewInProgress(ctx, p) {
       await dismissChangeRequests(gh, repo, {
         pr: pr.number,
         message: `The review of ${shortSha(pr.headSha)} finds nothing that blocks the merge.`,
+        resolvedIn: shortSha(pr.headSha),
         self: p.self,
         log
       });

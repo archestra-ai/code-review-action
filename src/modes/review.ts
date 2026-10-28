@@ -325,6 +325,7 @@ async function reviewInProgress(
       await dismissChangeRequests(gh, repo, {
         pr: pr.number,
         message: `The review of ${shortSha(pr.headSha)} finds nothing that blocks the merge.`,
+        resolvedIn: shortSha(pr.headSha),
         self: p.self,
         log,
       });

@@ -59,7 +59,8 @@ inputs:
     description: >-
       The GitHub review event. "comment" posts every review as a comment. "request-changes" requests changes
       when a finding of medium severity or above blocks the merge, and dismisses that request once a later
-      review finds nothing that blocks it. The action never approves.
+      review finds nothing that blocks it; the dismissed review then says which review resolved it. The
+      action never approves.
     default: comment
   fail-on:
     description: >-

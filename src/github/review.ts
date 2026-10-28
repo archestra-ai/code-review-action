@@ -262,14 +262,25 @@ export async function postReview(
 }
 
 /**
+ * The body of a dismissed change request. GitHub shows a dismissed review as "previously requested
+ * changes" over a plain comment, so its first words say that it requested changes and which review
+ * resolved them, in place of the verdict.
+ */
+export function resolvedReviewBody(body: string, resolvedIn: string): string {
+  const label = `**Changes requested, resolved in \`${resolvedIn}\`**`;
+  return /^\*\*[^*\n]+\*\*/.test(body) ? body.replace(/^\*\*[^*\n]+\*\*/, label) : `${label} · ${body}`;
+}
+
+/**
  * Dismisses the change requests that this action posted on the pull request: the latest review
- * finds nothing that blocks the merge. A failure is logged; the review goes on.
+ * finds nothing that blocks the merge. Each dismissed review's body then says that it requested
+ * changes and that `resolvedIn` resolved them. A failure is logged; the review goes on.
  */
 export async function dismissChangeRequests(
   gh: Octokit,
   repo: RepoRef,
   /** `self`: the login of the action's token (the author of its review comment); null when unknown. */
-  params: { pr: number; message: string; self: string | null; log: Logger },
+  params: { pr: number; message: string; resolvedIn: string; self: string | null; log: Logger },
 ): Promise<number> {
   let dismissed = 0;
   try {
@@ -286,6 +297,16 @@ export async function dismissChangeRequests(
         event: "DISMISS",
       });
       dismissed++;
+      try {
+        await gh.rest.pulls.updateReview({
+          ...repo,
+          pull_number: params.pr,
+          review_id: review.id,
+          body: resolvedReviewBody(review.body ?? "", params.resolvedIn),
+        });
+      } catch (error) {
+        params.log.warning(`Could not mark the dismissed change request as resolved: ${errorMessage(error)}`);
+      }
     }
   } catch (error) {
     params.log.warning(`Could not dismiss the earlier change requests: ${errorMessage(error)}`);
