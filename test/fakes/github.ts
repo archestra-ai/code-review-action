@@ -228,6 +228,12 @@ export class FakeGitHub {
         this.dismissed.push(Number(params.id));
         return HttpResponse.json({ id: Number(params.id), state: "DISMISSED" });
       }),
+      http.put(`${base}/pulls/${this.pr.number}/reviews/:id`, async ({ request, params }) => {
+        const review = this.reviews[Number(params.id) - 701];
+        if (!review) return HttpResponse.json({ message: "Not Found" }, { status: 404 });
+        review.body = ((await request.json()) as { body: string }).body;
+        return HttpResponse.json({ id: Number(params.id), body: review.body });
+      }),
       http.get(`${base}/pulls/${this.pr.number}/reviews/:id/comments`, ({ params }) =>
         HttpResponse.json(
           [...this.reviewComments.values()]

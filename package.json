@@ -1,6 +1,6 @@
 {
   "name": "code-review-action",
-  "version": "0.6.0",
+  "version": "0.6.1",
   "private": true,
   "description": "Review pull requests on Archestra Agent Runtimes and apply fixes on request",
   "license": "Apache-2.0",

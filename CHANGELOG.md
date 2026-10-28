@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.6.1 (2026-10-28)
+
+- A change request that a later review lifts now says so. GitHub shows a dismissed review as "previously requested changes" over a plain comment, which read as if the action had only commented. When the action dismisses its change request, it replaces that review's verdict with "Changes requested, resolved in `<commit>`", naming the review that found nothing blocking.
+
 ## 0.6.0 (2026-10-27)
 
 - A fixed finding's thread is resolved, with no reply under it. When the token may not resolve threads, the thread stays as it is and the review comment still lists the finding as fixed; the job log names the missing permission. An installation token resolves review threads only with `contents: write` besides `pull-requests: write`.

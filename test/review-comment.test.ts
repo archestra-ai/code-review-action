@@ -2,7 +2,7 @@ import { HttpResponse, http } from "msw";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { exchangeGitHubActionsToken, tokenEndpoint } from "../src/archestra/github-actions-auth";
 import { isTransient } from "../src/github/octokit";
-import { verdictFor } from "../src/github/review";
+import { resolvedReviewBody, verdictFor } from "../src/github/review";
 import { checklistTitle, parseState } from "../src/github/sticky";
 import { reviewBody, summaryWords } from "../src/modes/review";
 import { run } from "../src/run";
@@ -121,6 +121,17 @@ describe("change requests", () => {
     // The nit is outside the diff: no new review, and the old change request no longer blocks.
     expect(harness.github.reviews).toHaveLength(1);
     expect(harness.github.dismissed).toEqual([701]);
+    // GitHub shows a dismissed review as a plain comment; its first words say what it was.
+    expect(harness.github.reviews[0]!.body).toMatch(
+      /^\*\*Changes requested, resolved in `ddddddd`\*\* · Archestra review of `[0-9a-f]{7}` · /,
+    );
+    expect(harness.github.reviews[0]!.body).toContain("<!-- archestra-review -->");
+  });
+
+  it("marks a dismissed change request without a verdict label as resolved", () => {
+    expect(resolvedReviewBody("Old review body\n\n<!-- archestra-review -->", "ddddddd")).toBe(
+      "**Changes requested, resolved in `ddddddd`** · Old review body\n\n<!-- archestra-review -->",
+    );
   });
 
   it("posts a comment review when GitHub refuses the change request, so no finding loses its inline comment", async () => {
