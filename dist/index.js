@@ -2574,7 +2574,7 @@ var require_connect = __commonJS({
         }
       };
     }
-    function buildConnector({ allowH2, maxCachedSessions, socketPath, timeout, session: customSession, ...opts }) {
+    function buildConnector2({ allowH2, maxCachedSessions, socketPath, timeout, session: customSession, ...opts }) {
       if (maxCachedSessions != null && (!Number.isInteger(maxCachedSessions) || maxCachedSessions < 0)) {
         throw new InvalidArgumentError("maxCachedSessions must be a positive integer or zero");
       }
@@ -2689,7 +2689,7 @@ var require_connect = __commonJS({
       message += ` timeout: ${opts.timeout}ms)`;
       util.destroy(socket, new ConnectTimeoutError(message));
     }
-    module.exports = buildConnector;
+    module.exports = buildConnector2;
   }
 });
 
@@ -7637,7 +7637,7 @@ var require_client = __commonJS({
       InformationalError,
       ClientDestroyedError
     } = require_errors();
-    var buildConnector = require_connect();
+    var buildConnector2 = require_connect();
     var {
       kUrl,
       kServerName,
@@ -7792,7 +7792,7 @@ var require_client = __commonJS({
           throw new InvalidArgumentError("maxConcurrentStreams must be a positive integer, greater than 0");
         }
         if (typeof connect2 !== "function") {
-          connect2 = buildConnector({
+          connect2 = buildConnector2({
             ...tls,
             maxCachedSessions,
             allowH2,
@@ -8384,7 +8384,7 @@ var require_pool = __commonJS({
     } = require_errors();
     var util = require_util();
     var { kUrl, kInterceptors } = require_symbols();
-    var buildConnector = require_connect();
+    var buildConnector2 = require_connect();
     var kOptions = /* @__PURE__ */ Symbol("options");
     var kConnections = /* @__PURE__ */ Symbol("connections");
     var kFactory = /* @__PURE__ */ Symbol("factory");
@@ -8415,7 +8415,7 @@ var require_pool = __commonJS({
           throw new InvalidArgumentError("connect must be a function or an object");
         }
         if (typeof connect !== "function") {
-          connect = buildConnector({
+          connect = buildConnector2({
             ...tls,
             maxCachedSessions,
             allowH2,
@@ -8623,7 +8623,7 @@ var require_agent = __commonJS({
     function defaultFactory(origin, opts) {
       return opts && opts.connections === 1 ? new Client(origin, opts) : new Pool(origin, opts);
     }
-    var Agent3 = class extends DispatcherBase {
+    var Agent4 = class extends DispatcherBase {
       constructor({ factory = defaultFactory, maxRedirections = 0, connect, tls, ...options } = {}) {
         if (typeof factory !== "function") {
           throw new InvalidArgumentError("factory must be a function.");
@@ -8698,7 +8698,7 @@ var require_agent = __commonJS({
         await Promise.all(destroyPromises);
       }
     };
-    module.exports = Agent3;
+    module.exports = Agent4;
   }
 });
 
@@ -8708,11 +8708,11 @@ var require_proxy_agent = __commonJS({
     "use strict";
     var { kProxy, kClose, kDestroy, kDispatch, kInterceptors } = require_symbols();
     var { URL: URL2 } = __require("node:url");
-    var Agent3 = require_agent();
+    var Agent4 = require_agent();
     var Pool = require_pool();
     var DispatcherBase = require_dispatcher_base();
     var { InvalidArgumentError, RequestAbortedError, SecureProxyConnectionError } = require_errors();
-    var buildConnector = require_connect();
+    var buildConnector2 = require_connect();
     var Client = require_client();
     var kAgent = /* @__PURE__ */ Symbol("proxy agent");
     var kClient = /* @__PURE__ */ Symbol("proxy client");
@@ -8808,8 +8808,8 @@ var require_proxy_agent = __commonJS({
         } else if (username && password) {
           this[kProxyHeaders]["proxy-authorization"] = `Basic ${Buffer.from(`${decodeURIComponent(username)}:${decodeURIComponent(password)}`).toString("base64")}`;
         }
-        const connect = buildConnector({ ...opts.proxyTls });
-        this[kConnectEndpoint] = buildConnector({ ...opts.requestTls });
+        const connect = buildConnector2({ ...opts.proxyTls });
+        this[kConnectEndpoint] = buildConnector2({ ...opts.requestTls });
         const agentFactory = opts.factory || defaultAgentFactory;
         const factory = (origin2, options) => {
           const { protocol: protocol2 } = new URL2(origin2);
@@ -8823,7 +8823,7 @@ var require_proxy_agent = __commonJS({
           return agentFactory(origin2, options);
         };
         this[kClient] = clientFactory(url2, { connect });
-        this[kAgent] = new Agent3({
+        this[kAgent] = new Agent4({
           ...opts,
           factory,
           connect: async (opts2, callback) => {
@@ -8932,7 +8932,7 @@ var require_env_http_proxy_agent = __commonJS({
     var DispatcherBase = require_dispatcher_base();
     var { kClose, kDestroy, kClosed, kDestroyed, kDispatch, kNoProxyAgent, kHttpProxyAgent, kHttpsProxyAgent } = require_symbols();
     var ProxyAgent2 = require_proxy_agent();
-    var Agent3 = require_agent();
+    var Agent4 = require_agent();
     var DEFAULT_PORTS = {
       "http:": 80,
       "https:": 443
@@ -8952,7 +8952,7 @@ var require_env_http_proxy_agent = __commonJS({
           });
         }
         const { httpProxy, httpsProxy, noProxy, ...agentOpts } = opts;
-        this[kNoProxyAgent] = new Agent3(agentOpts);
+        this[kNoProxyAgent] = new Agent4(agentOpts);
         const HTTP_PROXY = httpProxy ?? process.env.http_proxy ?? process.env.HTTP_PROXY;
         if (HTTP_PROXY) {
           this[kHttpProxyAgent] = new ProxyAgent2({ ...agentOpts, uri: HTTP_PROXY });
@@ -11297,7 +11297,7 @@ var require_mock_agent = __commonJS({
   "node_modules/undici/lib/mock/mock-agent.js"(exports, module) {
     "use strict";
     var { kClients } = require_symbols();
-    var Agent3 = require_agent();
+    var Agent4 = require_agent();
     var {
       kAgent,
       kMockAgentSet,
@@ -11324,7 +11324,7 @@ var require_mock_agent = __commonJS({
         if (opts?.agent && typeof opts.agent.dispatch !== "function") {
           throw new InvalidArgumentError("Argument opts.agent must implement Agent");
         }
-        const agent = opts?.agent ? opts.agent : new Agent3(opts);
+        const agent = opts?.agent ? opts.agent : new Agent4(opts);
         this[kAgent] = agent;
         this[kClients] = agent[kClients];
         this[kOptions] = buildMockOptions(opts);
@@ -11428,9 +11428,9 @@ var require_global2 = __commonJS({
     "use strict";
     var globalDispatcher = /* @__PURE__ */ Symbol.for("undici.globalDispatcher.1");
     var { InvalidArgumentError } = require_errors();
-    var Agent3 = require_agent();
+    var Agent4 = require_agent();
     if (getGlobalDispatcher() === void 0) {
-      setGlobalDispatcher(new Agent3());
+      setGlobalDispatcher(new Agent4());
     }
     function setGlobalDispatcher(agent) {
       if (!agent || typeof agent.dispatch !== "function") {
@@ -19020,7 +19020,7 @@ var require_undici = __commonJS({
     var Dispatcher = require_dispatcher();
     var Pool = require_pool();
     var BalancedPool = require_balanced_pool();
-    var Agent3 = require_agent();
+    var Agent4 = require_agent();
     var ProxyAgent2 = require_proxy_agent();
     var EnvHttpProxyAgent = require_env_http_proxy_agent();
     var RetryAgent = require_retry_agent();
@@ -19028,7 +19028,7 @@ var require_undici = __commonJS({
     var util = require_util();
     var { InvalidArgumentError } = errors;
     var api = require_api();
-    var buildConnector = require_connect();
+    var buildConnector2 = require_connect();
     var MockClient = require_mock_client();
     var MockAgent = require_mock_agent();
     var MockPool = require_mock_pool();
@@ -19043,7 +19043,7 @@ var require_undici = __commonJS({
     module.exports.Client = Client;
     module.exports.Pool = Pool;
     module.exports.BalancedPool = BalancedPool;
-    module.exports.Agent = Agent3;
+    module.exports.Agent = Agent4;
     module.exports.ProxyAgent = ProxyAgent2;
     module.exports.EnvHttpProxyAgent = EnvHttpProxyAgent;
     module.exports.RetryAgent = RetryAgent;
@@ -19057,7 +19057,7 @@ var require_undici = __commonJS({
       dump: require_dump(),
       dns: require_dns()
     };
-    module.exports.buildConnector = buildConnector;
+    module.exports.buildConnector = buildConnector2;
     module.exports.errors = errors;
     module.exports.util = {
       parseHeaders: util.parseHeaders,
@@ -41400,6 +41400,40 @@ function parse3(schema, data, operation) {
   return result.data;
 }
 
+// src/archestra/connect.ts
+var import_undici2 = __toESM(require_undici(), 1);
+var HOST_PORT = /^(?:\[([0-9a-fA-F:.]+)\]|([A-Za-z0-9.-]+)):([0-9]{1,5})$/;
+function parseConnectTo(raw) {
+  const match = HOST_PORT.exec(raw.trim());
+  if (!match) return null;
+  const port = Number(match[3]);
+  if (port < 1 || port > 65535) return null;
+  return { host: match[1] ?? match[2] ?? "", port };
+}
+function gatewayFetch(gatewayUrl, connectTo, tls = {}) {
+  const gatewayHost = new URL(gatewayUrl).hostname;
+  const connect = (0, import_undici2.buildConnector)({ ...tls });
+  const agent = new import_undici2.Agent({
+    connect: (options, callback) => {
+      if (options.hostname !== gatewayHost) return connect(options, callback);
+      return connect(
+        {
+          ...options,
+          hostname: connectTo.host,
+          host: connectTo.host,
+          port: String(connectTo.port),
+          servername: gatewayHost
+        },
+        callback
+      );
+    }
+  });
+  return ((input2, init) => (0, import_undici2.fetch)(input2, {
+    ...init,
+    dispatcher: agent
+  }));
+}
+
 // src/archestra/github-actions-auth.ts
 import { setTimeout as sleep } from "node:timers/promises";
 
@@ -42320,7 +42354,7 @@ var Context = class {
 
 // node_modules/@actions/github/lib/internal/utils.js
 var httpClient = __toESM(require_lib(), 1);
-var import_undici2 = __toESM(require_undici(), 1);
+var import_undici3 = __toESM(require_undici(), 1);
 var __awaiter6 = function(thisArg, _arguments, P, generator) {
   function adopt(value) {
     return value instanceof P ? value : new P(function(resolve) {
@@ -42367,7 +42401,7 @@ function getProxyAgentDispatcher(destinationUrl) {
 function getProxyFetch(destinationUrl) {
   const httpDispatcher = getProxyAgentDispatcher(destinationUrl);
   const proxyFetch = (url2, opts) => __awaiter6(this, void 0, void 0, function* () {
-    return (0, import_undici2.fetch)(url2, Object.assign(Object.assign({}, opts), { dispatcher: httpDispatcher }));
+    return (0, import_undici3.fetch)(url2, Object.assign(Object.assign({}, opts), { dispatcher: httpDispatcher }));
   });
   return proxyFetch;
 }
@@ -46515,6 +46549,11 @@ function readInputs(get, readFile) {
     );
   }
   const archestraAuth = oneOf("archestra-auth", value("archestra-auth") || "token", ["token", "github-actions"]);
+  const connectToRaw = value("archestra-connect-to");
+  const archestraConnectTo = connectToRaw ? parseConnectTo(connectToRaw) : null;
+  if (connectToRaw && !archestraConnectTo) {
+    throw new InputError(`Input "archestra-connect-to" must be host:port, for example 127.0.0.1:18443.`);
+  }
   const actorToken = archestraAuth === "token" ? value("archestra-token") : "";
   const fallbackToken = archestraAuth === "token" ? value("fallback-token") : "";
   const tokenSource = archestraAuth === "github-actions" ? "github-actions" : actorToken ? "actor" : fallbackToken ? "fallback" : null;
@@ -46544,6 +46583,7 @@ function readInputs(get, readFile) {
     token: actorToken || fallbackToken,
     tokenSource,
     archestraAuth,
+    archestraConnectTo,
     agents,
     strategy: oneOf("strategy", value("strategy") || "rotate", ["rotate", "ordered", "random"]),
     retries: integer2("retries", value("retries") || "1", 0, 5),
@@ -49573,6 +49613,7 @@ async function main() {
     error: (message) => error(message),
     debug: (message) => debug(message)
   };
+  const fetchImpl = inputs.archestraConnectTo ? gatewayFetch(inputs.gatewayUrl, inputs.archestraConnectTo) : void 0;
   let ctx = {
     inputs,
     repo: environment.repo,
@@ -49584,7 +49625,7 @@ async function main() {
     progressImageUrl: environment.progressImageUrl,
     gh: createOctokit(inputs.githubToken, { baseUrl: environment.apiUrl }),
     ghFix: inputs.fixToken ? createOctokit(inputs.fixToken, { baseUrl: environment.apiUrl }) : null,
-    archestra: new ArchestraClient({ gatewayUrl: inputs.gatewayUrl, token: inputs.token }),
+    archestra: new ArchestraClient({ gatewayUrl: inputs.gatewayUrl, token: inputs.token, fetch: fetchImpl }),
     log,
     clock: { now: () => Date.now(), sleep: (ms) => sleep3(ms).then(() => void 0) },
     random: Math.random,
@@ -49602,7 +49643,8 @@ async function main() {
     signIn: async () => {
       const exchange = await exchangeGitHubActionsToken({
         gatewayUrl: inputs.gatewayUrl,
-        getIdToken: (audience) => getIDToken(audience)
+        getIdToken: (audience) => getIDToken(audience),
+        fetch: fetchImpl
       });
       if (!exchange.ok) {
         return { ok: false, refusal: { reason: exchange.reason, message: exchange.message, login: exchange.login } };
@@ -49619,7 +49661,7 @@ async function main() {
         ...ctx,
         inputs,
         gh: createOctokit(inputs.githubToken, { baseUrl: environment.apiUrl }),
-        archestra: new ArchestraClient({ gatewayUrl: inputs.gatewayUrl, token: inputs.token }),
+        archestra: new ArchestraClient({ gatewayUrl: inputs.gatewayUrl, token: inputs.token, fetch: fetchImpl }),
         appIdentity: exchange.githubToken !== null
       };
       return { ok: true, ctx };
