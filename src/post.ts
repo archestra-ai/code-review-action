@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import * as core from "@actions/core";
 import { ArchestraClient } from "./archestra/client";
+import { gatewayFetch, parseConnectTo } from "./archestra/connect";
 import { cancelIfLive } from "./cancel";
 import { readEnvironment } from "./env";
 import { createOctokit } from "./github/octokit";
@@ -31,7 +32,13 @@ async function post(): Promise<void> {
   const token = core.getState("archestra-token") || core.getInput("archestra-token") || core.getInput("fallback-token");
   if (runId && gatewayUrl && token) {
     core.setSecret(token);
-    const client = new ArchestraClient({ gatewayUrl, token, requestTimeoutMs: 20_000 });
+    const connectTo = parseConnectTo(core.getInput("archestra-connect-to") || "");
+    const client = new ArchestraClient({
+      gatewayUrl,
+      token,
+      requestTimeoutMs: 20_000,
+      fetch: connectTo ? gatewayFetch(gatewayUrl, connectTo) : undefined,
+    });
     await cancelIfLive(client, runId, log);
   }
   const job = parseSavedJob(core.getState("job"));

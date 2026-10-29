@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { setTimeout as sleep } from "node:timers/promises";
 import * as core from "@actions/core";
 import { ArchestraClient } from "./archestra/client";
+import { gatewayFetch } from "./archestra/connect";
 import { exchangeGitHubActionsToken } from "./archestra/github-actions-auth";
 import { cancelIfLive } from "./cancel";
 import { type ActionContext, type ActionResult, repoUrl } from "./context";
@@ -57,6 +58,8 @@ async function main(): Promise<void> {
   };
   // The context the job works with; a GitHub Actions sign-in replaces it with one that holds the
   // signed-in clients. The stop handler always uses the current one.
+  // Through a tunnel, the gateway is dialed at a local address; the system resolver is left alone.
+  const fetchImpl = inputs.archestraConnectTo ? gatewayFetch(inputs.gatewayUrl, inputs.archestraConnectTo) : undefined;
   let ctx: ActionContext = {
     inputs,
     repo: environment.repo,
@@ -68,7 +71,7 @@ async function main(): Promise<void> {
     progressImageUrl: environment.progressImageUrl,
     gh: createOctokit(inputs.githubToken, { baseUrl: environment.apiUrl }),
     ghFix: inputs.fixToken ? createOctokit(inputs.fixToken, { baseUrl: environment.apiUrl }) : null,
-    archestra: new ArchestraClient({ gatewayUrl: inputs.gatewayUrl, token: inputs.token }),
+    archestra: new ArchestraClient({ gatewayUrl: inputs.gatewayUrl, token: inputs.token, fetch: fetchImpl }),
     log,
     clock: { now: () => Date.now(), sleep: (ms) => sleep(ms).then(() => undefined) },
     random: Math.random,
@@ -87,6 +90,7 @@ async function main(): Promise<void> {
       const exchange = await exchangeGitHubActionsToken({
         gatewayUrl: inputs.gatewayUrl,
         getIdToken: (audience) => core.getIDToken(audience),
+        fetch: fetchImpl,
       });
       if (!exchange.ok) {
         return { ok: false, refusal: { reason: exchange.reason, message: exchange.message, login: exchange.login } };
@@ -103,7 +107,7 @@ async function main(): Promise<void> {
         ...ctx,
         inputs,
         gh: createOctokit(inputs.githubToken, { baseUrl: environment.apiUrl }),
-        archestra: new ArchestraClient({ gatewayUrl: inputs.gatewayUrl, token: inputs.token }),
+        archestra: new ArchestraClient({ gatewayUrl: inputs.gatewayUrl, token: inputs.token, fetch: fetchImpl }),
         appIdentity: exchange.githubToken !== null,
       };
       return { ok: true, ctx };

@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.7.0 (2026-10-29)
+
+- New `archestra-connect-to` input: a local `host:port`, such as a tunnel's `127.0.0.1:18443`, that the action dials for the gateway instead of the gateway's own address. The gateway's hostname stays the TLS server name, so its certificate is still checked, and nothing else is dialed there. The system resolver is no longer involved for the gateway, so a job needs no `/etc/hosts` entry or packet redirect for it. On GitHub-hosted runners, that routing intermittently made the job resolve `api.github.com` to the tunnel's loopback address, and every GitHub API call then failed TLS against the staging certificate.
+
 ## 0.6.1 (2026-10-28)
 
 - A change request that a later review lifts now says so. GitHub shows a dismissed review as "previously requested changes" over a plain comment, which read as if the action had only commented. When the action dismisses its change request, it replaces that review's verdict with "Changes requested, resolved in `<commit>`", naming the review that found nothing blocking.

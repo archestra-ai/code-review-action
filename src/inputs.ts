@@ -1,3 +1,4 @@
+import { type ConnectTo, parseConnectTo } from "./archestra/connect";
 import type { Strategy } from "./attempts";
 
 export type Mode = "review" | "fix" | "fix-ci" | "fix-ci-main";
@@ -18,6 +19,8 @@ export interface Inputs {
   tokenSource: "actor" | "fallback" | "github-actions" | null;
   /** "token": the "archestra-token" input. "github-actions": sign in with the job's identity. */
   archestraAuth: "token" | "github-actions";
+  /** A local `host:port` the gateway is dialed at (a tunnel), with its hostname as the TLS server name; null: its own address. */
+  archestraConnectTo: ConnectTo | null;
   agents: string[];
   strategy: Strategy;
   retries: number;
@@ -82,6 +85,11 @@ export function readInputs(get: (name: string) => string, readFile: (path: strin
     );
   }
   const archestraAuth = oneOf("archestra-auth", value("archestra-auth") || "token", ["token", "github-actions"]);
+  const connectToRaw = value("archestra-connect-to");
+  const archestraConnectTo = connectToRaw ? parseConnectTo(connectToRaw) : null;
+  if (connectToRaw && !archestraConnectTo) {
+    throw new InputError(`Input "archestra-connect-to" must be host:port, for example 127.0.0.1:18443.`);
+  }
   // With the job's identity, the token comes from the sign-in, not from an input.
   const actorToken = archestraAuth === "token" ? value("archestra-token") : "";
   const fallbackToken = archestraAuth === "token" ? value("fallback-token") : "";
@@ -121,6 +129,7 @@ export function readInputs(get: (name: string) => string, readFile: (path: strin
     token: actorToken || fallbackToken,
     tokenSource,
     archestraAuth,
+    archestraConnectTo,
     agents,
     strategy: oneOf("strategy", value("strategy") || "rotate", ["rotate", "ordered", "random"]),
     retries: integer("retries", value("retries") || "1", 0, 5),
