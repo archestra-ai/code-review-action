@@ -41417,7 +41417,13 @@ function gatewayFetch(gatewayUrl, connectTo, tls = {}) {
     connect: (options, callback) => {
       if (options.hostname !== gatewayHost) return connect(options, callback);
       return connect(
-        { ...options, hostname: connectTo.host, host: connectTo.host, port: String(connectTo.port), servername: gatewayHost },
+        {
+          ...options,
+          hostname: connectTo.host,
+          host: connectTo.host,
+          port: String(connectTo.port),
+          servername: gatewayHost
+        },
         callback
       );
     }

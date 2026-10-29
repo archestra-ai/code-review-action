@@ -40,7 +40,13 @@ export function gatewayFetch(
       // undici dials `hostname`; the gateway's name stays the TLS server name, so the
       // certificate is checked against it, not against the tunnel's address.
       return connect(
-        { ...options, hostname: connectTo.host, host: connectTo.host, port: String(connectTo.port), servername: gatewayHost },
+        {
+          ...options,
+          hostname: connectTo.host,
+          host: connectTo.host,
+          port: String(connectTo.port),
+          servername: gatewayHost,
+        },
         callback,
       );
     },

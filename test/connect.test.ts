@@ -1,9 +1,9 @@
 import { execFileSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import https from "node:https";
+import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { AddressInfo } from "node:net";
 import type { TLSSocket } from "node:tls";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { gatewayFetch, parseConnectTo } from "../src/archestra/connect";
@@ -38,14 +38,34 @@ describe.skipIf(!hasOpenssl)("gatewayFetch", () => {
 
   beforeAll(async () => {
     dir = mkdtempSync(join(tmpdir(), "connect-test-"));
-    execFileSync("openssl", [
-      "req", "-x509", "-newkey", "rsa:2048", "-nodes", "-days", "2",
-      "-keyout", join(dir, "key.pem"), "-out", join(dir, "cert.pem"),
-      "-subj", "/CN=gateway.test", "-addext", "subjectAltName=DNS:gateway.test",
-    ], { stdio: "ignore" });
+    execFileSync(
+      "openssl",
+      [
+        "req",
+        "-x509",
+        "-newkey",
+        "rsa:2048",
+        "-nodes",
+        "-days",
+        "2",
+        "-keyout",
+        join(dir, "key.pem"),
+        "-out",
+        join(dir, "cert.pem"),
+        "-subj",
+        "/CN=gateway.test",
+        "-addext",
+        "subjectAltName=DNS:gateway.test",
+      ],
+      { stdio: "ignore" },
+    );
     cert = readFileSync(join(dir, "cert.pem"), "utf8");
     server = https.createServer({ key: readFileSync(join(dir, "key.pem")), cert }, (request, response) => {
-      seen.push({ servername: (request.socket as TLSSocket).servername, host: request.headers.host, path: request.url });
+      seen.push({
+        servername: (request.socket as TLSSocket).servername,
+        host: request.headers.host,
+        path: request.url,
+      });
       response.setHeader("content-type", "application/json");
       response.end(JSON.stringify({ ok: true }));
     });
@@ -59,15 +79,27 @@ describe.skipIf(!hasOpenssl)("gatewayFetch", () => {
   });
 
   it("dials the gateway host at the local address, with the gateway's name for TLS and Host", async () => {
-    const fetchImpl = gatewayFetch("https://gateway.test/v1/mcp/code-review", { host: "127.0.0.1", port }, { ca: cert });
+    const fetchImpl = gatewayFetch(
+      "https://gateway.test/v1/mcp/code-review",
+      { host: "127.0.0.1", port },
+      { ca: cert },
+    );
     const response = await fetchImpl("https://gateway.test/api/github-actions/token", { method: "POST", body: "{}" });
     expect(response.status).toBe(200);
     expect(await response.json()).toEqual({ ok: true });
-    expect(seen.at(-1)).toEqual({ servername: "gateway.test", host: "gateway.test", path: "/api/github-actions/token" });
+    expect(seen.at(-1)).toEqual({
+      servername: "gateway.test",
+      host: "gateway.test",
+      path: "/api/github-actions/token",
+    });
   });
 
   it("leaves every other host on its own address and name", async () => {
-    const fetchImpl = gatewayFetch("https://gateway.test/v1/mcp/code-review", { host: "127.0.0.1", port }, { ca: cert });
+    const fetchImpl = gatewayFetch(
+      "https://gateway.test/v1/mcp/code-review",
+      { host: "127.0.0.1", port },
+      { ca: cert },
+    );
     // Dialed directly, the server's certificate does not name 127.0.0.1: the gateway route was not applied.
     await expect(fetchImpl(`https://127.0.0.1:${port}/`)).rejects.toThrow(/fetch failed/);
   });
