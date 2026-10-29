@@ -45,7 +45,7 @@ export function gatewayFetch(
       );
     },
   });
-  return ((input, init) =>
+  return ((input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) =>
     undiciFetch(input as Parameters<typeof undiciFetch>[0], {
       ...(init as Parameters<typeof undiciFetch>[1]),
       dispatcher: agent,

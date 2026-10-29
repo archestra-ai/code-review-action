@@ -34,7 +34,7 @@ describe.skipIf(!hasOpenssl)("gatewayFetch", () => {
   let cert: string;
   let server: https.Server;
   let port: number;
-  const seen: Array<{ servername: string | undefined; host: string | undefined; path: string | undefined }> = [];
+  const seen: Array<{ servername: unknown; host: string | undefined; path: string | undefined }> = [];
 
   beforeAll(async () => {
     dir = mkdtempSync(join(tmpdir(), "connect-test-"));
