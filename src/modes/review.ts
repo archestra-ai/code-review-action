@@ -1,5 +1,6 @@
 import { orderAgents } from "../attempts";
 import { renderBrief } from "../briefs";
+import { deleteRunWorkspaces } from "../cleanup";
 import {
   type AccessRefusalInfo,
   type ActionContext,
@@ -67,6 +68,13 @@ import {
 } from "./common";
 
 const VERDICT_WORDS = { approve: "approved", comment: "commented", request_changes: "changes requested" } as const;
+
+/**
+ * A review clones, runs a few checks and writes one file: a medium container,
+ * stopped ten minutes after it goes idle, and gone with its files after three
+ * hours even when the deletion after the review does not happen.
+ */
+const REVIEW_RUN_LIMITS = { tier: "M", idleTimeoutMinutes: 10, maxDurationHours: 3 } as const;
 
 export async function runReview(ctx: ActionContext, prNumber: number): Promise<ActionResult> {
   const { gh, repo, inputs, log } = ctx;
@@ -222,6 +230,7 @@ async function reviewInProgress(
     attachments,
     contract: CONTRACTS.review,
     timeoutMs: inputs.timeoutMs,
+    limits: REVIEW_RUN_LIMITS,
     // A fix leaves a short-lived App token in the actor's CODE_REVIEW_GITHUB_TOKEN; a
     // private repository needs a fresh read-only token for the review.
     credentialToken: inputs.cloneToken || null,
@@ -249,6 +258,11 @@ async function reviewInProgress(
       });
       state.notice = `Review unavailable for \`${shortSha(pr.headSha)}\`: ${reason}`;
     });
+    await deleteRunWorkspaces(
+      ctx.archestra,
+      outcome.attempts.map((attempt) => attempt.runId),
+      log,
+    );
     const failure = failureForError(ctx, `The review is unavailable: ${reason}`);
     return makeResult("review", {
       status: outcome.fatal ? "aborted" : "unavailable",
@@ -419,6 +433,9 @@ async function reviewInProgress(
     });
   }
 
+  // The review is complete: nothing reads its files any more. The next review of this
+  // pull request gets the previous findings as an input and clones again.
+  await deleteRunWorkspaces(ctx.archestra, [runId, ...outcome.attempts.map((attempt) => attempt.runId)], log);
   const failure =
     inputs.failOn === "findings" && count > 0 ? `The review has ${count} finding${count === 1 ? "" : "s"}.` : null;
   return makeResult("review", {

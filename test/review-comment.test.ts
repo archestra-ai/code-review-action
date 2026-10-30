@@ -402,6 +402,8 @@ describe("progress checklist after a failed run", () => {
       },
     });
     await run(harness.context("pull_request", prEvent(harness.github)));
+    // A deployment that kept the review's workspace: the re-review continues it.
+    harness.archestra.deletedWorkspaces.delete(harness.archestra.starts[0]!.runId!);
     harness.archestra.script(AGENT_A, { end: "completed", polls: 3, files: { "review.json": reviewJson() } });
     await run(harness.context("pull_request", prEvent(harness.github, "reopened")));
     expect(harness.archestra.starts[1]).toMatchObject({ kind: "continue" });

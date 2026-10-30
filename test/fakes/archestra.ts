@@ -59,6 +59,8 @@ export interface RecordedStart {
   attachmentNames: string[];
   attachments: Record<string, string>;
   token: string | null;
+  /** The `limits` argument of a start, when the caller sent one. */
+  limits?: unknown;
 }
 
 const TOOL_NAMES = [
@@ -69,6 +71,7 @@ const TOOL_NAMES = [
   "read_workspace_file",
   "write_workspace_file",
   "transfer_credential",
+  "delete_workspace",
 ] as const;
 
 type ToolResult = { content: Array<{ type: "text"; text: string }>; structuredContent?: unknown; isError?: boolean };
@@ -84,6 +87,11 @@ export class FakeArchestra {
   readonly scripts = new Map<string, RunScript[]>();
   readonly starts: RecordedStart[] = [];
   readonly cancels: string[] = [];
+  /** Runs whose workspace was deleted, in order. */
+  readonly deletes: string[] = [];
+  readonly deletedWorkspaces = new Set<string>();
+  /** Old deployments: start_agent_run has no `limits` argument. */
+  rejectLimits = false;
   readonly credentials: Array<{ agentId: string; key: string; valueLength: number }> = [];
   readonly writes: Array<{ runId: string; path: string; turn: number }> = [];
   /** Every JSON-RPC method and tool name, in order. */
@@ -236,6 +244,8 @@ export class FakeArchestra {
         return this.read(caller, String(toolArgs.run_id), String(toolArgs.path));
       case "write_workspace_file":
         return this.write(caller, toolArgs);
+      case "delete_workspace":
+        return this.deleteWorkspace(caller, String(toolArgs.run_id), toolArgs.confirm_delete === true);
       default:
         return this.transfer(toolArgs);
     }
@@ -260,8 +270,12 @@ export class FakeArchestra {
         ]),
       ),
       token: caller,
+      ...(args.limits !== undefined ? { limits: args.limits } : {}),
     };
     this.starts.push(record);
+    if (this.rejectLimits && args.limits !== undefined) {
+      return toolError('Validation error in archestra__start_agent_run: unrecognized key "limits"');
+    }
     const script = this.scripts.get(agentId)?.shift();
     if (!script) return toolError("Agent not found");
     if ("start" in script) {
@@ -292,7 +306,8 @@ export class FakeArchestra {
       this.advance(run, shown);
     }
     const expired = this.expiredWorkspaces.has(runId);
-    const workspaceState = expired ? "suspended" : shown.ended ? "idle" : "active";
+    const deleted = this.deletedWorkspaces.has(runId);
+    const workspaceState = deleted ? "deleted" : expired ? "suspended" : shown.ended ? "idle" : "active";
     return toolResult({
       run: this.summary(run, shown),
       run_url: `${this.origin}/chat/runs/${runId}`,
@@ -303,8 +318,12 @@ export class FakeArchestra {
         ? {
             state: workspaceState,
             retained_until: new Date(Date.now() + (expired ? -3_600_000 : 3_600_000)).toISOString(),
-            can_continue: !expired && (shown.ended ? workspaceState === "idle" : true),
-            continuation_error: expired ? "This run expired and cannot resume." : null,
+            can_continue: !expired && !deleted && (shown.ended ? workspaceState === "idle" : true),
+            continuation_error: deleted
+              ? "This run's workspace was removed and cannot resume."
+              : expired
+                ? "This run expired and cannot resume."
+                : null,
             connection: null,
           }
         : null,
@@ -318,7 +337,7 @@ export class FakeArchestra {
     if (run.owner !== caller) return toolError("Only the person the run acts as can steer it.");
     const current = run.turns.at(-1) as FakeTurn;
     if (!current.ended) return toolResult({ status: "steered", run_id: runId, run_url: "", next_step: "Wait." });
-    if (this.expiredWorkspaces.has(runId)) {
+    if (this.expiredWorkspaces.has(runId) || this.deletedWorkspaces.has(runId)) {
       return toolError("The run is unavailable, busy, or expired. No new run was started.");
     }
     const since = this.writes.filter((write) => write.runId === runId && write.turn === run.turns.length);
@@ -343,6 +362,16 @@ export class FakeArchestra {
     return toolResult({ status: "continued", run_id: runId, run_url: "", next_step: "Wait." });
   }
 
+  private deleteWorkspace(caller: string, runId: string, confirmed: boolean): ToolOutcome {
+    const run = this.runs.get(runId);
+    if (!run || run.owner !== caller) return toolError("Run not found");
+    if (!confirmed) return toolError("confirm_delete must be true");
+    const turn = run.turns.at(-1) as FakeTurn;
+    if (!turn.ended) return toolError("Cancel any active run first and wait for it to finish.");
+    this.deletes.push(runId);
+    this.deletedWorkspaces.add(runId);
+    return toolResult({ run_id: runId, state: "deleted" });
+  }
   private cancel(caller: string, runId: string): ToolOutcome {
     const run = this.runs.get(runId);
     if (!run || run.owner !== caller) return toolError("Run not found");

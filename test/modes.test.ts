@@ -60,6 +60,23 @@ describe("review mode", () => {
     expect(sticky).toContain(`[1](https://github.com/acme/widgets/pull/7#discussion_r${commentId})`);
     expect(harness.archestra.starts[0]!.attachmentNames).toEqual(["pr.json", "pr.diff"]);
     expect(Buffer.byteLength(harness.archestra.starts[0]!.message)).toBeLessThanOrEqual(MAX_MESSAGE_BYTES);
+    // A review asks for a bounded run, and its workspace goes once the review has posted.
+    expect(harness.archestra.starts[0]!.limits).toEqual({ tier: "M", idle_timeout_minutes: 10, max_duration_hours: 3 });
+    expect(harness.archestra.deletes).toEqual([result.runId]);
+  });
+
+  it("starts without limits on a gateway that predates them, and deletes the workspaces of every run it started", async () => {
+    const harness = setup();
+    harness.archestra.rejectLimits = true;
+    harness.archestra.script(AGENT_A, { end: "failed", statusReason: "Budget exceeded" });
+    harness.archestra.script(AGENT_B, { end: "completed", files: { "review.json": reviewJson() } });
+    const result = await run(harness.context("pull_request", prEvent(harness.github)));
+    expect(result.status).toBe("success");
+    // The first start carried the limits and was refused; every later start leaves them out.
+    expect(harness.archestra.starts.map((start) => start.limits !== undefined)).toEqual([true, false, false]);
+    const started = harness.archestra.starts.map((start) => start.runId).filter(Boolean);
+    expect(started).toHaveLength(2);
+    expect(harness.archestra.deletes).toEqual([result.runId, ...started.filter((id) => id !== result.runId)]);
   });
 
   it("skips drafts, [WIP] titles, forks and bot authors", async () => {
@@ -138,9 +155,12 @@ describe("review mode", () => {
       files: { "review.json": reviewJson([FINDING_IN_DIFF], { previous: [{ id: first.id, status: "regressed" }] }) },
     });
     await run(harness.context("pull_request", prEvent(harness.github, "synchronize")));
+    // The first review deleted its workspace, so the re-review is a fresh run with the
+    // previous findings as an input.
     const second = harness.archestra.starts[1]!;
-    expect(second).toMatchObject({ kind: "continue", previousRunId: result.runId });
+    expect(second).toMatchObject({ kind: "start", agentId: AGENT_A });
     expect(second.attachmentNames).toContain("previous-findings.json");
+    expect(harness.archestra.deletes).toEqual([result.runId, second.runId]);
     expect(harness.github.graphqlMutations).toEqual([
       { action: "unresolve", threadId: expect.stringMatching(/^thread-/) },
     ]);
@@ -398,7 +418,8 @@ describe("review mode", () => {
           [AGENT_B, "completed", false],
         ],
       ],
-      ["review of ddddddd", "changes requested, 1 finding", [[AGENT_B, "completed", true]]],
+      // The first review deleted its workspace, so the second one is a fresh run.
+      ["review of ddddddd", "changes requested, 1 finding", [[AGENT_B, "completed", false]]],
     ]);
     expect(state.jobs.every((job) => job.startedAt && job.workflowRunUrl)).toBe(true);
     expect(sticky).toContain("History: 2 jobs");
@@ -560,6 +581,8 @@ describe("fix mode", () => {
 
   it("continues the review run, verifies the commits, resolves the thread and updates the sticky comment", async () => {
     const { harness, result: review } = await reviewed();
+    // A deployment that kept the review's workspace: the fix continues it.
+    harness.archestra.deletedWorkspaces.delete(review.runId!);
     const state = parseState(harness.github.stickyBody()!)!;
     const [inDiff, outside] = state.findings;
     const good = "1".repeat(40);
@@ -611,6 +634,7 @@ describe("fix mode", () => {
 
   it("waits while the workspace is busy, then continues", async () => {
     const { harness, result: review } = await reviewed();
+    harness.archestra.deletedWorkspaces.delete(review.runId!);
     harness.archestra.busyContinues.set(review.runId!, 2);
     harness.archestra.script(AGENT_A, {
       end: "completed",

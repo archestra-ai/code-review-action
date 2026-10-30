@@ -40331,7 +40331,8 @@ var RUN_TOOLS = {
   cancel: "cancel_agent_run",
   read: "read_workspace_file",
   write: "write_workspace_file",
-  credential: "transfer_credential"
+  credential: "transfer_credential",
+  delete: "delete_workspace"
 };
 var ARCHESTRA_PREFIX = "archestra__";
 var RUN_TOOL = "run_tool";
@@ -40372,6 +40373,8 @@ var ArchestraClient = class {
   toolNames = null;
   runTool = null;
   runUrls = /* @__PURE__ */ new Map();
+  /** False once the gateway rejected `limits`: a deployment from before run limits. */
+  limitsSupported = true;
   constructor(options) {
     this.gatewayUrl = options.gatewayUrl.replace(/\/+$/, "");
     this.origin = new URL(this.gatewayUrl).origin;
@@ -40389,15 +40392,21 @@ var ArchestraClient = class {
     return this.runUrls.get(runId) ?? `${this.origin}/chat/runs/${runId}`;
   }
   async startRun(agentId, body) {
-    const data = await this.call(
-      RUN_TOOLS.start,
-      {
-        agent_id: agentId,
-        message: body.message,
-        ...body.attachments.length > 0 ? { attachments: body.attachments } : {}
-      },
-      "start run"
-    );
+    const args = {
+      agent_id: agentId,
+      message: body.message,
+      ...body.attachments.length > 0 ? { attachments: body.attachments } : {}
+    };
+    const limits = this.limitsSupported && body.limits ? runLimitsArgs(body.limits) : null;
+    let data;
+    try {
+      data = await this.call(RUN_TOOLS.start, limits ? { ...args, limits } : args, "start run");
+    } catch (error63) {
+      const rejectedLimits = limits !== null && error63 instanceof ArchestraApiError && error63.kind === "tool" && /unrecognized key "limits"/i.test(error63.detail);
+      if (!rejectedLimits) throw error63;
+      this.limitsSupported = false;
+      data = await this.call(RUN_TOOLS.start, args, "start run");
+    }
     const result = parse3(StartResultSchema, data, "start run");
     this.remember(result.run.run_id, result.run_url);
     return {
@@ -40440,6 +40449,10 @@ var ArchestraClient = class {
   }
   async cancelRun(runId) {
     await this.call(RUN_TOOLS.cancel, { run_id: runId }, "cancel run");
+  }
+  /** Deletes the run's workspace and its files. The run must have ended. */
+  async deleteWorkspace(runId) {
+    await this.call(RUN_TOOLS.delete, { run_id: runId, confirm_delete: true }, "delete workspace");
   }
   /** Reads a file of the run's workspace. Returns null when it does not exist. */
   async readWorkspaceFile(runId, path) {
@@ -40519,6 +40532,14 @@ var ArchestraClient = class {
     return this.toolNames;
   }
 };
+function runLimitsArgs(limits) {
+  return {
+    ...limits.tier ? { tier: limits.tier } : {},
+    ...limits.idleTimeoutMinutes ? { idle_timeout_minutes: limits.idleTimeoutMinutes } : {},
+    ...limits.maxDurationHours ? { max_duration_hours: limits.maxDurationHours } : {},
+    ...limits.maxCostUsd ? { max_cost_usd: limits.maxCostUsd } : {}
+  };
+}
 function parse3(schema, data, operation) {
   const result = schema.safeParse(data);
   if (!result.success) {

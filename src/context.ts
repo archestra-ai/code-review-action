@@ -1,5 +1,5 @@
 import type { z } from "zod";
-import type { ArchestraClient } from "./archestra/client";
+import type { ArchestraClient, RunLimits } from "./archestra/client";
 import type { AccessRefusal } from "./archestra/github-actions-auth";
 import { type AttemptRecord, type FallbackResult, type ProgressReporter, runWithFallback } from "./attempts";
 import type { Octokit } from "./github/octokit";
@@ -133,6 +133,8 @@ export async function launch<T>(
     contract: { file: string; schema: z.ZodType<T> };
     timeoutMs: number;
     credentialToken: string | null;
+    /** Limits for a fresh run; a continuation keeps the limits of its first turn. */
+    limits?: RunLimits;
     /** Updates the progress comment at each step; optional. */
     progress?: ProgressReporter;
   },
@@ -187,7 +189,11 @@ export async function launch<T>(
             if (continued) return continued;
             continueFrom = null;
           }
-          return ctx.archestra.startRun(agentId, { message: p.message, attachments: p.attachments });
+          return ctx.archestra.startRun(agentId, {
+            message: p.message,
+            attachments: p.attachments,
+            ...(p.limits ? { limits: p.limits } : {}),
+          });
         },
       }),
   });

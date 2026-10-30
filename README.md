@@ -154,7 +154,9 @@ When `/archestra fix-ci` runs, it classifies failing checks into categories:
 
 Create an MCP gateway in Archestra (e.g. `https://<your-archestra>/v1/mcp/code-review`) with these Remote Agents tools:
 - `start_agent_run`, `get_agent_run`, `steer_agent_run`, `cancel_agent_run`
-- `read_workspace_file`, `write_workspace_file`, `transfer_credential`
+- `read_workspace_file`, `write_workspace_file`, `transfer_credential`, `delete_workspace`
+
+A review asks for a medium container (tier `M`), a 10-minute idle timeout and a 3-hour maximum duration; a deployment that predates run limits gives the Agent's defaults instead. Once the review has posted, the action deletes the workspaces of every run it started, so their volumes do not stay reserved until they expire. The next review of the pull request receives the previous findings as an input file and clones again.
 
 If Guardrails is enabled, configure it to allow external client connections from the action.
 
@@ -196,35 +198,35 @@ To allow agents to push fixes and trigger follow-up CI runs:
 
 ### Inputs
 
-| Input                     | Default               | Description                                                                                                                                  |
-| ------------------------- | --------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
-| `archestra-gateway-url`   | _required_            | Archestra MCP gateway endpoint.                                                                                                              |
-| `archestra-token`         | `""`                  | Actor platform token. If empty, the action skips execution unless `fallback-token` is set.                                                   |
-| `fallback-token`          | `""`                  | Shared platform token used when actor token is missing.                                                                                      |
-| `agents`                  | _required_            | Agent IDs, one per line.                                                                                                                     |
-| `fallback-agents`         | `agents`              | Agent IDs to use with `fallback-token`.                                                                                                      |
-| `strategy`                | `rotate`              | Agent selection: `rotate`, `ordered`, or `random`.                                                                                           |
-| `retries`                 | `1`                   | Retries on the same agent after a temporary failure.                                                                                         |
-| `max-fallbacks`           | _all_                 | Number of alternative agents to try after permanent failure.                                                                                 |
-| `timeout-minutes`         | `30`                  | Timeout per review attempt.                                                                                                                  |
-| `overall-timeout-minutes` | `120`                 | Total timeout across all attempts.                                                                                                           |
-| `instructions`            | `""`                  | Additional review instructions passed to the agent.                                                                                          |
-| `instructions-file`       | `""`                  | Path to a workspace file containing review instructions.                                                                                     |
-| `github-token`            | `${{ github.token }}` | GitHub token for posting comments (`pull-requests: write`).                                                                                  |
-| `post`                    | `review`              | Posting mode: `review` (sticky comment + inline), `comment` (sticky only), or `none`.                                                        |
-| `archestra-auth`          | `token`               | `token` (use `archestra-token`), or `github-actions`: sign in with the job's identity and review as the PR author (needs `id-token: write`). |
-| `archestra-connect-to`    | `""`                  | Local `host:port` to dial the gateway at (a tunnel); its hostname stays the TLS server name. Nothing else is dialed there.                   |
-| `review-event`            | `comment`             | `comment`, or `request-changes`: a finding of medium or above requests changes, dismissed and marked resolved once nothing blocks.           |
-| `fail-on`                 | `error`               | Step failure condition: `error` (the review could not finish), `findings` (also on findings), or `never`.                                    |
-| `mode`                    | `auto`                | Execution mode: `auto`, `review`, `fix`, `fix-ci`, or `fix-ci-main`.                                                                         |
-| `pr-number`               | `""`                  | Pull request number (required for manual `workflow_dispatch`).                                                                               |
-| `fix-command`             | `/archestra`          | Comment command prefix.                                                                                                                      |
-| `fix-commands`            | `true`                | Set `false` to hide command instructions when fix workflows are not configured.                                                              |
-| `fix-token`               | `""`                  | GitHub App token for pushing fixes.                                                                                                          |
-| `clone-token`             | `""`                  | Read-only GitHub token for cloning private repositories.                                                                                     |
-| `fix-timeout-minutes`     | `45`                  | Timeout per fix or CI triage attempt.                                                                                                        |
-| `ci-rerun`                | `false`               | Automatically re-run failed jobs classified as flaky.                                                                                        |
-| `incremental-review`      | `true`                | Continue the existing workspace from previous reviews on the same PR.                                                                        |
+| Input                     | Default               | Description                                                                                                                                          |
+| ------------------------- | --------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `archestra-gateway-url`   | _required_            | Archestra MCP gateway endpoint.                                                                                                                      |
+| `archestra-token`         | `""`                  | Actor platform token. If empty, the action skips execution unless `fallback-token` is set.                                                           |
+| `fallback-token`          | `""`                  | Shared platform token used when actor token is missing.                                                                                              |
+| `agents`                  | _required_            | Agent IDs, one per line.                                                                                                                             |
+| `fallback-agents`         | `agents`              | Agent IDs to use with `fallback-token`.                                                                                                              |
+| `strategy`                | `rotate`              | Agent selection: `rotate`, `ordered`, or `random`.                                                                                                   |
+| `retries`                 | `1`                   | Retries on the same agent after a temporary failure.                                                                                                 |
+| `max-fallbacks`           | _all_                 | Number of alternative agents to try after permanent failure.                                                                                         |
+| `timeout-minutes`         | `30`                  | Timeout per review attempt.                                                                                                                          |
+| `overall-timeout-minutes` | `120`                 | Total timeout across all attempts.                                                                                                                   |
+| `instructions`            | `""`                  | Additional review instructions passed to the agent.                                                                                                  |
+| `instructions-file`       | `""`                  | Path to a workspace file containing review instructions.                                                                                             |
+| `github-token`            | `${{ github.token }}` | GitHub token for posting comments (`pull-requests: write`).                                                                                          |
+| `post`                    | `review`              | Posting mode: `review` (sticky comment + inline), `comment` (sticky only), or `none`.                                                                |
+| `archestra-auth`          | `token`               | `token` (use `archestra-token`), or `github-actions`: sign in with the job's identity and review as the PR author (needs `id-token: write`).         |
+| `archestra-connect-to`    | `""`                  | Local `host:port` to dial the gateway at (a tunnel); its hostname stays the TLS server name. Nothing else is dialed there.                           |
+| `review-event`            | `comment`             | `comment`, or `request-changes`: a finding of medium or above requests changes, dismissed and marked resolved once nothing blocks.                   |
+| `fail-on`                 | `error`               | Step failure condition: `error` (the review could not finish), `findings` (also on findings), or `never`.                                            |
+| `mode`                    | `auto`                | Execution mode: `auto`, `review`, `fix`, `fix-ci`, or `fix-ci-main`.                                                                                 |
+| `pr-number`               | `""`                  | Pull request number (required for manual `workflow_dispatch`).                                                                                       |
+| `fix-command`             | `/archestra`          | Comment command prefix.                                                                                                                              |
+| `fix-commands`            | `true`                | Set `false` to hide command instructions when fix workflows are not configured.                                                                      |
+| `fix-token`               | `""`                  | GitHub App token for pushing fixes.                                                                                                                  |
+| `clone-token`             | `""`                  | Read-only GitHub token for cloning private repositories.                                                                                             |
+| `fix-timeout-minutes`     | `45`                  | Timeout per fix or CI triage attempt.                                                                                                                |
+| `ci-rerun`                | `false`               | Automatically re-run failed jobs classified as flaky.                                                                                                |
+| `incremental-review`      | `true`                | Give a re-review the previous findings, so it reports what was fixed. The previous workspace is deleted after each review; a re-review clones again. |
 
 ### Outputs
 

@@ -23,7 +23,18 @@ export const RUN_TOOLS = {
   read: "read_workspace_file",
   write: "write_workspace_file",
   credential: "transfer_credential",
+  delete: "delete_workspace",
 } as const;
+
+/** Limits a run asks for, each at or below its Agent's own. */
+export interface RunLimits {
+  /** Container size: S, M or L. */
+  tier?: "S" | "M" | "L";
+  idleTimeoutMinutes?: number;
+  /** The run and its saved files end this many hours after the start. */
+  maxDurationHours?: number;
+  maxCostUsd?: number;
+}
 
 const ARCHESTRA_PREFIX = "archestra__";
 const RUN_TOOL = "run_tool";
@@ -120,6 +131,8 @@ export class ArchestraClient {
   private toolNames: Promise<Map<string, string>> | null = null;
   private runTool: string | null = null;
   private readonly runUrls = new Map<string, string>();
+  /** False once the gateway rejected `limits`: a deployment from before run limits. */
+  private limitsSupported = true;
 
   constructor(options: ArchestraClientOptions) {
     this.gatewayUrl = options.gatewayUrl.replace(/\/+$/, "");
@@ -139,16 +152,30 @@ export class ArchestraClient {
     return this.runUrls.get(runId) ?? `${this.origin}/chat/runs/${runId}`;
   }
 
-  async startRun(agentId: string, body: { message: string; attachments: Attachment[] }): Promise<StartedRun> {
-    const data = await this.call(
-      RUN_TOOLS.start,
-      {
-        agent_id: agentId,
-        message: body.message,
-        ...(body.attachments.length > 0 ? { attachments: body.attachments } : {}),
-      },
-      "start run",
-    );
+  async startRun(
+    agentId: string,
+    body: { message: string; attachments: Attachment[]; limits?: RunLimits },
+  ): Promise<StartedRun> {
+    const args = {
+      agent_id: agentId,
+      message: body.message,
+      ...(body.attachments.length > 0 ? { attachments: body.attachments } : {}),
+    };
+    const limits = this.limitsSupported && body.limits ? runLimitsArgs(body.limits) : null;
+    let data: Record<string, unknown>;
+    try {
+      data = await this.call(RUN_TOOLS.start, limits ? { ...args, limits } : args, "start run");
+    } catch (error) {
+      // A deployment from before run limits rejects the argument; the run then takes the Agent's defaults.
+      const rejectedLimits =
+        limits !== null &&
+        error instanceof ArchestraApiError &&
+        error.kind === "tool" &&
+        /unrecognized key "limits"/i.test(error.detail);
+      if (!rejectedLimits) throw error;
+      this.limitsSupported = false;
+      data = await this.call(RUN_TOOLS.start, args, "start run");
+    }
     const result = parse(StartResultSchema, data, "start run");
     this.remember(result.run.run_id, result.run_url);
     return {
@@ -196,6 +223,10 @@ export class ArchestraClient {
 
   async cancelRun(runId: string): Promise<void> {
     await this.call(RUN_TOOLS.cancel, { run_id: runId }, "cancel run");
+  }
+  /** Deletes the run's workspace and its files. The run must have ended. */
+  async deleteWorkspace(runId: string): Promise<void> {
+    await this.call(RUN_TOOLS.delete, { run_id: runId, confirm_delete: true }, "delete workspace");
   }
 
   /** Reads a file of the run's workspace. Returns null when it does not exist. */
@@ -287,6 +318,15 @@ export class ArchestraClient {
     );
     return this.toolNames;
   }
+}
+
+function runLimitsArgs(limits: RunLimits): Record<string, unknown> {
+  return {
+    ...(limits.tier ? { tier: limits.tier } : {}),
+    ...(limits.idleTimeoutMinutes ? { idle_timeout_minutes: limits.idleTimeoutMinutes } : {}),
+    ...(limits.maxDurationHours ? { max_duration_hours: limits.maxDurationHours } : {}),
+    ...(limits.maxCostUsd ? { max_cost_usd: limits.maxCostUsd } : {}),
+  };
 }
 
 function parse<T>(schema: z.ZodType<T>, data: unknown, operation: string): T {
