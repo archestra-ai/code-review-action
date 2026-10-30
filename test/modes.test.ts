@@ -645,6 +645,18 @@ describe("fix mode", () => {
     expect(harness.clock.sleeps.filter((ms) => ms === 30_000).length).toBeGreaterThanOrEqual(2);
   });
 
+  it("starts a fresh run on the review's agent after the review deleted its workspace", async () => {
+    const { harness, result: review } = await reviewed();
+    expect(harness.archestra.deletes).toEqual([review.runId]);
+    harness.archestra.script(AGENT_A, {
+      end: "completed",
+      files: { "fix-result.json": { applied: [], skipped: [], notes: "" } },
+    });
+    await run(harness.context("issue_comment", issueCommentEvent(harness.github, "/archestra fix")));
+    expect(harness.archestra.starts[1]).toMatchObject({ kind: "start", agentId: AGENT_A });
+    expect(harness.archestra.starts[1]!.attachmentNames).toEqual(["fix-request.json", "pr.json", "pr.diff"]);
+  });
+
   it("starts a fresh run on the same agent when the workspace is no longer retained", async () => {
     const { harness, result: review } = await reviewed();
     harness.archestra.expiredWorkspaces.add(review.runId!);

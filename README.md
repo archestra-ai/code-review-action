@@ -156,7 +156,7 @@ Create an MCP gateway in Archestra (e.g. `https://<your-archestra>/v1/mcp/code-r
 - `start_agent_run`, `get_agent_run`, `steer_agent_run`, `cancel_agent_run`
 - `read_workspace_file`, `write_workspace_file`, `transfer_credential`, `delete_workspace`
 
-A review asks for a medium container (tier `M`), a 10-minute idle timeout and a 3-hour maximum duration; a deployment that predates run limits gives the Agent's defaults instead. Once the review has posted, the action deletes the workspaces of every run it started, so their volumes do not stay reserved until they expire. The next review of the pull request receives the previous findings as an input file and clones again.
+A review asks for a medium container (tier `M`), a 10-minute idle timeout and a 3-hour maximum duration; a deployment that predates run limits ignores or rejects the argument and gives the Agent's defaults instead. Once the review is complete, posted or not, the action deletes the workspaces of every run it started, so their volumes do not stay reserved until they expire. The next review of the pull request receives the previous findings as an input file and clones again, and so does a `/archestra fix` after a review: it starts a fresh run on the review's agent.
 
 If Guardrails is enabled, configure it to allow external client connections from the action.
 
