@@ -169,13 +169,15 @@ export class ArchestraClient {
       // A deployment from before run limits ignores the argument or, when its schema is strict,
       // rejects it; the run then takes the Agent's defaults. Zod and the gateway word the
       // rejection differently, so only the key name is matched.
-      const rejectedLimits =
-        limits !== null &&
-        error instanceof ArchestraApiError &&
-        error.kind === "tool" &&
-        /unrecognized key.*\blimits\b/i.test(error.detail);
-      if (!rejectedLimits) throw error;
-      this.limitsSupported = false;
+      const toolError = limits !== null && error instanceof ArchestraApiError && error.kind === "tool";
+      const rejectedLimits = toolError && /unrecognized key.*\blimits\b/i.test(error.detail);
+      // An Agent whose own limits are below the request, or that sizes its runs with explicit
+      // resources, refuses them; that Agent's run then takes its own limits. Other Agents still
+      // get the request.
+      const refusedLimits =
+        toolError && /is above this Agent's|sizes its runs with explicit resources/i.test(error.detail);
+      if (!rejectedLimits && !refusedLimits) throw error;
+      if (rejectedLimits) this.limitsSupported = false;
       data = await this.call(RUN_TOOLS.start, args, "start run");
     }
     const result = parse(StartResultSchema, data, "start run");

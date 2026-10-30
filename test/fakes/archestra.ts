@@ -92,6 +92,8 @@ export class FakeArchestra {
   readonly deletedWorkspaces = new Set<string>();
   /** Old deployments: start_agent_run has no `limits` argument. */
   rejectLimits = false;
+  /** Agents whose own limits refuse a request, with the platform's message. */
+  readonly limitRefusals = new Map<string, string>();
   readonly credentials: Array<{ agentId: string; key: string; valueLength: number }> = [];
   readonly writes: Array<{ runId: string; path: string; turn: number }> = [];
   /** Every JSON-RPC method and tool name, in order. */
@@ -276,6 +278,8 @@ export class FakeArchestra {
     if (this.rejectLimits && args.limits !== undefined) {
       return toolError('Validation error in archestra__start_agent_run: unrecognized key "limits"');
     }
+    const refusal = this.limitRefusals.get(agentId);
+    if (refusal && args.limits !== undefined) return toolError(refusal);
     const script = this.scripts.get(agentId)?.shift();
     if (!script) return toolError("Agent not found");
     if ("start" in script) {
