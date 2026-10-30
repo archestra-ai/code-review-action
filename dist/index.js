@@ -41200,7 +41200,8 @@ var RUN_TOOLS = {
   cancel: "cancel_agent_run",
   read: "read_workspace_file",
   write: "write_workspace_file",
-  credential: "transfer_credential"
+  credential: "transfer_credential",
+  delete: "delete_workspace"
 };
 var ARCHESTRA_PREFIX = "archestra__";
 var RUN_TOOL = "run_tool";
@@ -41241,6 +41242,8 @@ var ArchestraClient = class {
   toolNames = null;
   runTool = null;
   runUrls = /* @__PURE__ */ new Map();
+  /** False once the gateway rejected `limits`: a deployment from before run limits. */
+  limitsSupported = true;
   constructor(options) {
     this.gatewayUrl = options.gatewayUrl.replace(/\/+$/, "");
     this.origin = new URL(this.gatewayUrl).origin;
@@ -41258,15 +41261,21 @@ var ArchestraClient = class {
     return this.runUrls.get(runId) ?? `${this.origin}/chat/runs/${runId}`;
   }
   async startRun(agentId, body) {
-    const data = await this.call(
-      RUN_TOOLS.start,
-      {
-        agent_id: agentId,
-        message: body.message,
-        ...body.attachments.length > 0 ? { attachments: body.attachments } : {}
-      },
-      "start run"
-    );
+    const args = {
+      agent_id: agentId,
+      message: body.message,
+      ...body.attachments.length > 0 ? { attachments: body.attachments } : {}
+    };
+    const limits = this.limitsSupported && body.limits ? runLimitsArgs(body.limits) : null;
+    let data;
+    try {
+      data = await this.call(RUN_TOOLS.start, limits ? { ...args, limits } : args, "start run");
+    } catch (error63) {
+      const rejectedLimits = limits !== null && error63 instanceof ArchestraApiError && error63.kind === "tool" && /unrecognized key.*\blimits\b/i.test(error63.detail);
+      if (!rejectedLimits) throw error63;
+      this.limitsSupported = false;
+      data = await this.call(RUN_TOOLS.start, args, "start run");
+    }
     const result = parse3(StartResultSchema, data, "start run");
     this.remember(result.run.run_id, result.run_url);
     return {
@@ -41309,6 +41318,10 @@ var ArchestraClient = class {
   }
   async cancelRun(runId) {
     await this.call(RUN_TOOLS.cancel, { run_id: runId }, "cancel run");
+  }
+  /** Deletes the run's workspace and its files. The run must have ended. */
+  async deleteWorkspace(runId) {
+    await this.call(RUN_TOOLS.delete, { run_id: runId, confirm_delete: true }, "delete workspace");
   }
   /** Reads a file of the run's workspace. Returns null when it does not exist. */
   async readWorkspaceFile(runId, path) {
@@ -41388,6 +41401,14 @@ var ArchestraClient = class {
     return this.toolNames;
   }
 };
+function runLimitsArgs(limits) {
+  return {
+    ...limits.tier ? { tier: limits.tier } : {},
+    ...limits.idleTimeoutMinutes ? { idle_timeout_minutes: limits.idleTimeoutMinutes } : {},
+    ...limits.maxDurationHours ? { max_duration_hours: limits.maxDurationHours } : {},
+    ...limits.maxCostUsd ? { max_cost_usd: limits.maxCostUsd } : {}
+  };
+}
 function parse3(schema, data, operation) {
   const result = schema.safeParse(data);
   if (!result.success) {
@@ -42242,7 +42263,11 @@ async function launch(ctx, p) {
           if (continued) return continued;
           continueFrom = null;
         }
-        return ctx.archestra.startRun(agentId, { message: p.message, attachments: p.attachments });
+        return ctx.archestra.startRun(agentId, {
+          message: p.message,
+          attachments: p.attachments,
+          ...p.limits ? { limits: p.limits } : {}
+        });
       }
     })
   });
@@ -48824,6 +48849,21 @@ async function runFixCiMain(ctx, trigger) {
   });
 }
 
+// src/cleanup.ts
+async function deleteRunWorkspaces(client, runIds, log) {
+  const deleted = [];
+  for (const runId of new Set(runIds.filter((runId2) => Boolean(runId2)))) {
+    try {
+      await client.deleteWorkspace(runId);
+      deleted.push(runId);
+      log.info(`Deleted the workspace of run ${runId}.`);
+    } catch (error63) {
+      log.warning(`Could not delete the workspace of run ${runId}: ${errorMessage(error63)}`);
+    }
+  }
+  return deleted;
+}
+
 // src/github/diff.ts
 function headLines(patch) {
   const lines = /* @__PURE__ */ new Map();
@@ -49090,6 +49130,7 @@ async function reviewCommentIds(gh, repo, pr, reviewId) {
 
 // src/modes/review.ts
 var VERDICT_WORDS = { approve: "approved", comment: "commented", request_changes: "changes requested" };
+var REVIEW_RUN_LIMITS = { tier: "M", idleTimeoutMinutes: 10, maxDurationHours: 3 };
 async function runReview(ctx, prNumber) {
   const { gh, repo, inputs, log } = ctx;
   const pr = await loadPullRequest(gh, repo, prNumber);
@@ -49205,6 +49246,7 @@ async function reviewInProgress(ctx, p) {
     attachments,
     contract: CONTRACTS.review,
     timeoutMs: inputs.timeoutMs,
+    limits: REVIEW_RUN_LIMITS,
     // A fix leaves a short-lived App token in the actor's CODE_REVIEW_GITHUB_TOKEN; a
     // private repository needs a fresh read-only token for the review.
     credentialToken: inputs.cloneToken || null,
@@ -49227,171 +49269,180 @@ async function reviewInProgress(ctx, p) {
       });
       state.notice = `Review unavailable for \`${shortSha(pr.headSha)}\`: ${reason}`;
     });
-    const failure3 = failureForError(ctx, `The review is unavailable: ${reason}`);
+    await deleteRunWorkspaces(
+      ctx.archestra,
+      outcome.attempts.map((attempt) => attempt.runId),
+      log
+    );
+    const failure2 = failureForError(ctx, `The review is unavailable: ${reason}`);
     return makeResult("review", {
       status: outcome.fatal ? "aborted" : "unavailable",
       attempts: outcome.attempts,
-      failure: failure3,
+      failure: failure2,
       summary: summarize("Archestra review unavailable", [reason], outcome.attempts)
     });
   }
   const { result: review, runId } = outcome.value;
-  const agentId = outcome.agentId ?? null;
-  const summaryUrl = `${repoUrl(ctx)}/pull/${pr.number}#issuecomment-${p.stickyId}`;
-  const index = buildDiffIndex(files);
-  const threads = await findingThreads(ctx, pr.number, inputs.post !== "none" && previousFindings.length > 0);
-  const command = commentCommand(inputs);
-  let findings = placeFindings(review.findings, index, {
-    headSha: pr.headSha,
-    inline: inputs.post === "review",
-    previous: previousFindings,
-    reservedIds: threads.keys()
-  }).map((finding) => ({ ...finding, excerpt: excerptFor(index, finding) }));
-  const count = findings.length;
-  const verdict = verdictFor(findings);
-  if (inputs.post === "review") {
-    const previousIds = new Set(previousFindings.map((finding) => finding.id));
-    const kept = [];
-    const fresh = /* @__PURE__ */ new Set();
-    for (const finding of findings) {
-      const thread = previousIds.has(finding.id) ? threads.get(finding.id) : void 0;
-      if (thread && !thread.isOutdated) kept.push({ finding, thread });
-      else if (finding.inline) fresh.add(finding.id);
-    }
-    const commentIds = /* @__PURE__ */ new Map();
-    for (const { finding, thread } of kept) {
-      const body = inlineBody(finding, index, command, { suggestion: coversFinding(thread, finding) });
-      try {
-        await updateInlineComment(gh, repo, thread.commentId, body);
-        commentIds.set(finding.id, thread.commentId);
-      } catch (error63) {
-        if (httpStatus(error63) === 404 && finding.inline) {
-          log.warning(`The inline comment of finding ${finding.n} is gone; a new one is posted.`);
-          fresh.add(finding.id);
-        } else {
-          log.warning(`Could not update the inline comment of finding ${finding.n}: ${errorMessage(error63)}`);
+  try {
+    const agentId = outcome.agentId ?? null;
+    const summaryUrl = `${repoUrl(ctx)}/pull/${pr.number}#issuecomment-${p.stickyId}`;
+    const index = buildDiffIndex(files);
+    const threads = await findingThreads(ctx, pr.number, inputs.post !== "none" && previousFindings.length > 0);
+    const command = commentCommand(inputs);
+    let findings = placeFindings(review.findings, index, {
+      headSha: pr.headSha,
+      inline: inputs.post === "review",
+      previous: previousFindings,
+      reservedIds: threads.keys()
+    }).map((finding) => ({ ...finding, excerpt: excerptFor(index, finding) }));
+    const count = findings.length;
+    const verdict = verdictFor(findings);
+    if (inputs.post === "review") {
+      const previousIds = new Set(previousFindings.map((finding) => finding.id));
+      const kept = [];
+      const fresh = /* @__PURE__ */ new Set();
+      for (const finding of findings) {
+        const thread = previousIds.has(finding.id) ? threads.get(finding.id) : void 0;
+        if (thread && !thread.isOutdated) kept.push({ finding, thread });
+        else if (finding.inline) fresh.add(finding.id);
+      }
+      const commentIds = /* @__PURE__ */ new Map();
+      for (const { finding, thread } of kept) {
+        const body = inlineBody(finding, index, command, { suggestion: coversFinding(thread, finding) });
+        try {
+          await updateInlineComment(gh, repo, thread.commentId, body);
           commentIds.set(finding.id, thread.commentId);
+        } catch (error63) {
+          if (httpStatus(error63) === 404 && finding.inline) {
+            log.warning(`The inline comment of finding ${finding.n} is gone; a new one is posted.`);
+            fresh.add(finding.id);
+          } else {
+            log.warning(`Could not update the inline comment of finding ${finding.n}: ${errorMessage(error63)}`);
+            commentIds.set(finding.id, thread.commentId);
+          }
         }
       }
-    }
-    const event = reviewEventFor(inputs.reviewEvent, verdict);
-    const posting = await postReview(gh, repo, {
-      pr: pr.number,
-      headSha: pr.headSha,
-      body: reviewBody(pr.headSha, verdict, findings, fresh.size, kept.length, summaryUrl),
-      event,
-      comments: inlineComments(
-        findings.filter((finding) => fresh.has(finding.id)),
-        index,
-        command
-      ),
-      log
-    });
-    if (inputs.reviewEvent === "request-changes" && event !== "REQUEST_CHANGES") {
-      await dismissChangeRequests(gh, repo, {
+      const event = reviewEventFor(inputs.reviewEvent, verdict);
+      const posting = await postReview(gh, repo, {
         pr: pr.number,
-        message: `The review of ${shortSha(pr.headSha)} finds nothing that blocks the merge.`,
-        resolvedIn: shortSha(pr.headSha),
-        self: p.self,
+        headSha: pr.headSha,
+        body: reviewBody(pr.headSha, verdict, findings, fresh.size, kept.length, summaryUrl),
+        event,
+        comments: inlineComments(
+          findings.filter((finding) => fresh.has(finding.id)),
+          index,
+          command
+        ),
         log
       });
-    }
-    if (posting.reviewId !== null) {
-      try {
-        for (const [id, commentId] of await reviewCommentIds(gh, repo, pr.number, posting.reviewId)) {
-          commentIds.set(id, commentId);
-        }
-      } catch (error63) {
-        log.warning(`Could not read the ids of the new inline comments: ${errorMessage(error63)}`);
+      if (inputs.reviewEvent === "request-changes" && event !== "REQUEST_CHANGES") {
+        await dismissChangeRequests(gh, repo, {
+          pr: pr.number,
+          message: `The review of ${shortSha(pr.headSha)} finds nothing that blocks the merge.`,
+          resolvedIn: shortSha(pr.headSha),
+          self: p.self,
+          log
+        });
       }
+      if (posting.reviewId !== null) {
+        try {
+          for (const [id, commentId] of await reviewCommentIds(gh, repo, pr.number, posting.reviewId)) {
+            commentIds.set(id, commentId);
+          }
+        } catch (error63) {
+          log.warning(`Could not read the ids of the new inline comments: ${errorMessage(error63)}`);
+        }
+      }
+      findings = findings.map(
+        (finding) => !posting.posted && fresh.has(finding.id) ? { ...finding, inline: false, commentId: null } : { ...finding, commentId: commentIds.get(finding.id) ?? null }
+      );
     }
-    findings = findings.map(
-      (finding) => !posting.posted && fresh.has(finding.id) ? { ...finding, inline: false, commentId: null } : { ...finding, commentId: commentIds.get(finding.id) ?? null }
-    );
-  }
-  const statuses = review.previous ?? [];
-  const known = new Map(previousFindings.map((finding) => [finding.id, finding]));
-  const fixed = statuses.filter((s) => s.status === "fixed" && known.has(s.id));
-  const regressedIds = statuses.filter((s) => s.status === "regressed" && known.has(s.id)).map((s) => s.id);
-  const delta = sinceSha ? reviewDelta(sinceSha, previousFindings, findings, fixed, regressedIds.length) : null;
-  await updateSticky(ctx, pr, (state, stickyMarker) => {
-    finishProgress(ctx, state, { did: `reviewed \`${shortSha(pr.headSha)}\``, login: pr.authorLogin, outcome: "ok" });
-    if (inputs.post === "none") return;
-    Object.assign(stickyMarker, {
-      run: runId,
-      agent: agentId,
-      session: runId,
-      sha: pr.headSha
+    const statuses = review.previous ?? [];
+    const known = new Map(previousFindings.map((finding) => [finding.id, finding]));
+    const fixed = statuses.filter((s) => s.status === "fixed" && known.has(s.id));
+    const regressedIds = statuses.filter((s) => s.status === "regressed" && known.has(s.id)).map((s) => s.id);
+    const delta = sinceSha ? reviewDelta(sinceSha, previousFindings, findings, fixed, regressedIds.length) : null;
+    await updateSticky(ctx, pr, (state, stickyMarker) => {
+      finishProgress(ctx, state, { did: `reviewed \`${shortSha(pr.headSha)}\``, login: pr.authorLogin, outcome: "ok" });
+      if (inputs.post === "none") return;
+      Object.assign(stickyMarker, {
+        run: runId,
+        agent: agentId,
+        session: runId,
+        sha: pr.headSha
+      });
+      state.status = "reviewed";
+      state.verdict = verdict;
+      state.title = pr.title;
+      state.summary = review.summary;
+      state.reviewed = review.reviewed ?? [];
+      state.changes = (review.changes ?? []).map((change) => {
+        const file2 = changedFile(files, change.file);
+        const line = change.line ?? null;
+        return {
+          file: file2?.filename ?? change.file,
+          line,
+          what: change.what,
+          link: !file2 ? "none" : line !== null && isRangeInDiff(index, file2.filename, line, line) ? "line" : "file"
+        };
+      });
+      state.observations = review.observations ?? [];
+      state.tests = (review.tests ?? []).map((test) => {
+        const file2 = changedFile(files, test.file);
+        return {
+          file: file2?.filename ?? test.file,
+          additions: file2?.additions ?? null,
+          deletions: file2?.deletions ?? null,
+          focus: test.focus
+        };
+      });
+      state.coverage = review.coverage ?? "";
+      state.limitations = review.limitations ?? "";
+      state.conclusion = review.conclusion ?? "";
+      state.delta = delta;
+      state.reviewedSha = pr.headSha;
+      state.baseBranch = pr.baseRef;
+      state.findings = findings;
+      state.failingChecks = failingChecks;
+      recordJob(ctx, state, {
+        label: `review of ${shortSha(pr.headSha)}`,
+        outcome: `${VERDICT_WORDS[verdict]}, ${findings.length} finding${findings.length === 1 ? "" : "s"}`,
+        attempts: outcome.attempts
+      });
+      state.skipped = [];
+      state.notice = null;
+      if (state.triageSha !== pr.headSha) {
+        state.triage = [];
+        state.triageSha = null;
+      }
+      state.applied = state.applied.slice(-50);
     });
-    state.status = "reviewed";
-    state.verdict = verdict;
-    state.title = pr.title;
-    state.summary = review.summary;
-    state.reviewed = review.reviewed ?? [];
-    state.changes = (review.changes ?? []).map((change) => {
-      const file2 = changedFile(files, change.file);
-      const line = change.line ?? null;
-      return {
-        file: file2?.filename ?? change.file,
-        line,
-        what: change.what,
-        link: !file2 ? "none" : line !== null && isRangeInDiff(index, file2.filename, line, line) ? "line" : "file"
-      };
-    });
-    state.observations = review.observations ?? [];
-    state.tests = (review.tests ?? []).map((test) => {
-      const file2 = changedFile(files, test.file);
-      return {
-        file: file2?.filename ?? test.file,
-        additions: file2?.additions ?? null,
-        deletions: file2?.deletions ?? null,
-        focus: test.focus
-      };
-    });
-    state.coverage = review.coverage ?? "";
-    state.limitations = review.limitations ?? "";
-    state.conclusion = review.conclusion ?? "";
-    state.delta = delta;
-    state.reviewedSha = pr.headSha;
-    state.baseBranch = pr.baseRef;
-    state.findings = findings;
-    state.failingChecks = failingChecks;
-    recordJob(ctx, state, {
-      label: `review of ${shortSha(pr.headSha)}`,
-      outcome: `${VERDICT_WORDS[verdict]}, ${findings.length} finding${findings.length === 1 ? "" : "s"}`,
-      attempts: outcome.attempts
-    });
-    state.skipped = [];
-    state.notice = null;
-    if (state.triageSha !== pr.headSha) {
-      state.triage = [];
-      state.triageSha = null;
+    if (inputs.post !== "none") {
+      await updatePreviousThreads(ctx, pr.number, {
+        fixedIds: fixed.map((status) => status.id),
+        regressedIds,
+        headSha: pr.headSha,
+        threads
+      });
     }
-    state.applied = state.applied.slice(-50);
-  });
-  if (inputs.post !== "none") {
-    await updatePreviousThreads(ctx, pr.number, {
-      fixedIds: fixed.map((status) => status.id),
-      regressedIds,
-      headSha: pr.headSha,
-      threads
+    const failure2 = inputs.failOn === "findings" && count > 0 ? `The review has ${count} finding${count === 1 ? "" : "s"}.` : null;
+    return makeResult("review", {
+      status: "success",
+      agentId,
+      runId,
+      runUrl: ctx.archestra.runUrl(runId),
+      findingsCount: count,
+      attempts: outcome.attempts,
+      failure: failure2,
+      summary: summarize(
+        "Archestra review",
+        [`${verdictLabel(verdict)}: ${findingCounts(findings)}. Run: ${ctx.archestra.runUrl(runId)}`],
+        outcome.attempts
+      )
     });
+  } finally {
+    await deleteRunWorkspaces(ctx.archestra, [runId, ...outcome.attempts.map((attempt) => attempt.runId)], log);
   }
-  const failure2 = inputs.failOn === "findings" && count > 0 ? `The review has ${count} finding${count === 1 ? "" : "s"}.` : null;
-  return makeResult("review", {
-    status: "success",
-    agentId,
-    runId,
-    runUrl: ctx.archestra.runUrl(runId),
-    findingsCount: count,
-    attempts: outcome.attempts,
-    failure: failure2,
-    summary: summarize(
-      "Archestra review",
-      [`${verdictLabel(verdict)}: ${findingCounts(findings)}. Run: ${ctx.archestra.runUrl(runId)}`],
-      outcome.attempts
-    )
-  });
 }
 function reviewScope(lastSha, sinceSha, headSha) {
   if (sinceSha) {
