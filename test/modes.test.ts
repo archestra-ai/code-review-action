@@ -79,6 +79,21 @@ describe("review mode", () => {
     expect(harness.archestra.deletes).toEqual([result.runId, ...started.filter((id) => id !== result.runId)]);
   });
 
+  it("starts without limits on an Agent whose own limits refuse them, and keeps asking other Agents", async () => {
+    const harness = setup();
+    harness.archestra.limitRefusals.set(AGENT_A, "A maximum duration of 3 hours is above this Agent's 1");
+    harness.archestra.script(AGENT_A, { end: "failed", statusReason: "Budget exceeded" });
+    harness.archestra.script(AGENT_B, { end: "completed", files: { "review.json": reviewJson() } });
+    const result = await run(harness.context("pull_request", prEvent(harness.github)));
+    expect(result.status).toBe("success");
+    // A refused the limits and started without them; B was still asked for them.
+    expect(harness.archestra.starts.map((start) => [start.agentId, start.limits !== undefined])).toEqual([
+      [AGENT_A, true],
+      [AGENT_A, false],
+      [AGENT_B, true],
+    ]);
+  });
+
   it("skips drafts, [WIP] titles, forks and bot authors", async () => {
     for (const change of [
       (h: ReturnType<typeof setup>) => {

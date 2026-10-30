@@ -41271,9 +41271,11 @@ var ArchestraClient = class {
     try {
       data = await this.call(RUN_TOOLS.start, limits ? { ...args, limits } : args, "start run");
     } catch (error63) {
-      const rejectedLimits = limits !== null && error63 instanceof ArchestraApiError && error63.kind === "tool" && /unrecognized key.*\blimits\b/i.test(error63.detail);
-      if (!rejectedLimits) throw error63;
-      this.limitsSupported = false;
+      const toolError = limits !== null && error63 instanceof ArchestraApiError && error63.kind === "tool";
+      const rejectedLimits = toolError && /unrecognized key.*\blimits\b/i.test(error63.detail);
+      const refusedLimits = toolError && /is above this Agent's|sizes its runs with explicit resources/i.test(error63.detail);
+      if (!rejectedLimits && !refusedLimits) throw error63;
+      if (rejectedLimits) this.limitsSupported = false;
       data = await this.call(RUN_TOOLS.start, args, "start run");
     }
     const result = parse3(StartResultSchema, data, "start run");
