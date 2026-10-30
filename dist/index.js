@@ -49132,7 +49132,7 @@ async function reviewCommentIds(gh, repo, pr, reviewId) {
 
 // src/modes/review.ts
 var VERDICT_WORDS = { approve: "approved", comment: "commented", request_changes: "changes requested" };
-var REVIEW_RUN_LIMITS = { tier: "M", idleTimeoutMinutes: 10, maxDurationHours: 3 };
+var REVIEW_RUN_LIMITS = { tier: "S", idleTimeoutMinutes: 10, maxDurationHours: 1 };
 async function runReview(ctx, prNumber) {
   const { gh, repo, inputs, log } = ctx;
   const pr = await loadPullRequest(gh, repo, prNumber);
