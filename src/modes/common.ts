@@ -335,6 +335,16 @@ export function progressReporter(ctx: ActionContext, pr: PullRequestInfo, total:
         true,
       );
     },
+    largerSize: (limits) => {
+      shown = "";
+      return stepProgress(
+        ctx,
+        pr,
+        `the run ran out of memory; trying the same agent again with at least ${limits.minMemoryGib} GiB of memory`,
+        null,
+        true,
+      );
+    },
     next: () => {
       shown = "";
       return stepProgress(ctx, pr, "the run failed; moving to the next agent", null, true);

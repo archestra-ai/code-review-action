@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.9.0 (2026-10-31)
+
+- A run killed for memory (`pod.oom_killed`, or "out of memory" in the reason of a deployment without failure codes) is tried again at once on the same agent with more memory than it had: one GiB above half the memory limit the reason names, which is the next tier up, or twice the memory the request implied when the reason names none. At most twice per agent, and only while the gateway puts the retry on a different tier than the one it killed; an Agent with no tier that large refuses the request, which ends that agent's attempts. Before, the failure went to the next agent, sized the same, which died the same way.
+- New `min-cpu` and `min-memory-gib` inputs for a repository whose checks need more than the smallest tier with two CPUs.
+- Each attempt records the name of the tier its run got; the attempts table and the comment's history show it next to the run link.
+
 ## 0.8.0 (2026-10-31)
 
 - A review asks for the smallest runtime tier with at least two CPUs (`min_cpu: 2`) instead of a tier named `S`: organizations name their tiers themselves now. An Agent none of whose allowed tiers has two CPUs refuses the request, and that run starts with the Agent's own limits, as before.

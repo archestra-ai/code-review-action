@@ -807,6 +807,7 @@ describe("job history", () => {
     runId: "run-1",
     runUrl: "https://archestra.example/runs/run-1",
     continued: false,
+    tier: null,
     result: "completed",
     reason: "completed",
     source: null,
@@ -860,7 +861,7 @@ describe("job history", () => {
   });
 
   it("reads the attempts of a comment written before the history as its one job", () => {
-    const { continued: _new, ...old } = attempt();
+    const { continued: _new, tier: _tier, ...old } = attempt();
     const legacy = {
       ...emptyState("main"),
       attempts: [old],

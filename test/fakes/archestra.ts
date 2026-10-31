@@ -43,6 +43,8 @@ interface FakeRun {
   runId: string;
   agentId: string;
   owner: string;
+  /** The tier the first turn got; a continuation keeps it. */
+  tier: string;
   turns: FakeTurn[];
   files: Record<string, string>;
   /** get_agent_run calls that still show the turn before the last continuation. */
@@ -62,6 +64,17 @@ export interface RecordedStart {
   /** The `limits` argument of a start, when the caller sent one. */
   limits?: unknown;
 }
+
+/** The tiers a new organization starts with: name, CPUs and the memory that follows (2 GiB per CPU). */
+const TIERS = [
+  { name: "S", cpu: 2, memoryGib: 4 },
+  { name: "M", cpu: 4, memoryGib: 8 },
+  { name: "L", cpu: 6, memoryGib: 12 },
+] as const;
+type TierName = (typeof TIERS)[number]["name"];
+const rank = (name: string) => TIERS.findIndex((tier) => tier.name === name);
+const describe = (tier: (typeof TIERS)[number]) =>
+  `${tier.name} (${tier.cpu} CPU, ${tier.memoryGib} GiB (${tier.memoryGib * 2} GiB limit))`;
 
 const TOOL_NAMES = [
   "start_agent_run",
@@ -94,6 +107,10 @@ export class FakeArchestra {
   rejectLimits = false;
   /** Agents whose own limits refuse a request, with the platform's message. */
   readonly limitRefusals = new Map<string, string>();
+  /** An Agent's default tier; M when unset, as on the platform. */
+  readonly agentTiers = new Map<string, TierName>();
+  /** An Agent's scaleup tier, the largest a run may take; its default tier when unset. */
+  readonly maxTiers = new Map<string, TierName>();
   readonly credentials: Array<{ agentId: string; key: string; valueLength: number }> = [];
   readonly writes: Array<{ runId: string; path: string; turn: number }> = [];
   /** Every JSON-RPC method and tool name, in order. */
@@ -129,6 +146,7 @@ export class FakeArchestra {
       runId,
       agentId,
       owner,
+      tier: this.agentTiers.get(agentId) ?? "M",
       turns: [
         {
           state: "completed",
@@ -280,6 +298,37 @@ export class FakeArchestra {
     }
     const refusal = this.limitRefusals.get(agentId);
     if (refusal && args.limits !== undefined) return toolError(refusal);
+    // The platform's choice: a tier by name, or the smallest tier up to the
+    // Agent's scaleup tier with the CPU and memory asked for.
+    const request = (args.limits ?? {}) as { tier?: string; min_cpu?: number; min_memory_gib?: number };
+    const agentTier = this.agentTiers.get(agentId) ?? "M";
+    const maxTier = this.maxTiers.get(agentId) ?? agentTier;
+    const allowed = TIERS.slice(0, rank(maxTier) + 1);
+    const allowedSentence = `Tiers this Agent's runs may use: ${allowed.map(describe).join(", ")}.`;
+    let chosen: TierName = agentTier;
+    if (request.tier !== undefined) {
+      const named = TIERS.find((tier) => tier.name === request.tier);
+      if (!named) return toolError(`There is no tier named ${request.tier}. ${allowedSentence}`);
+      if (rank(named.name) > rank(maxTier)) {
+        return toolError(`Tier ${describe(named)} is above this Agent's scaleup tier ${maxTier}. ${allowedSentence}`);
+      }
+      chosen = named.name;
+    }
+    if (request.min_cpu !== undefined || request.min_memory_gib !== undefined) {
+      const fit = allowed.find(
+        (tier) => tier.cpu >= (request.min_cpu ?? 0) && tier.memoryGib >= (request.min_memory_gib ?? 0),
+      );
+      if (!fit) {
+        const need = [
+          request.min_cpu !== undefined ? `${request.min_cpu} CPU` : null,
+          request.min_memory_gib !== undefined ? `${request.min_memory_gib} GiB of memory` : null,
+        ]
+          .filter(Boolean)
+          .join(" and ");
+        return toolError(`No tier this Agent's runs may use has ${need}. ${allowedSentence}`);
+      }
+      chosen = fit.name;
+    }
     const script = this.scripts.get(agentId)?.shift();
     if (!script) return toolError("Agent not found");
     if ("start" in script) {
@@ -289,9 +338,25 @@ export class FakeArchestra {
     }
     const runId = `00000000-0000-4000-8000-${String(++this.counter).padStart(12, "0")}`;
     record.runId = runId;
-    const run: FakeRun = { runId, agentId, owner: caller, turns: [this.newTurn(script)], files: {}, lag: 0 };
+    const run: FakeRun = {
+      runId,
+      agentId,
+      owner: caller,
+      tier: chosen,
+      turns: [this.newTurn(script)],
+      files: {},
+      lag: 0,
+    };
     this.runs.set(runId, run);
-    return toolResult({ run: this.summary(run), run_url: `${this.origin}/chat/runs/${runId}`, next_step: "Wait." });
+    // The platform reports the limits the run got, with the tier by name.
+    const { min_cpu: _cpu, min_memory_gib: _memory, ...rest } = (args.limits ?? {}) as Record<string, unknown>;
+    const limits = { ...rest, tier: chosen };
+    return toolResult({
+      run: this.summary(run),
+      run_url: `${this.origin}/chat/runs/${runId}`,
+      limits,
+      next_step: "Wait.",
+    });
   }
 
   private get(caller: string, runId: string): ToolOutcome {
@@ -315,6 +380,7 @@ export class FakeArchestra {
     return toolResult({
       run: this.summary(run, shown),
       run_url: `${this.origin}/chat/runs/${runId}`,
+      limits: { tier: run.tier },
       requests: [],
       output: "",
       output_truncated: false,

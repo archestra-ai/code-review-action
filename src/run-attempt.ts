@@ -60,11 +60,13 @@ export async function executeAttempt<T>(p: {
   const startedAt = clock.now();
   let runId: string | null = null;
   let continued = false;
+  let tier: string | null = null;
   const record = (result: AttemptRecord["result"], reason: string, source: AttemptRecord["source"]): AttemptRecord => ({
     agentId: p.agentId,
     runId,
     runUrl: runId ? client.runUrl(runId) : null,
     continued,
+    tier,
     result,
     reason,
     source,
@@ -85,6 +87,7 @@ export async function executeAttempt<T>(p: {
   }
   runId = started.runId;
   continued = started.continued;
+  tier = started.limits?.tier ?? null;
   const liveRunId = runId;
   p.onLive(liveRunId);
   log.info(`Run on agent ${p.agentId}: ${client.runUrl(liveRunId)}`);
@@ -133,6 +136,8 @@ export async function executeAttempt<T>(p: {
       }
       continue;
     }
+    // A continued run reports its tier here, not on the start.
+    if (run.tier) tier = run.tier;
     if (run.state !== lastState) {
       log.info(`Run ${liveRunId}: ${run.state}`);
       lastState = run.state;
@@ -323,6 +328,7 @@ export async function continueRun(p: {
       runUrl: previous.runUrl,
       previousTurnCreatedAt: status === "continued" ? previous.turnCreatedAt : null,
       continued: true,
+      limits: null,
     };
   }
 }

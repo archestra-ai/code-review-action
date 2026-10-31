@@ -156,7 +156,7 @@ Create an MCP gateway in Archestra (e.g. `https://<your-archestra>/v1/mcp/code-r
 - `start_agent_run`, `get_agent_run`, `steer_agent_run`, `cancel_agent_run`
 - `read_workspace_file`, `write_workspace_file`, `transfer_credential`, `delete_workspace`
 
-A review asks for the smallest runtime tier the Agent may use that has at least two CPUs (`min_cpu: 2`), a 10-minute idle timeout and a 1-hour maximum duration; a deployment that predates run limits ignores or rejects the argument and gives the Agent's defaults instead. An Agent whose own limits are lower, or none of whose tiers fits (no tier up to its scaleup tier has two CPUs), refuses them; that run then starts with the Agent's own limits. Once the review is complete, posted or not, the action deletes the workspaces of every run it started, so their volumes do not stay reserved until they expire. The next review of the pull request receives the previous findings as an input file and clones again, and so does a `/archestra fix` after a review: it starts a fresh run on the review's agent.
+A review asks for the smallest runtime tier the Agent may use that has at least two CPUs (`min_cpu: 2`, or the `min-cpu` and `min-memory-gib` inputs), a 10-minute idle timeout and a 1-hour maximum duration; a deployment that predates run limits ignores or rejects the argument and gives the Agent's defaults instead. An Agent whose own limits are lower, or none of whose tiers fits (no tier up to its scaleup tier has two CPUs), refuses them; that run then starts with the Agent's own limits. A run killed for memory asked for a container too small for its checks, so the same agent is tried again at once with more memory than that run had (one GiB above half the limit it hit, which is the next tier up), at most twice and only when the gateway reports the tier each run got; an Agent with no larger tier refuses the request, which ends that agent's attempts, and the next agent is tried. Once the review is complete, posted or not, the action deletes the workspaces of every run it started, so their volumes do not stay reserved until they expire. The next review of the pull request receives the previous findings as an input file and clones again, and so does a `/archestra fix` after a review: it starts a fresh run on the review's agent.
 
 If Guardrails is enabled, configure it to allow external client connections from the action.
 
@@ -227,6 +227,8 @@ To allow agents to push fixes and trigger follow-up CI runs:
 | `fix-timeout-minutes`     | `45`                  | Timeout per fix or CI triage attempt.                                                                                                                |
 | `ci-rerun`                | `false`               | Automatically re-run failed jobs classified as flaky.                                                                                                |
 | `incremental-review`      | `true`                | Give a re-review the previous findings, so it reports what was fixed. The previous workspace is deleted after each review; a re-review clones again. |
+| `min-cpu`                 | `2`                   | CPUs a review asks for: the smallest runtime tier the Agent may use with at least this many.                                                         |
+| `min-memory-gib`          | `""`                  | GiB of memory a review asks for, with the same effect. Set it for a repository whose checks need more than the smallest tier holds.                  |
 
 ### Outputs
 
@@ -267,6 +269,7 @@ pull_request     ──► action ──► start_agent_run ──► runtime wr
 ### Reliability & Failover
 
 - **Temporary Failures** (HTTP 429/5xx, timeouts, network interruptions): Retried on the same agent up to `retries` times.
+- **Out of Memory** (`pod.oom_killed`): Tried again on the same agent with more memory than the killed run had, at most twice; the attempts table and the comment's history name the tier of each run.
 - **Permanent Failures** (agent unavailable, runtime errors, execution timeouts): Fails over to the next agent in the list.
 - **Fatal Errors** (invalid gateway credentials, missing required tools): Execution halts immediately.
 

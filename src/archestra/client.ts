@@ -55,14 +55,24 @@ const RunSummarySchema = z.object({
   state_changed_at: z.string().nullish(),
 });
 
+/** The limits a run got, as the gateway reports them on a start. */
+const RunLimitsSchema = z.object({
+  tier: z.string().nullish(),
+  idle_timeout_minutes: z.number().nullish(),
+  max_duration_hours: z.number().nullish(),
+  max_cost_usd: z.number().nullish(),
+});
+
 const StartResultSchema = z.object({
   run: RunSummarySchema,
   run_url: z.string().nullish(),
+  limits: RunLimitsSchema.nullish(),
 });
 
 const GetResultSchema = z.object({
   run: RunSummarySchema,
   run_url: z.string().nullish(),
+  limits: RunLimitsSchema.nullish(),
   workspace: z
     .object({
       state: z.string(),
@@ -95,6 +105,8 @@ export interface AgentRun {
   /** When the current turn was created. A continuation changes it. */
   turnCreatedAt: string | null;
   runUrl: string | null;
+  /** The name of the tier the run got, when the gateway reports it. */
+  tier: string | null;
   workspace: {
     state: string;
     retainedUntil: string | null;
@@ -111,6 +123,12 @@ export interface StartedRun {
   previousTurnCreatedAt: string | null;
   /** True when the run continued the workspace of an earlier run. */
   continued: boolean;
+  /**
+   * The limits the run got: what the gateway reported (its tier by name),
+   * else the request when the gateway accepted it. Null when the run took the
+   * Agent's own limits without saying which, or continued an earlier run.
+   */
+  limits: RunLimits | null;
 }
 
 export interface ArchestraClientOptions {
@@ -158,7 +176,13 @@ export class ArchestraClient {
 
   async startRun(
     agentId: string,
-    body: { message: string; attachments: Attachment[]; limits?: RunLimits },
+    body: {
+      message: string;
+      attachments: Attachment[];
+      limits?: RunLimits;
+      /** Fail instead of starting with the Agent's own limits when it refuses the request. */
+      requireLimits?: boolean;
+    },
   ): Promise<StartedRun> {
     const args = {
       agent_id: agentId,
@@ -166,6 +190,16 @@ export class ArchestraClient {
       ...(body.attachments.length > 0 ? { attachments: body.attachments } : {}),
     };
     const limits = this.limitsSupported && body.limits ? runLimitsArgs(body.limits) : null;
+    // A retry with more memory after a memory kill is worth running only at that size: a
+    // deployment that cannot take the request would run the Agent's own size again.
+    if (body.requireLimits && limits === null) {
+      throw new ArchestraApiError(
+        "start run",
+        "response",
+        "the gateway does not take run limits, so the run cannot ask for more memory",
+      );
+    }
+    let applied = limits !== null;
     let data: Record<string, unknown>;
     try {
       data = await this.call(RUN_TOOLS.start, limits ? { ...args, limits } : args, "start run");
@@ -184,17 +218,29 @@ export class ArchestraClient {
           error.detail,
         );
       if (!rejectedLimits && !refusedLimits) throw error;
+      if (body.requireLimits) throw error;
       if (rejectedLimits) this.limitsSupported = false;
+      applied = false;
       data = await this.call(RUN_TOOLS.start, args, "start run");
     }
     const result = parse(StartResultSchema, data, "start run");
     this.remember(result.run.run_id, result.run_url);
+    const reported = result.limits
+      ? {
+          // Organizations name their tiers; the saved comment state holds 100 characters of it.
+          ...(result.limits.tier ? { tier: result.limits.tier.slice(0, 100) } : {}),
+          ...(result.limits.idle_timeout_minutes ? { idleTimeoutMinutes: result.limits.idle_timeout_minutes } : {}),
+          ...(result.limits.max_duration_hours ? { maxDurationHours: result.limits.max_duration_hours } : {}),
+          ...(result.limits.max_cost_usd ? { maxCostUsd: result.limits.max_cost_usd } : {}),
+        }
+      : null;
     return {
       runId: result.run.run_id,
       state: result.run.state,
       runUrl: result.run_url ?? null,
       previousTurnCreatedAt: null,
       continued: false,
+      limits: reported ?? (applied && body.limits ? body.limits : null),
     };
   }
 
@@ -210,6 +256,7 @@ export class ArchestraClient {
       failure: run.failure ?? null,
       turnCreatedAt: run.created_at ?? null,
       runUrl: result.run_url ?? null,
+      tier: result.limits?.tier ? result.limits.tier.slice(0, 100) : null,
       workspace: workspace
         ? {
             state: workspace.state,

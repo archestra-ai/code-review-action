@@ -1,5 +1,5 @@
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
-import { ArchestraClient, type StartedRun } from "../src/archestra/client";
+import { ArchestraClient, type RunLimits, type StartedRun } from "../src/archestra/client";
 import { type AttemptOutcome, orderAgents, runWithFallback } from "../src/attempts";
 import { ReviewResultSchema } from "../src/contracts";
 import { continueRun, executeAttempt, readContract } from "../src/run-attempt";
@@ -35,6 +35,7 @@ function scripted(results: Array<"ok" | "retriable" | "non_retriable" | "fatal">
       runId: null,
       runUrl: null,
       continued: false,
+      tier: null,
       result: result === "ok" ? ("completed" as const) : result,
       reason: result,
       source: null,
@@ -62,6 +63,84 @@ describe("runWithFallback", () => {
     expect(calls).toEqual(["a", "a"]);
     expect(clock.sleeps).toEqual([30_000]);
     expect(result).toMatchObject({ ok: true, value: "a", agentId: "a" });
+  });
+
+  it("tries the same runtime with more memory after a memory kill, then the next runtime", async () => {
+    const clock = new FakeClock();
+    const calls: Array<[string, number | null]> = [];
+    // The gateway's answer to each size: the tier it lands on.
+    const tiers = (limits: RunLimits | null) =>
+      limits?.minMemoryGib === undefined ? "S" : limits.minMemoryGib <= 8 ? "M" : "L";
+    const attempt = async (agentId: string, info: { limits: RunLimits | null }): Promise<AttemptOutcome<string>> => {
+      calls.push([agentId, info.limits?.minMemoryGib ?? null]);
+      const record = {
+        agentId,
+        runId: null,
+        runUrl: null,
+        continued: false,
+        tier: tiers(info.limits),
+        result: "non_retriable" as const,
+        reason: "pod.oom_killed: The run ran out of memory. The container reached its memory limit of 8 GiB.",
+        source: "failure-field" as const,
+        durationMs: 0,
+      };
+      if (agentId === "b") return { ok: true, value: agentId, record: { ...record, result: "completed" } };
+      return {
+        ok: false,
+        classification: { class: "non_retriable", reason: record.reason, source: "failure-field", outOfMemory: true },
+        record,
+      };
+    };
+    const largerLimits = (previous: RunLimits | null) => ({ minMemoryGib: (previous?.minMemoryGib ?? 4) * 2 });
+    const limits = { minCpu: 2 };
+    const result = await runWithFallback({
+      ...base(clock),
+      retries: 1,
+      maxFallbacks: 2,
+      limits,
+      largerLimits,
+      attempt,
+    });
+    // Twice more memory on the first runtime, at once; the next runtime starts over.
+    expect(calls).toEqual([
+      ["a", null],
+      ["a", 8],
+      ["a", 16],
+      ["b", null],
+    ]);
+    expect(clock.sleeps).toEqual([]);
+    expect(result).toMatchObject({ ok: true, agentId: "b" });
+    expect(result.attempts.map((attempt) => attempt.tier)).toEqual(["S", "M", "L", "S"]);
+
+    // A retry the gateway put on the tier it just killed has nowhere larger to go.
+    calls.length = 0;
+    const stuck = (agentId: string, info: { limits: RunLimits | null }) =>
+      attempt(agentId, info).then((outcome) => ({ ...outcome, record: { ...outcome.record, tier: "M" } }));
+    await runWithFallback({ ...base(clock), retries: 1, maxFallbacks: 2, limits, largerLimits, attempt: stuck });
+    expect(calls).toEqual([
+      ["a", null],
+      ["a", 8],
+      ["b", null],
+    ]);
+
+    // A gateway that does not say which tier a run got (it accepted the limits
+    // without applying them) gives nothing to climb from: the next runtime.
+    calls.length = 0;
+    const unsized = (agentId: string, info: { limits: RunLimits | null }) =>
+      attempt(agentId, info).then((outcome) => ({ ...outcome, record: { ...outcome.record, tier: null } }));
+    await runWithFallback({ ...base(clock), retries: 1, maxFallbacks: 2, limits, largerLimits, attempt: unsized });
+    expect(calls).toEqual([
+      ["a", null],
+      ["b", null],
+    ]);
+
+    // Without a size policy a memory kill goes to the next runtime, as any other failure.
+    calls.length = 0;
+    await runWithFallback({ ...base(clock), retries: 1, maxFallbacks: 2, limits, attempt });
+    expect(calls).toEqual([
+      ["a", null],
+      ["b", null],
+    ]);
   });
 
   it("goes to the next runtime after a non-retriable failure", async () => {

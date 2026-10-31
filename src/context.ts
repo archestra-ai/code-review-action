@@ -5,6 +5,7 @@ import { type AttemptRecord, type FallbackResult, type ProgressReporter, runWith
 import type { Octokit } from "./github/octokit";
 import type { Inputs } from "./inputs";
 import { type AttemptValue, type Clock, continueRun, executeAttempt, readContract } from "./run-attempt";
+import { largerLimits } from "./sizes";
 import type { SavedJob } from "./stopped";
 import type { Attachment, Logger, RepoRef } from "./util";
 
@@ -150,7 +151,9 @@ export async function launch<T>(
     sleep: ctx.clock.sleep,
     log: ctx.log,
     progress: p.progress,
-    attempt: (agentId) =>
+    limits: p.limits ?? null,
+    largerLimits,
+    attempt: (agentId, info) =>
       executeAttempt<T>({
         client: ctx.archestra,
         agentId,
@@ -174,7 +177,11 @@ export async function launch<T>(
               "GitHub token of the code review action",
             );
           }
-          if (continueFrom && continueFrom.agentId === agentId) {
+          // After a memory kill the same runtime is tried with more memory. That
+          // size is the point of the attempt, so it starts a fresh run (a continued
+          // workspace keeps its first turn's size) and an Agent that refuses it ends it.
+          const escalated = info.escalations > 0;
+          if (continueFrom && continueFrom.agentId === agentId && !escalated) {
             const continued = await continueRun({
               client: ctx.archestra,
               runId: continueFrom.runId,
@@ -192,7 +199,8 @@ export async function launch<T>(
           return ctx.archestra.startRun(agentId, {
             message: p.message,
             attachments: p.attachments,
-            ...(p.limits ? { limits: p.limits } : {}),
+            ...(info.limits ? { limits: info.limits } : {}),
+            ...(escalated ? { requireLimits: true } : {}),
           });
         },
       }),

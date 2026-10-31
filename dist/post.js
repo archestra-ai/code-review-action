@@ -40346,13 +40346,21 @@ var RunSummarySchema = external_exports.object({
   created_at: external_exports.string().nullish(),
   state_changed_at: external_exports.string().nullish()
 });
+var RunLimitsSchema = external_exports.object({
+  tier: external_exports.string().nullish(),
+  idle_timeout_minutes: external_exports.number().nullish(),
+  max_duration_hours: external_exports.number().nullish(),
+  max_cost_usd: external_exports.number().nullish()
+});
 var StartResultSchema = external_exports.object({
   run: RunSummarySchema,
-  run_url: external_exports.string().nullish()
+  run_url: external_exports.string().nullish(),
+  limits: RunLimitsSchema.nullish()
 });
 var GetResultSchema = external_exports.object({
   run: RunSummarySchema,
   run_url: external_exports.string().nullish(),
+  limits: RunLimitsSchema.nullish(),
   workspace: external_exports.object({
     state: external_exports.string(),
     retained_until: external_exports.string().nullish(),
@@ -40398,6 +40406,14 @@ var ArchestraClient = class {
       ...body.attachments.length > 0 ? { attachments: body.attachments } : {}
     };
     const limits = this.limitsSupported && body.limits ? runLimitsArgs(body.limits) : null;
+    if (body.requireLimits && limits === null) {
+      throw new ArchestraApiError(
+        "start run",
+        "response",
+        "the gateway does not take run limits, so the run cannot ask for more memory"
+      );
+    }
+    let applied = limits !== null;
     let data;
     try {
       data = await this.call(RUN_TOOLS.start, limits ? { ...args, limits } : args, "start run");
@@ -40408,17 +40424,27 @@ var ArchestraClient = class {
         error63.detail
       );
       if (!rejectedLimits && !refusedLimits) throw error63;
+      if (body.requireLimits) throw error63;
       if (rejectedLimits) this.limitsSupported = false;
+      applied = false;
       data = await this.call(RUN_TOOLS.start, args, "start run");
     }
     const result = parse3(StartResultSchema, data, "start run");
     this.remember(result.run.run_id, result.run_url);
+    const reported = result.limits ? {
+      // Organizations name their tiers; the saved comment state holds 100 characters of it.
+      ...result.limits.tier ? { tier: result.limits.tier.slice(0, 100) } : {},
+      ...result.limits.idle_timeout_minutes ? { idleTimeoutMinutes: result.limits.idle_timeout_minutes } : {},
+      ...result.limits.max_duration_hours ? { maxDurationHours: result.limits.max_duration_hours } : {},
+      ...result.limits.max_cost_usd ? { maxCostUsd: result.limits.max_cost_usd } : {}
+    } : null;
     return {
       runId: result.run.run_id,
       state: result.run.state,
       runUrl: result.run_url ?? null,
       previousTurnCreatedAt: null,
-      continued: false
+      continued: false,
+      limits: reported ?? (applied && body.limits ? body.limits : null)
     };
   }
   async getRun(runId) {
@@ -40433,6 +40459,7 @@ var ArchestraClient = class {
       failure: run.failure ?? null,
       turnCreatedAt: run.created_at ?? null,
       runUrl: result.run_url ?? null,
+      tier: result.limits?.tier ? result.limits.tier.slice(0, 100) : null,
       workspace: workspace ? {
         state: workspace.state,
         retainedUntil: workspace.retained_until ?? null,
@@ -44979,7 +45006,9 @@ function readInputs(get, readFile) {
     fixTimeoutMs: integer2("fix-timeout-minutes", value("fix-timeout-minutes") || "45", 1, 360) * 6e4,
     ciRerun: boolean4("ci-rerun", value("ci-rerun") || "false"),
     maxAutoFixRounds,
-    incrementalReview: boolean4("incremental-review", value("incremental-review") || "true")
+    incrementalReview: boolean4("incremental-review", value("incremental-review") || "true"),
+    minCpu: value("min-cpu") ? integer2("min-cpu", value("min-cpu"), 1, 64) : null,
+    minMemoryGib: value("min-memory-gib") ? integer2("min-memory-gib", value("min-memory-gib"), 1, 512) : null
   };
 }
 function agentList(name, raw) {
@@ -45249,6 +45278,8 @@ var AttemptRecordSchema = external_exports.object({
   runUrl: external_exports.string().nullable(),
   /** True when the attempt continued the run of an earlier job. Records written before this field have false. */
   continued: external_exports.boolean().default(false),
+  /** The name of the tier the run got. Records written before this field have null. */
+  tier: external_exports.string().max(100).nullable().default(null),
   result: external_exports.enum(["completed", "retriable", "non_retriable", "fatal"]),
   reason: external_exports.string(),
   source: external_exports.enum(["api", "failure-field", "message-pattern", "state", "timeout", "contract"]).nullable(),
@@ -45768,10 +45799,10 @@ function historyTable(jobs) {
     const result = [job.outcome === null ? "did not complete" : cell(job.outcome, 200)];
     const [only] = job.attempts;
     if (job.attempts.length === 1 && only?.result === "completed") {
-      if (only.runUrl) result.push(`([run](${only.runUrl})${only.continued ? ", continued" : ""})`);
+      if (only.runUrl) result.push(`(${runLink(only)})`);
     } else if (job.attempts.length > 0) {
       const attempts = job.attempts.map(
-        (attempt, n) => `${n + 1}. \`${attempt.agentId.slice(0, 8)}\` ${attemptResult(attempt)}, ${formatDuration(attempt.durationMs)}${attempt.runUrl ? ` ([run](${attempt.runUrl}))` : ""}`
+        (attempt, n) => `${n + 1}. \`${attempt.agentId.slice(0, 8)}\` ${attemptResult(attempt)}, ${formatDuration(attempt.durationMs)}${attempt.runUrl ? ` (${runLink(attempt)})` : ""}`
       );
       result.push(`\xB7 ${job.attempts.length} attempts: ${attempts.join("; ")}`);
     }
@@ -45779,6 +45810,13 @@ function historyTable(jobs) {
     return `| ${index + 1} | ${formatTime(job.startedAt)} | ${what} | ${result.join(" ")} | ${duration3 === null ? "-" : formatDuration(duration3)} |`;
   });
   return ["| # | Started (UTC) | Job | Result | Duration |", "| --- | --- | --- | --- | --- |", ...rows].join("\n");
+}
+function runLink(attempt) {
+  const notes = [
+    attempt.continued ? "continued" : null,
+    attempt.tier ? `tier ${cell(attempt.tier, 100)}` : null
+  ].filter(Boolean);
+  return [`[run](${attempt.runUrl})`, ...notes].join(", ");
 }
 function attemptResult(attempt) {
   if (attempt.result === "completed") return "completed";

@@ -41215,13 +41215,21 @@ var RunSummarySchema = external_exports.object({
   created_at: external_exports.string().nullish(),
   state_changed_at: external_exports.string().nullish()
 });
+var RunLimitsSchema = external_exports.object({
+  tier: external_exports.string().nullish(),
+  idle_timeout_minutes: external_exports.number().nullish(),
+  max_duration_hours: external_exports.number().nullish(),
+  max_cost_usd: external_exports.number().nullish()
+});
 var StartResultSchema = external_exports.object({
   run: RunSummarySchema,
-  run_url: external_exports.string().nullish()
+  run_url: external_exports.string().nullish(),
+  limits: RunLimitsSchema.nullish()
 });
 var GetResultSchema = external_exports.object({
   run: RunSummarySchema,
   run_url: external_exports.string().nullish(),
+  limits: RunLimitsSchema.nullish(),
   workspace: external_exports.object({
     state: external_exports.string(),
     retained_until: external_exports.string().nullish(),
@@ -41267,6 +41275,14 @@ var ArchestraClient = class {
       ...body.attachments.length > 0 ? { attachments: body.attachments } : {}
     };
     const limits = this.limitsSupported && body.limits ? runLimitsArgs(body.limits) : null;
+    if (body.requireLimits && limits === null) {
+      throw new ArchestraApiError(
+        "start run",
+        "response",
+        "the gateway does not take run limits, so the run cannot ask for more memory"
+      );
+    }
+    let applied = limits !== null;
     let data;
     try {
       data = await this.call(RUN_TOOLS.start, limits ? { ...args, limits } : args, "start run");
@@ -41277,17 +41293,27 @@ var ArchestraClient = class {
         error63.detail
       );
       if (!rejectedLimits && !refusedLimits) throw error63;
+      if (body.requireLimits) throw error63;
       if (rejectedLimits) this.limitsSupported = false;
+      applied = false;
       data = await this.call(RUN_TOOLS.start, args, "start run");
     }
     const result = parse3(StartResultSchema, data, "start run");
     this.remember(result.run.run_id, result.run_url);
+    const reported = result.limits ? {
+      // Organizations name their tiers; the saved comment state holds 100 characters of it.
+      ...result.limits.tier ? { tier: result.limits.tier.slice(0, 100) } : {},
+      ...result.limits.idle_timeout_minutes ? { idleTimeoutMinutes: result.limits.idle_timeout_minutes } : {},
+      ...result.limits.max_duration_hours ? { maxDurationHours: result.limits.max_duration_hours } : {},
+      ...result.limits.max_cost_usd ? { maxCostUsd: result.limits.max_cost_usd } : {}
+    } : null;
     return {
       runId: result.run.run_id,
       state: result.run.state,
       runUrl: result.run_url ?? null,
       previousTurnCreatedAt: null,
-      continued: false
+      continued: false,
+      limits: reported ?? (applied && body.limits ? body.limits : null)
     };
   }
   async getRun(runId) {
@@ -41302,6 +41328,7 @@ var ArchestraClient = class {
       failure: run2.failure ?? null,
       turnCreatedAt: run2.created_at ?? null,
       runUrl: result.run_url ?? null,
+      tier: result.limits?.tier ? result.limits.tier.slice(0, 100) : null,
       workspace: workspace ? {
         state: workspace.state,
         retainedUntil: workspace.retained_until ?? null,
@@ -41636,22 +41663,27 @@ function orderAgents(agents, strategy, options) {
   return [...agents.slice(start), ...agents.slice(0, start)];
 }
 var DEFAULT_RETRY_DELAYS_MS = [3e4, 6e4];
+var MAX_MEMORY_ESCALATIONS = 2;
 async function runWithFallback(params) {
   const delays = params.retryDelaysMs ?? DEFAULT_RETRY_DELAYS_MS;
   const attempts = [];
   const runtimeCount = Math.min(params.agents.length, 1 + Math.max(0, params.maxFallbacks));
   for (let runtimeIndex = 0; runtimeIndex < runtimeCount; runtimeIndex++) {
     const agentId = params.agents[runtimeIndex];
-    for (let retry = 0; retry <= params.retries; retry++) {
+    let limits = params.limits ?? null;
+    let escalations = 0;
+    let killedTier = null;
+    let retry = 0;
+    while (retry <= params.retries) {
       if (params.now() >= params.deadline) {
         params.log.warning("Overall deadline reached. No more attempts.");
         return { ok: false, attempts, fatal: false, deadlineReached: true };
       }
       params.log.info(
-        `Attempt ${attempts.length + 1}: agent ${agentId} (runtime ${runtimeIndex + 1}/${runtimeCount}, retry ${retry}/${params.retries})`
+        `Attempt ${attempts.length + 1}: agent ${agentId} (runtime ${runtimeIndex + 1}/${runtimeCount}, retry ${retry}/${params.retries}${escalations > 0 ? `, with at least ${limits?.minMemoryGib} GiB of memory` : ""})`
       );
       await params.progress?.attempt(runtimeIndex, agentId);
-      const outcome = await params.attempt(agentId, { runtimeIndex, retry });
+      const outcome = await params.attempt(agentId, { runtimeIndex, retry, limits, escalations });
       attempts.push(outcome.record);
       if (outcome.ok) {
         return {
@@ -41670,6 +41702,19 @@ async function runWithFallback(params) {
       if (classification.class === "fatal") {
         return { ok: false, attempts, fatal: true, deadlineReached: false };
       }
+      const sized = outcome.record.tier !== null;
+      const sameTier = killedTier !== null && outcome.record.tier === killedTier;
+      const larger = classification.outOfMemory && params.largerLimits && escalations < MAX_MEMORY_ESCALATIONS && sized && !sameTier ? params.largerLimits(limits, classification.reason) : null;
+      if (larger) {
+        escalations++;
+        killedTier = outcome.record.tier;
+        limits = larger;
+        params.log.info(
+          `The run ran out of memory${outcome.record.tier ? ` on tier ${outcome.record.tier}` : ""}. Trying the same runtime with at least ${larger.minMemoryGib} GiB of memory.`
+        );
+        await params.progress?.largerSize?.(larger);
+        continue;
+      }
       if (classification.class === "non_retriable") {
         if (runtimeIndex + 1 < runtimeCount) await params.progress?.next();
         break;
@@ -41682,6 +41727,7 @@ async function runWithFallback(params) {
       } else if (runtimeIndex + 1 < runtimeCount) {
         await params.progress?.next();
       }
+      retry += 1;
     }
   }
   return { ok: false, attempts, fatal: false, deadlineReached: false };
@@ -41751,7 +41797,8 @@ function classifyRun(run2) {
         return {
           class: run2.failure.retriable ? "retriable" : "non_retriable",
           reason: `${run2.failure.code}: ${reason}`,
-          source: "failure-field"
+          source: "failure-field",
+          ...run2.failure.code === "pod.oom_killed" ? { outOfMemory: true } : {}
         };
       }
       return classifyFailureMessage(reason);
@@ -41784,7 +41831,8 @@ var FAILURE_MESSAGE_PATTERNS = [
   {
     pattern: /OOMKilled|out of memory/i,
     class: "non_retriable",
-    label: "out of memory"
+    label: "out of memory",
+    outOfMemory: true
   },
   {
     pattern: /guardrail|invalid .*policy|policy .*invalid/i,
@@ -41830,7 +41878,8 @@ function classifyFailureMessage(message) {
       return {
         class: row.class,
         reason: `${row.label}: ${message}`,
-        source: "message-pattern"
+        source: "message-pattern",
+        ...row.outOfMemory ? { outOfMemory: true } : {}
       };
     }
   }
@@ -41956,11 +42005,13 @@ async function executeAttempt(p) {
   const startedAt = clock.now();
   let runId = null;
   let continued = false;
+  let tier = null;
   const record2 = (result, reason, source) => ({
     agentId: p.agentId,
     runId,
     runUrl: runId ? client.runUrl(runId) : null,
     continued,
+    tier,
     result,
     reason,
     source,
@@ -41980,6 +42031,7 @@ async function executeAttempt(p) {
   }
   runId = started.runId;
   continued = started.continued;
+  tier = started.limits?.tier ?? null;
   const liveRunId = runId;
   p.onLive(liveRunId);
   log.info(`Run on agent ${p.agentId}: ${client.runUrl(liveRunId)}`);
@@ -42026,6 +42078,7 @@ async function executeAttempt(p) {
       }
       continue;
     }
+    if (run2.tier) tier = run2.tier;
     if (run2.state !== lastState) {
       log.info(`Run ${liveRunId}: ${run2.state}`);
       lastState = run2.state;
@@ -42175,7 +42228,8 @@ ${names.map((name) => `- ${WORKSPACE_ROOT}/${name}`).join("\n")}` : p.message;
       state: "submitted",
       runUrl: previous.runUrl,
       previousTurnCreatedAt: status === "continued" ? previous.turnCreatedAt : null,
-      continued: true
+      continued: true,
+      limits: null
     };
   }
 }
@@ -42186,6 +42240,22 @@ async function cancelQuietly(client, runId, log) {
   } catch (error63) {
     log.warning(`Could not cancel run ${runId}: ${errorMessage(error63)}`);
   }
+}
+
+// src/sizes.ts
+function memoryLimitGib(reason) {
+  const match = reason.match(/memory limit(?: of)? (\d+(?:\.\d+)?) ?(GiB|Gi|MiB|Mi)\b/i);
+  if (!match) return null;
+  const amount = Number(match[1]);
+  return /^Mi/i.test(match[2]) ? amount / 1024 : amount;
+}
+var DEFAULT_REQUEST_GIB = 4;
+function largerLimits(previous, reason) {
+  const limitGib = memoryLimitGib(reason);
+  const implied = previous?.minMemoryGib ?? (previous?.minCpu ? previous.minCpu * 2 : DEFAULT_REQUEST_GIB);
+  const minMemoryGib = limitGib !== null ? Math.floor(limitGib / 2) + 1 : implied * 2;
+  const { tier: _tier, ...rest } = previous ?? {};
+  return { ...rest, minMemoryGib: Math.max(minMemoryGib, (previous?.minMemoryGib ?? 0) + 1) };
 }
 
 // src/context.ts
@@ -42231,7 +42301,9 @@ async function launch(ctx, p) {
     sleep: ctx.clock.sleep,
     log: ctx.log,
     progress: p.progress,
-    attempt: (agentId) => executeAttempt({
+    limits: p.limits ?? null,
+    largerLimits,
+    attempt: (agentId, info2) => executeAttempt({
       client: ctx.archestra,
       agentId,
       timeoutMs: p.timeoutMs,
@@ -42254,7 +42326,8 @@ async function launch(ctx, p) {
             "GitHub token of the code review action"
           );
         }
-        if (continueFrom && continueFrom.agentId === agentId) {
+        const escalated = info2.escalations > 0;
+        if (continueFrom && continueFrom.agentId === agentId && !escalated) {
           const continued = await continueRun({
             client: ctx.archestra,
             runId: continueFrom.runId,
@@ -42272,7 +42345,8 @@ async function launch(ctx, p) {
         return ctx.archestra.startRun(agentId, {
           message: p.message,
           attachments: p.attachments,
-          ...p.limits ? { limits: p.limits } : {}
+          ...info2.limits ? { limits: info2.limits } : {},
+          ...escalated ? { requireLimits: true } : {}
         });
       }
     })
@@ -46635,7 +46709,9 @@ function readInputs(get, readFile) {
     fixTimeoutMs: integer2("fix-timeout-minutes", value("fix-timeout-minutes") || "45", 1, 360) * 6e4,
     ciRerun: boolean4("ci-rerun", value("ci-rerun") || "false"),
     maxAutoFixRounds,
-    incrementalReview: boolean4("incremental-review", value("incremental-review") || "true")
+    incrementalReview: boolean4("incremental-review", value("incremental-review") || "true"),
+    minCpu: value("min-cpu") ? integer2("min-cpu", value("min-cpu"), 1, 64) : null,
+    minMemoryGib: value("min-memory-gib") ? integer2("min-memory-gib", value("min-memory-gib"), 1, 512) : null
   };
 }
 function agentList(name, raw) {
@@ -46962,6 +47038,8 @@ var AttemptRecordSchema = external_exports.object({
   runUrl: external_exports.string().nullable(),
   /** True when the attempt continued the run of an earlier job. Records written before this field have false. */
   continued: external_exports.boolean().default(false),
+  /** The name of the tier the run got. Records written before this field have null. */
+  tier: external_exports.string().max(100).nullable().default(null),
   result: external_exports.enum(["completed", "retriable", "non_retriable", "fatal"]),
   reason: external_exports.string(),
   source: external_exports.enum(["api", "failure-field", "message-pattern", "state", "timeout", "contract"]).nullable(),
@@ -47511,10 +47589,10 @@ function historyTable(jobs) {
     const result = [job.outcome === null ? "did not complete" : cell(job.outcome, 200)];
     const [only] = job.attempts;
     if (job.attempts.length === 1 && only?.result === "completed") {
-      if (only.runUrl) result.push(`([run](${only.runUrl})${only.continued ? ", continued" : ""})`);
+      if (only.runUrl) result.push(`(${runLink(only)})`);
     } else if (job.attempts.length > 0) {
       const attempts = job.attempts.map(
-        (attempt, n) => `${n + 1}. \`${attempt.agentId.slice(0, 8)}\` ${attemptResult(attempt)}, ${formatDuration(attempt.durationMs)}${attempt.runUrl ? ` ([run](${attempt.runUrl}))` : ""}`
+        (attempt, n) => `${n + 1}. \`${attempt.agentId.slice(0, 8)}\` ${attemptResult(attempt)}, ${formatDuration(attempt.durationMs)}${attempt.runUrl ? ` (${runLink(attempt)})` : ""}`
       );
       result.push(`\xB7 ${job.attempts.length} attempts: ${attempts.join("; ")}`);
     }
@@ -47530,8 +47608,14 @@ function attemptsTable(attempts) {
   return ["| # | Agent | Run | Result | Duration |", "| --- | --- | --- | --- | --- |", ...rows].join("\n");
 }
 function runCell(attempt) {
-  if (!attempt.runUrl) return "-";
-  return `[run](${attempt.runUrl})${attempt.continued ? " (continued)" : ""}`;
+  return attempt.runUrl ? runLink(attempt) : "-";
+}
+function runLink(attempt) {
+  const notes = [
+    attempt.continued ? "continued" : null,
+    attempt.tier ? `tier ${cell(attempt.tier, 100)}` : null
+  ].filter(Boolean);
+  return [`[run](${attempt.runUrl})`, ...notes].join(", ");
 }
 function attemptResult(attempt) {
   if (attempt.result === "completed") return "completed";
@@ -47867,6 +47951,16 @@ function progressReporter(ctx, pr, total) {
         ctx,
         pr,
         `the run failed; trying the same agent again in ${Math.round(delayMs / 1e3)} s`,
+        null,
+        true
+      );
+    },
+    largerSize: (limits) => {
+      shown = "";
+      return stepProgress(
+        ctx,
+        pr,
+        `the run ran out of memory; trying the same agent again with at least ${limits.minMemoryGib} GiB of memory`,
         null,
         true
       );
@@ -49252,7 +49346,11 @@ async function reviewInProgress(ctx, p) {
     attachments,
     contract: CONTRACTS.review,
     timeoutMs: inputs.timeoutMs,
-    limits: REVIEW_RUN_LIMITS,
+    limits: {
+      ...REVIEW_RUN_LIMITS,
+      ...inputs.minCpu ? { minCpu: inputs.minCpu } : {},
+      ...inputs.minMemoryGib ? { minMemoryGib: inputs.minMemoryGib } : {}
+    },
     // A fix leaves a short-lived App token in the actor's CODE_REVIEW_GITHUB_TOKEN; a
     // private repository needs a fresh read-only token for the review.
     credentialToken: inputs.cloneToken || null,
