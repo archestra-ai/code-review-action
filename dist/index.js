@@ -41229,6 +41229,7 @@ var StartResultSchema = external_exports.object({
 var GetResultSchema = external_exports.object({
   run: RunSummarySchema,
   run_url: external_exports.string().nullish(),
+  limits: RunLimitsSchema.nullish(),
   workspace: external_exports.object({
     state: external_exports.string(),
     retained_until: external_exports.string().nullish(),
@@ -41327,6 +41328,7 @@ var ArchestraClient = class {
       failure: run2.failure ?? null,
       turnCreatedAt: run2.created_at ?? null,
       runUrl: result.run_url ?? null,
+      tier: result.limits?.tier ? result.limits.tier.slice(0, 100) : null,
       workspace: workspace ? {
         state: workspace.state,
         retainedUntil: workspace.retained_until ?? null,
@@ -42076,6 +42078,7 @@ async function executeAttempt(p) {
       }
       continue;
     }
+    if (run2.tier) tier = run2.tier;
     if (run2.state !== lastState) {
       log.info(`Run ${liveRunId}: ${run2.state}`);
       lastState = run2.state;

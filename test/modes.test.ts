@@ -144,9 +144,10 @@ describe("review mode", () => {
       ["continue", undefined],
       ["start", 5],
     ]);
+    // The continued run's tier comes from get_agent_run; the fresh run's from its start.
     const job = parseState(harness.github.stickyBody()!)!.jobs.at(-1)!;
     expect(job.attempts.map((attempt) => [attempt.continued, attempt.tier, attempt.result])).toEqual([
-      [true, null, "non_retriable"],
+      [true, "S", "non_retriable"],
       [false, "M", "completed"],
     ]);
   });

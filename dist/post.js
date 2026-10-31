@@ -40360,6 +40360,7 @@ var StartResultSchema = external_exports.object({
 var GetResultSchema = external_exports.object({
   run: RunSummarySchema,
   run_url: external_exports.string().nullish(),
+  limits: RunLimitsSchema.nullish(),
   workspace: external_exports.object({
     state: external_exports.string(),
     retained_until: external_exports.string().nullish(),
@@ -40458,6 +40459,7 @@ var ArchestraClient = class {
       failure: run.failure ?? null,
       turnCreatedAt: run.created_at ?? null,
       runUrl: result.run_url ?? null,
+      tier: result.limits?.tier ? result.limits.tier.slice(0, 100) : null,
       workspace: workspace ? {
         state: workspace.state,
         retainedUntil: workspace.retained_until ?? null,

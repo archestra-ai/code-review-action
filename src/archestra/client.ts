@@ -72,6 +72,7 @@ const StartResultSchema = z.object({
 const GetResultSchema = z.object({
   run: RunSummarySchema,
   run_url: z.string().nullish(),
+  limits: RunLimitsSchema.nullish(),
   workspace: z
     .object({
       state: z.string(),
@@ -104,6 +105,8 @@ export interface AgentRun {
   /** When the current turn was created. A continuation changes it. */
   turnCreatedAt: string | null;
   runUrl: string | null;
+  /** The name of the tier the run got, when the gateway reports it. */
+  tier: string | null;
   workspace: {
     state: string;
     retainedUntil: string | null;
@@ -253,6 +256,7 @@ export class ArchestraClient {
       failure: run.failure ?? null,
       turnCreatedAt: run.created_at ?? null,
       runUrl: result.run_url ?? null,
+      tier: result.limits?.tier ? result.limits.tier.slice(0, 100) : null,
       workspace: workspace
         ? {
             state: workspace.state,

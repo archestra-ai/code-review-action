@@ -43,6 +43,8 @@ interface FakeRun {
   runId: string;
   agentId: string;
   owner: string;
+  /** The tier the first turn got; a continuation keeps it. */
+  tier: string;
   turns: FakeTurn[];
   files: Record<string, string>;
   /** get_agent_run calls that still show the turn before the last continuation. */
@@ -144,6 +146,7 @@ export class FakeArchestra {
       runId,
       agentId,
       owner,
+      tier: this.agentTiers.get(agentId) ?? "M",
       turns: [
         {
           state: "completed",
@@ -335,7 +338,15 @@ export class FakeArchestra {
     }
     const runId = `00000000-0000-4000-8000-${String(++this.counter).padStart(12, "0")}`;
     record.runId = runId;
-    const run: FakeRun = { runId, agentId, owner: caller, turns: [this.newTurn(script)], files: {}, lag: 0 };
+    const run: FakeRun = {
+      runId,
+      agentId,
+      owner: caller,
+      tier: chosen,
+      turns: [this.newTurn(script)],
+      files: {},
+      lag: 0,
+    };
     this.runs.set(runId, run);
     // The platform reports the limits the run got, with the tier by name.
     const { min_cpu: _cpu, min_memory_gib: _memory, ...rest } = (args.limits ?? {}) as Record<string, unknown>;
@@ -369,6 +380,7 @@ export class FakeArchestra {
     return toolResult({
       run: this.summary(run, shown),
       run_url: `${this.origin}/chat/runs/${runId}`,
+      limits: { tier: run.tier },
       requests: [],
       output: "",
       output_truncated: false,

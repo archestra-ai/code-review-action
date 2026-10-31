@@ -136,6 +136,8 @@ export async function executeAttempt<T>(p: {
       }
       continue;
     }
+    // A continued run reports its tier here, not on the start.
+    if (run.tier) tier = run.tier;
     if (run.state !== lastState) {
       log.info(`Run ${liveRunId}: ${run.state}`);
       lastState = run.state;
