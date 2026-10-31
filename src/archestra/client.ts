@@ -28,8 +28,12 @@ export const RUN_TOOLS = {
 
 /** Limits a run asks for, each at or below its Agent's own. */
 export interface RunLimits {
-  /** Container size: S, M or L. */
-  tier?: "S" | "M" | "L";
+  /** A runtime tier by the name the organization gave it. */
+  tier?: string;
+  /** CPUs the work needs: the smallest tier the Agent may use with at least this many. */
+  minCpu?: number;
+  /** GiB of memory the work needs, with the same effect. */
+  minMemoryGib?: number;
   idleTimeoutMinutes?: number;
   /** The run and its saved files end this many hours after the start. */
   maxDurationHours?: number;
@@ -171,11 +175,14 @@ export class ArchestraClient {
       // rejection differently, so only the key name is matched.
       const toolError = limits !== null && error instanceof ArchestraApiError && error.kind === "tool";
       const rejectedLimits = toolError && /unrecognized key.*\blimits\b/i.test(error.detail);
-      // An Agent whose own limits are below the request, or that sizes its runs with explicit
-      // resources, refuses them; that Agent's run then takes its own limits. Other Agents still
-      // get the request.
+      // An Agent whose own limits are below the request, or whose tiers have no size that fits,
+      // refuses them; that Agent's run then takes its own limits. Other Agents still get the
+      // request.
       const refusedLimits =
-        toolError && /is above this Agent's|sizes its runs with explicit resources/i.test(error.detail);
+        toolError &&
+        /is above this Agent's|sizes its runs with explicit resources|No tier this Agent's runs may use|There is no tier named|has less than the/i.test(
+          error.detail,
+        );
       if (!rejectedLimits && !refusedLimits) throw error;
       if (rejectedLimits) this.limitsSupported = false;
       data = await this.call(RUN_TOOLS.start, args, "start run");
@@ -327,6 +334,8 @@ export class ArchestraClient {
 function runLimitsArgs(limits: RunLimits): Record<string, unknown> {
   return {
     ...(limits.tier ? { tier: limits.tier } : {}),
+    ...(limits.minCpu ? { min_cpu: limits.minCpu } : {}),
+    ...(limits.minMemoryGib ? { min_memory_gib: limits.minMemoryGib } : {}),
     ...(limits.idleTimeoutMinutes ? { idle_timeout_minutes: limits.idleTimeoutMinutes } : {}),
     ...(limits.maxDurationHours ? { max_duration_hours: limits.maxDurationHours } : {}),
     ...(limits.maxCostUsd ? { max_cost_usd: limits.maxCostUsd } : {}),

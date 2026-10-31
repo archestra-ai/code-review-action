@@ -70,11 +70,12 @@ import {
 const VERDICT_WORDS = { approve: "approved", comment: "commented", request_changes: "changes requested" } as const;
 
 /**
- * A review clones, runs a few checks and writes one file: the small container,
- * stopped ten minutes after it goes idle, and gone with its files after an hour
- * even when the deletion after the review does not happen.
+ * A review clones, runs a few checks and writes one file: the smallest tier
+ * with two CPUs, whatever the organization calls it, stopped ten minutes after
+ * it goes idle, and gone with its files after an hour even when the deletion
+ * after the review does not happen.
  */
-const REVIEW_RUN_LIMITS = { tier: "S", idleTimeoutMinutes: 10, maxDurationHours: 1 } as const;
+const REVIEW_RUN_LIMITS = { minCpu: 2, idleTimeoutMinutes: 10, maxDurationHours: 1 } as const;
 
 export async function runReview(ctx: ActionContext, prNumber: number): Promise<ActionResult> {
   const { gh, repo, inputs, log } = ctx;
