@@ -977,7 +977,10 @@ function runCell(attempt: AttemptRecord): string {
 
 /** "[run](url)", then ", continued" and ", tier M" when they apply. */
 function runLink(attempt: AttemptRecord): string {
-  const notes = [attempt.continued ? "continued" : null, attempt.tier ? `tier ${attempt.tier}` : null].filter(Boolean);
+  const notes = [
+    attempt.continued ? "continued" : null,
+    attempt.tier ? `tier ${cell(attempt.tier, 100)}` : null,
+  ].filter(Boolean);
   return [`[run](${attempt.runUrl})`, ...notes].join(", ");
 }
 

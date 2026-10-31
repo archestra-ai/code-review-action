@@ -40405,6 +40405,13 @@ var ArchestraClient = class {
       ...body.attachments.length > 0 ? { attachments: body.attachments } : {}
     };
     const limits = this.limitsSupported && body.limits ? runLimitsArgs(body.limits) : null;
+    if (body.requireLimits && limits === null) {
+      throw new ArchestraApiError(
+        "start run",
+        "response",
+        "the gateway does not take run limits, so the run cannot ask for more memory"
+      );
+    }
     let applied = limits !== null;
     let data;
     try {
@@ -40416,7 +40423,7 @@ var ArchestraClient = class {
         error63.detail
       );
       if (!rejectedLimits && !refusedLimits) throw error63;
-      if (refusedLimits && body.requireLimits) throw error63;
+      if (body.requireLimits) throw error63;
       if (rejectedLimits) this.limitsSupported = false;
       applied = false;
       data = await this.call(RUN_TOOLS.start, args, "start run");
@@ -40424,7 +40431,8 @@ var ArchestraClient = class {
     const result = parse3(StartResultSchema, data, "start run");
     this.remember(result.run.run_id, result.run_url);
     const reported = result.limits ? {
-      ...result.limits.tier ? { tier: result.limits.tier } : {},
+      // Organizations name their tiers; the saved comment state holds 100 characters of it.
+      ...result.limits.tier ? { tier: result.limits.tier.slice(0, 100) } : {},
       ...result.limits.idle_timeout_minutes ? { idleTimeoutMinutes: result.limits.idle_timeout_minutes } : {},
       ...result.limits.max_duration_hours ? { maxDurationHours: result.limits.max_duration_hours } : {},
       ...result.limits.max_cost_usd ? { maxCostUsd: result.limits.max_cost_usd } : {}
@@ -45802,7 +45810,10 @@ function historyTable(jobs) {
   return ["| # | Started (UTC) | Job | Result | Duration |", "| --- | --- | --- | --- | --- |", ...rows].join("\n");
 }
 function runLink(attempt) {
-  const notes = [attempt.continued ? "continued" : null, attempt.tier ? `tier ${attempt.tier}` : null].filter(Boolean);
+  const notes = [
+    attempt.continued ? "continued" : null,
+    attempt.tier ? `tier ${cell(attempt.tier, 100)}` : null
+  ].filter(Boolean);
   return [`[run](${attempt.runUrl})`, ...notes].join(", ");
 }
 function attemptResult(attempt) {

@@ -177,7 +177,11 @@ export async function launch<T>(
               "GitHub token of the code review action",
             );
           }
-          if (continueFrom && continueFrom.agentId === agentId) {
+          // After a memory kill the same runtime is tried with more memory. That
+          // size is the point of the attempt, so it starts a fresh run (a continued
+          // workspace keeps its first turn's size) and an Agent that refuses it ends it.
+          const escalated = info.escalations > 0;
+          if (continueFrom && continueFrom.agentId === agentId && !escalated) {
             const continued = await continueRun({
               client: ctx.archestra,
               runId: continueFrom.runId,
@@ -192,9 +196,6 @@ export async function launch<T>(
             if (continued) return continued;
             continueFrom = null;
           }
-          // After a memory kill the same runtime is tried with more memory. That
-          // size is the point of the attempt, so an Agent that refuses it ends it.
-          const escalated = info.limits !== null && info.limits !== (p.limits ?? null);
           return ctx.archestra.startRun(agentId, {
             message: p.message,
             attachments: p.attachments,

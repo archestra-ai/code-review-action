@@ -187,6 +187,15 @@ export class ArchestraClient {
       ...(body.attachments.length > 0 ? { attachments: body.attachments } : {}),
     };
     const limits = this.limitsSupported && body.limits ? runLimitsArgs(body.limits) : null;
+    // A retry with more memory after a memory kill is worth running only at that size: a
+    // deployment that cannot take the request would run the Agent's own size again.
+    if (body.requireLimits && limits === null) {
+      throw new ArchestraApiError(
+        "start run",
+        "response",
+        "the gateway does not take run limits, so the run cannot ask for more memory",
+      );
+    }
     let applied = limits !== null;
     let data: Record<string, unknown>;
     try {
@@ -206,8 +215,7 @@ export class ArchestraClient {
           error.detail,
         );
       if (!rejectedLimits && !refusedLimits) throw error;
-      // A retry with more memory after a memory kill is worth running only at that size.
-      if (refusedLimits && body.requireLimits) throw error;
+      if (body.requireLimits) throw error;
       if (rejectedLimits) this.limitsSupported = false;
       applied = false;
       data = await this.call(RUN_TOOLS.start, args, "start run");
@@ -216,7 +224,8 @@ export class ArchestraClient {
     this.remember(result.run.run_id, result.run_url);
     const reported = result.limits
       ? {
-          ...(result.limits.tier ? { tier: result.limits.tier } : {}),
+          // Organizations name their tiers; the saved comment state holds 100 characters of it.
+          ...(result.limits.tier ? { tier: result.limits.tier.slice(0, 100) } : {}),
           ...(result.limits.idle_timeout_minutes ? { idleTimeoutMinutes: result.limits.idle_timeout_minutes } : {}),
           ...(result.limits.max_duration_hours ? { maxDurationHours: result.limits.max_duration_hours } : {}),
           ...(result.limits.max_cost_usd ? { maxCostUsd: result.limits.max_cost_usd } : {}),

@@ -107,7 +107,14 @@ export async function runWithFallback<T>(params: {
   largerLimits?: (previous: RunLimits | null, reason: string) => RunLimits | null;
   attempt: (
     agentId: string,
-    info: { runtimeIndex: number; retry: number; limits: RunLimits | null },
+    info: {
+      runtimeIndex: number;
+      retry: number;
+      /** The limits this attempt asks for; the caller's own until a memory kill raised them. */
+      limits: RunLimits | null;
+      /** How many memory kills raised the limits before this attempt on this runtime. */
+      escalations: number;
+    },
   ) => Promise<AttemptOutcome<T>>;
 }): Promise<FallbackResult<T>> {
   const delays = params.retryDelaysMs ?? DEFAULT_RETRY_DELAYS_MS;
@@ -128,7 +135,7 @@ export async function runWithFallback<T>(params: {
         `Attempt ${attempts.length + 1}: agent ${agentId} (runtime ${runtimeIndex + 1}/${runtimeCount}, retry ${retry}/${params.retries}${escalations > 0 ? `, with at least ${limits?.minMemoryGib} GiB of memory` : ""})`,
       );
       await params.progress?.attempt(runtimeIndex, agentId);
-      const outcome = await params.attempt(agentId, { runtimeIndex, retry, limits });
+      const outcome = await params.attempt(agentId, { runtimeIndex, retry, limits, escalations });
       attempts.push(outcome.record);
       if (outcome.ok) {
         return {
