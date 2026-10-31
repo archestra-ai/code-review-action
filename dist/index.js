@@ -41700,8 +41700,9 @@ async function runWithFallback(params) {
       if (classification.class === "fatal") {
         return { ok: false, attempts, fatal: true, deadlineReached: false };
       }
-      const sameTier = killedTier !== null && outcome.record.tier !== null && outcome.record.tier === killedTier;
-      const larger = classification.outOfMemory && params.largerLimits && escalations < MAX_MEMORY_ESCALATIONS && !sameTier ? params.largerLimits(limits, classification.reason) : null;
+      const sized = outcome.record.tier !== null;
+      const sameTier = killedTier !== null && outcome.record.tier === killedTier;
+      const larger = classification.outOfMemory && params.largerLimits && escalations < MAX_MEMORY_ESCALATIONS && sized && !sameTier ? params.largerLimits(limits, classification.reason) : null;
       if (larger) {
         escalations++;
         killedTier = outcome.record.tier;

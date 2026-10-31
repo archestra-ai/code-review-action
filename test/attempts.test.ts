@@ -123,6 +123,17 @@ describe("runWithFallback", () => {
       ["b", null],
     ]);
 
+    // A gateway that does not say which tier a run got (it accepted the limits
+    // without applying them) gives nothing to climb from: the next runtime.
+    calls.length = 0;
+    const unsized = (agentId: string, info: { limits: RunLimits | null }) =>
+      attempt(agentId, info).then((outcome) => ({ ...outcome, record: { ...outcome.record, tier: null } }));
+    await runWithFallback({ ...base(clock), retries: 1, maxFallbacks: 2, limits, largerLimits, attempt: unsized });
+    expect(calls).toEqual([
+      ["a", null],
+      ["b", null],
+    ]);
+
     // Without a size policy a memory kill goes to the next runtime, as any other failure.
     calls.length = 0;
     await runWithFallback({ ...base(clock), retries: 1, maxFallbacks: 2, limits, attempt });

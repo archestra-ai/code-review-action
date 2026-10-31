@@ -154,10 +154,14 @@ export async function runWithFallback<T>(params: {
       if (classification.class === "fatal") {
         return { ok: false, attempts, fatal: true, deadlineReached: false };
       }
-      // The gateway sized the retry no larger than the killed run: nothing left to ask for.
-      const sameTier = killedTier !== null && outcome.record.tier !== null && outcome.record.tier === killedTier;
+      // A larger size is asked for only when the gateway says which tier a run got:
+      // without that, a retry cannot be seen to land anywhere else (a gateway that
+      // accepts the limits argument without applying it reports none), and a retry
+      // that landed on the killed tier has nothing larger left to ask for.
+      const sized = outcome.record.tier !== null;
+      const sameTier = killedTier !== null && outcome.record.tier === killedTier;
       const larger =
-        classification.outOfMemory && params.largerLimits && escalations < MAX_MEMORY_ESCALATIONS && !sameTier
+        classification.outOfMemory && params.largerLimits && escalations < MAX_MEMORY_ESCALATIONS && sized && !sameTier
           ? params.largerLimits(limits, classification.reason)
           : null;
       if (larger) {
