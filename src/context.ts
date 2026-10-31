@@ -150,7 +150,8 @@ export async function launch<T>(
     sleep: ctx.clock.sleep,
     log: ctx.log,
     progress: p.progress,
-    attempt: (agentId) =>
+    tier: p.limits?.tier ?? null,
+    attempt: (agentId, info) =>
       executeAttempt<T>({
         client: ctx.archestra,
         agentId,
@@ -189,10 +190,16 @@ export async function launch<T>(
             if (continued) return continued;
             continueFrom = null;
           }
+          // After a memory kill the same runtime is tried at a larger tier. That
+          // size is the point of the attempt, so an Agent that refuses it ends it.
+          const tier = info.tier;
+          const escalated = tier !== null && tier !== (p.limits?.tier ?? null);
+          const limits = escalated ? { ...p.limits, tier } : p.limits;
           return ctx.archestra.startRun(agentId, {
             message: p.message,
             attachments: p.attachments,
-            ...(p.limits ? { limits: p.limits } : {}),
+            ...(limits ? { limits } : {}),
+            ...(escalated ? { requireLimits: true } : {}),
           });
         },
       }),

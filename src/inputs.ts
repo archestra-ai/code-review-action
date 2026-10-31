@@ -1,3 +1,4 @@
+import { TIERS, type Tier } from "./archestra/client";
 import { type ConnectTo, parseConnectTo } from "./archestra/connect";
 import type { Strategy } from "./attempts";
 
@@ -44,6 +45,8 @@ export interface Inputs {
   ciRerun: boolean;
   maxAutoFixRounds: number;
   incrementalReview: boolean;
+  /** The container size a review asks for; null for the Agent's own. */
+  tier: Tier | null;
 }
 
 export class InputError extends Error {
@@ -151,6 +154,7 @@ export function readInputs(get: (name: string) => string, readFile: (path: strin
     ciRerun: boolean("ci-rerun", value("ci-rerun") || "false"),
     maxAutoFixRounds,
     incrementalReview: boolean("incremental-review", value("incremental-review") || "true"),
+    tier: value("tier") ? oneOf("tier", value("tier"), TIERS) : null,
   };
 }
 

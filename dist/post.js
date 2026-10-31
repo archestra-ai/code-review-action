@@ -40334,6 +40334,7 @@ var RUN_TOOLS = {
   credential: "transfer_credential",
   delete: "delete_workspace"
 };
+var TIERS = ["S", "M", "L"];
 var ARCHESTRA_PREFIX = "archestra__";
 var RUN_TOOL = "run_tool";
 var FailureSchema = external_exports.object({ code: external_exports.string(), retriable: external_exports.boolean() });
@@ -40346,9 +40347,16 @@ var RunSummarySchema = external_exports.object({
   created_at: external_exports.string().nullish(),
   state_changed_at: external_exports.string().nullish()
 });
+var RunLimitsSchema = external_exports.object({
+  tier: external_exports.enum(TIERS).nullish(),
+  idle_timeout_minutes: external_exports.number().nullish(),
+  max_duration_hours: external_exports.number().nullish(),
+  max_cost_usd: external_exports.number().nullish()
+});
 var StartResultSchema = external_exports.object({
   run: RunSummarySchema,
-  run_url: external_exports.string().nullish()
+  run_url: external_exports.string().nullish(),
+  limits: RunLimitsSchema.nullish()
 });
 var GetResultSchema = external_exports.object({
   run: RunSummarySchema,
@@ -40398,6 +40406,7 @@ var ArchestraClient = class {
       ...body.attachments.length > 0 ? { attachments: body.attachments } : {}
     };
     const limits = this.limitsSupported && body.limits ? runLimitsArgs(body.limits) : null;
+    let applied = limits !== null;
     let data;
     try {
       data = await this.call(RUN_TOOLS.start, limits ? { ...args, limits } : args, "start run");
@@ -40406,17 +40415,26 @@ var ArchestraClient = class {
       const rejectedLimits = toolError && /unrecognized key.*\blimits\b/i.test(error63.detail);
       const refusedLimits = toolError && /is above this Agent's|sizes its runs with explicit resources/i.test(error63.detail);
       if (!rejectedLimits && !refusedLimits) throw error63;
+      if (refusedLimits && body.requireLimits) throw error63;
       if (rejectedLimits) this.limitsSupported = false;
+      applied = false;
       data = await this.call(RUN_TOOLS.start, args, "start run");
     }
     const result = parse3(StartResultSchema, data, "start run");
     this.remember(result.run.run_id, result.run_url);
+    const reported = result.limits ? {
+      ...result.limits.tier ? { tier: result.limits.tier } : {},
+      ...result.limits.idle_timeout_minutes ? { idleTimeoutMinutes: result.limits.idle_timeout_minutes } : {},
+      ...result.limits.max_duration_hours ? { maxDurationHours: result.limits.max_duration_hours } : {},
+      ...result.limits.max_cost_usd ? { maxCostUsd: result.limits.max_cost_usd } : {}
+    } : null;
     return {
       runId: result.run.run_id,
       state: result.run.state,
       runUrl: result.run_url ?? null,
       previousTurnCreatedAt: null,
-      continued: false
+      continued: false,
+      limits: reported ?? (applied && body.limits ? body.limits : null)
     };
   }
   async getRun(runId) {
@@ -44975,7 +44993,8 @@ function readInputs(get, readFile) {
     fixTimeoutMs: integer2("fix-timeout-minutes", value("fix-timeout-minutes") || "45", 1, 360) * 6e4,
     ciRerun: boolean4("ci-rerun", value("ci-rerun") || "false"),
     maxAutoFixRounds,
-    incrementalReview: boolean4("incremental-review", value("incremental-review") || "true")
+    incrementalReview: boolean4("incremental-review", value("incremental-review") || "true"),
+    tier: value("tier") ? oneOf("tier", value("tier"), TIERS) : null
   };
 }
 function agentList(name, raw) {
@@ -45245,6 +45264,8 @@ var AttemptRecordSchema = external_exports.object({
   runUrl: external_exports.string().nullable(),
   /** True when the attempt continued the run of an earlier job. Records written before this field have false. */
   continued: external_exports.boolean().default(false),
+  /** The container size the run got. Records written before this field have null. */
+  tier: external_exports.enum(["S", "M", "L"]).nullable().default(null),
   result: external_exports.enum(["completed", "retriable", "non_retriable", "fatal"]),
   reason: external_exports.string(),
   source: external_exports.enum(["api", "failure-field", "message-pattern", "state", "timeout", "contract"]).nullable(),
@@ -45764,10 +45785,10 @@ function historyTable(jobs) {
     const result = [job.outcome === null ? "did not complete" : cell(job.outcome, 200)];
     const [only] = job.attempts;
     if (job.attempts.length === 1 && only?.result === "completed") {
-      if (only.runUrl) result.push(`([run](${only.runUrl})${only.continued ? ", continued" : ""})`);
+      if (only.runUrl) result.push(`(${runLink(only)})`);
     } else if (job.attempts.length > 0) {
       const attempts = job.attempts.map(
-        (attempt, n) => `${n + 1}. \`${attempt.agentId.slice(0, 8)}\` ${attemptResult(attempt)}, ${formatDuration(attempt.durationMs)}${attempt.runUrl ? ` ([run](${attempt.runUrl}))` : ""}`
+        (attempt, n) => `${n + 1}. \`${attempt.agentId.slice(0, 8)}\` ${attemptResult(attempt)}, ${formatDuration(attempt.durationMs)}${attempt.runUrl ? ` (${runLink(attempt)})` : ""}`
       );
       result.push(`\xB7 ${job.attempts.length} attempts: ${attempts.join("; ")}`);
     }
@@ -45775,6 +45796,10 @@ function historyTable(jobs) {
     return `| ${index + 1} | ${formatTime(job.startedAt)} | ${what} | ${result.join(" ")} | ${duration3 === null ? "-" : formatDuration(duration3)} |`;
   });
   return ["| # | Started (UTC) | Job | Result | Duration |", "| --- | --- | --- | --- | --- |", ...rows].join("\n");
+}
+function runLink(attempt) {
+  const notes = [attempt.continued ? "continued" : null, attempt.tier ? `tier ${attempt.tier}` : null].filter(Boolean);
+  return [`[run](${attempt.runUrl})`, ...notes].join(", ");
 }
 function attemptResult(attempt) {
   if (attempt.result === "completed") return "completed";

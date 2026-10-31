@@ -35,6 +35,7 @@ function scripted(results: Array<"ok" | "retriable" | "non_retriable" | "fatal">
       runId: null,
       runUrl: null,
       continued: false,
+      tier: null,
       result: result === "ok" ? ("completed" as const) : result,
       reason: result,
       source: null,
@@ -62,6 +63,64 @@ describe("runWithFallback", () => {
     expect(calls).toEqual(["a", "a"]);
     expect(clock.sleeps).toEqual([30_000]);
     expect(result).toMatchObject({ ok: true, value: "a", agentId: "a" });
+  });
+
+  it("tries the same runtime at the next larger tier after a memory kill, then the next runtime", async () => {
+    const clock = new FakeClock();
+    const calls: Array<[string, string | null]> = [];
+    const attempt = async (
+      agentId: string,
+      info: { tier: "S" | "M" | "L" | null },
+    ): Promise<AttemptOutcome<string>> => {
+      calls.push([agentId, info.tier]);
+      const record = {
+        agentId,
+        runId: null,
+        runUrl: null,
+        continued: false,
+        tier: info.tier,
+        result: "non_retriable" as const,
+        reason: "pod.oom_killed: out of memory",
+        source: "failure-field" as const,
+        durationMs: 0,
+      };
+      if (agentId === "b") return { ok: true, value: agentId, record: { ...record, result: "completed" } };
+      return {
+        ok: false,
+        classification: { class: "non_retriable", reason: record.reason, source: "failure-field", outOfMemory: true },
+        record,
+      };
+    };
+    const result = await runWithFallback({ ...base(clock), retries: 1, maxFallbacks: 2, tier: "S", attempt });
+    // S, M and L on the first runtime, at once; the next runtime starts over at S.
+    expect(calls).toEqual([
+      ["a", "S"],
+      ["a", "M"],
+      ["a", "L"],
+      ["b", "S"],
+    ]);
+    expect(clock.sleeps).toEqual([]);
+    expect(result).toMatchObject({ ok: true, agentId: "b" });
+    expect(result.attempts.map((attempt) => attempt.tier)).toEqual(["S", "M", "L", "S"]);
+
+    // The largest tier the caller allows stops the climb earlier.
+    calls.length = 0;
+    await runWithFallback({ ...base(clock), retries: 1, maxFallbacks: 2, tier: "S", maxTier: "M", attempt });
+    expect(calls).toEqual([
+      ["a", "S"],
+      ["a", "M"],
+      ["b", "S"],
+    ]);
+
+    // A run whose size the gateway did not report has no larger size to ask for.
+    calls.length = 0;
+    const unsized = (agentId: string, info: { tier: "S" | "M" | "L" | null }) =>
+      attempt(agentId, info).then((outcome) => ({ ...outcome, record: { ...outcome.record, tier: null } }));
+    await runWithFallback({ ...base(clock), retries: 1, maxFallbacks: 2, tier: "S", attempt: unsized });
+    expect(calls).toEqual([
+      ["a", "S"],
+      ["b", "S"],
+    ]);
   });
 
   it("goes to the next runtime after a non-retriable failure", async () => {

@@ -103,6 +103,11 @@ inputs:
   incremental-review:
     description: Set to false to start a fresh run for each review instead of continuing the previous workspace.
     default: "true"
+  tier:
+    description: >-
+      Container size a review asks for: S, M or L, at or below the Agent's largest. Empty for the Agent's
+      own size. A run killed for memory is tried again on the same agent at the next larger size either way.
+    default: ""
 
 outputs:
   status:

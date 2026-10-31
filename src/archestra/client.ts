@@ -26,10 +26,19 @@ export const RUN_TOOLS = {
   delete: "delete_workspace",
 } as const;
 
+/** The container sizes a run can ask for, smallest first. */
+export const TIERS = ["S", "M", "L"] as const;
+export type Tier = (typeof TIERS)[number];
+
+/** The next larger tier, or null above the largest. */
+export function largerTier(tier: Tier): Tier | null {
+  return TIERS[TIERS.indexOf(tier) + 1] ?? null;
+}
+
 /** Limits a run asks for, each at or below its Agent's own. */
 export interface RunLimits {
   /** Container size: S, M or L. */
-  tier?: "S" | "M" | "L";
+  tier?: Tier;
   idleTimeoutMinutes?: number;
   /** The run and its saved files end this many hours after the start. */
   maxDurationHours?: number;
@@ -51,9 +60,18 @@ const RunSummarySchema = z.object({
   state_changed_at: z.string().nullish(),
 });
 
+/** The limits a run got, as the gateway reports them on a start. */
+const RunLimitsSchema = z.object({
+  tier: z.enum(TIERS).nullish(),
+  idle_timeout_minutes: z.number().nullish(),
+  max_duration_hours: z.number().nullish(),
+  max_cost_usd: z.number().nullish(),
+});
+
 const StartResultSchema = z.object({
   run: RunSummarySchema,
   run_url: z.string().nullish(),
+  limits: RunLimitsSchema.nullish(),
 });
 
 const GetResultSchema = z.object({
@@ -107,6 +125,12 @@ export interface StartedRun {
   previousTurnCreatedAt: string | null;
   /** True when the run continued the workspace of an earlier run. */
   continued: boolean;
+  /**
+   * The limits the run got: what the gateway reported, else the request when
+   * the gateway accepted it. Null when the run took the Agent's own limits
+   * without saying which, or continued an earlier run.
+   */
+  limits: RunLimits | null;
 }
 
 export interface ArchestraClientOptions {
@@ -154,7 +178,13 @@ export class ArchestraClient {
 
   async startRun(
     agentId: string,
-    body: { message: string; attachments: Attachment[]; limits?: RunLimits },
+    body: {
+      message: string;
+      attachments: Attachment[];
+      limits?: RunLimits;
+      /** Fail instead of starting with the Agent's own limits when it refuses the request. */
+      requireLimits?: boolean;
+    },
   ): Promise<StartedRun> {
     const args = {
       agent_id: agentId,
@@ -162,6 +192,7 @@ export class ArchestraClient {
       ...(body.attachments.length > 0 ? { attachments: body.attachments } : {}),
     };
     const limits = this.limitsSupported && body.limits ? runLimitsArgs(body.limits) : null;
+    let applied = limits !== null;
     let data: Record<string, unknown>;
     try {
       data = await this.call(RUN_TOOLS.start, limits ? { ...args, limits } : args, "start run");
@@ -177,17 +208,29 @@ export class ArchestraClient {
       const refusedLimits =
         toolError && /is above this Agent's|sizes its runs with explicit resources/i.test(error.detail);
       if (!rejectedLimits && !refusedLimits) throw error;
+      // A retry at a larger tier after a memory kill is worth running only at that tier.
+      if (refusedLimits && body.requireLimits) throw error;
       if (rejectedLimits) this.limitsSupported = false;
+      applied = false;
       data = await this.call(RUN_TOOLS.start, args, "start run");
     }
     const result = parse(StartResultSchema, data, "start run");
     this.remember(result.run.run_id, result.run_url);
+    const reported = result.limits
+      ? {
+          ...(result.limits.tier ? { tier: result.limits.tier } : {}),
+          ...(result.limits.idle_timeout_minutes ? { idleTimeoutMinutes: result.limits.idle_timeout_minutes } : {}),
+          ...(result.limits.max_duration_hours ? { maxDurationHours: result.limits.max_duration_hours } : {}),
+          ...(result.limits.max_cost_usd ? { maxCostUsd: result.limits.max_cost_usd } : {}),
+        }
+      : null;
     return {
       runId: result.run.run_id,
       state: result.run.state,
       runUrl: result.run_url ?? null,
       previousTurnCreatedAt: null,
       continued: false,
+      limits: reported ?? (applied && body.limits ? body.limits : null),
     };
   }
 

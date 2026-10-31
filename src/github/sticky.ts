@@ -215,6 +215,8 @@ const AttemptRecordSchema = z.object({
   runUrl: z.string().nullable(),
   /** True when the attempt continued the run of an earlier job. Records written before this field have false. */
   continued: z.boolean().default(false),
+  /** The container size the run got. Records written before this field have null. */
+  tier: z.enum(["S", "M", "L"]).nullable().default(null),
   result: z.enum(["completed", "retriable", "non_retriable", "fatal"]),
   reason: z.string(),
   source: z.enum(["api", "failure-field", "message-pattern", "state", "timeout", "contract"]).nullable(),
@@ -944,11 +946,11 @@ export function historyTable(jobs: JobRecord[]): string {
     const result = [job.outcome === null ? "did not complete" : cell(job.outcome, 200)];
     const [only] = job.attempts;
     if (job.attempts.length === 1 && only?.result === "completed") {
-      if (only.runUrl) result.push(`([run](${only.runUrl})${only.continued ? ", continued" : ""})`);
+      if (only.runUrl) result.push(`(${runLink(only)})`);
     } else if (job.attempts.length > 0) {
       const attempts = job.attempts.map(
         (attempt, n) =>
-          `${n + 1}. \`${attempt.agentId.slice(0, 8)}\` ${attemptResult(attempt)}, ${formatDuration(attempt.durationMs)}${attempt.runUrl ? ` ([run](${attempt.runUrl}))` : ""}`,
+          `${n + 1}. \`${attempt.agentId.slice(0, 8)}\` ${attemptResult(attempt)}, ${formatDuration(attempt.durationMs)}${attempt.runUrl ? ` (${runLink(attempt)})` : ""}`,
       );
       result.push(`· ${job.attempts.length} attempts: ${attempts.join("; ")}`);
     }
@@ -970,8 +972,13 @@ export function attemptsTable(attempts: AttemptRecord[]): string {
 }
 
 function runCell(attempt: AttemptRecord): string {
-  if (!attempt.runUrl) return "-";
-  return `[run](${attempt.runUrl})${attempt.continued ? " (continued)" : ""}`;
+  return attempt.runUrl ? runLink(attempt) : "-";
+}
+
+/** "[run](url)", then ", continued" and ", tier M" when they apply. */
+function runLink(attempt: AttemptRecord): string {
+  const notes = [attempt.continued ? "continued" : null, attempt.tier ? `tier ${attempt.tier}` : null].filter(Boolean);
+  return [`[run](${attempt.runUrl})`, ...notes].join(", ");
 }
 
 /** "completed", or the failure class, where it was classified from, and the reason. */

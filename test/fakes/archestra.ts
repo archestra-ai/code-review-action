@@ -63,6 +63,8 @@ export interface RecordedStart {
   limits?: unknown;
 }
 
+const TIERS = ["S", "M", "L"] as const;
+
 const TOOL_NAMES = [
   "start_agent_run",
   "get_agent_run",
@@ -94,6 +96,10 @@ export class FakeArchestra {
   rejectLimits = false;
   /** Agents whose own limits refuse a request, with the platform's message. */
   readonly limitRefusals = new Map<string, string>();
+  /** An Agent's own container size; M when unset, as on the platform. */
+  readonly agentTiers = new Map<string, "S" | "M" | "L">();
+  /** The largest tier an Agent lets a run ask for; its own size when unset. */
+  readonly maxTiers = new Map<string, "S" | "M" | "L">();
   readonly credentials: Array<{ agentId: string; key: string; valueLength: number }> = [];
   readonly writes: Array<{ runId: string; path: string; turn: number }> = [];
   /** Every JSON-RPC method and tool name, in order. */
@@ -280,6 +286,12 @@ export class FakeArchestra {
     }
     const refusal = this.limitRefusals.get(agentId);
     if (refusal && args.limits !== undefined) return toolError(refusal);
+    const requested = (args.limits as { tier?: "S" | "M" | "L" } | undefined)?.tier;
+    const agentTier = this.agentTiers.get(agentId) ?? "M";
+    const maxTier = this.maxTiers.get(agentId) ?? agentTier;
+    if (requested && TIERS.indexOf(requested) > TIERS.indexOf(maxTier)) {
+      return toolError(`Tier ${requested} is above this Agent's largest tier ${maxTier}`);
+    }
     const script = this.scripts.get(agentId)?.shift();
     if (!script) return toolError("Agent not found");
     if ("start" in script) {
@@ -291,7 +303,14 @@ export class FakeArchestra {
     record.runId = runId;
     const run: FakeRun = { runId, agentId, owner: caller, turns: [this.newTurn(script)], files: {}, lag: 0 };
     this.runs.set(runId, run);
-    return toolResult({ run: this.summary(run), run_url: `${this.origin}/chat/runs/${runId}`, next_step: "Wait." });
+    // The platform reports the limits the run got: the request, else the Agent's own.
+    const limits = { ...((args.limits as Record<string, unknown> | undefined) ?? {}), tier: requested ?? agentTier };
+    return toolResult({
+      run: this.summary(run),
+      run_url: `${this.origin}/chat/runs/${runId}`,
+      limits,
+      next_step: "Wait.",
+    });
   }
 
   private get(caller: string, runId: string): ToolOutcome {

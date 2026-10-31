@@ -60,9 +60,66 @@ describe("review mode", () => {
     expect(sticky).toContain(`[1](https://github.com/acme/widgets/pull/7#discussion_r${commentId})`);
     expect(harness.archestra.starts[0]!.attachmentNames).toEqual(["pr.json", "pr.diff"]);
     expect(Buffer.byteLength(harness.archestra.starts[0]!.message)).toBeLessThanOrEqual(MAX_MESSAGE_BYTES);
-    // A review asks for a bounded run, and its workspace goes once the review has posted.
-    expect(harness.archestra.starts[0]!.limits).toEqual({ tier: "S", idle_timeout_minutes: 10, max_duration_hours: 1 });
+    // A review asks for a bounded run at the Agent's own size, and its workspace goes once the review has posted.
+    expect(harness.archestra.starts[0]!.limits).toEqual({ idle_timeout_minutes: 10, max_duration_hours: 1 });
     expect(harness.archestra.deletes).toEqual([result.runId]);
+    const job = parseState(harness.github.stickyBody()!)!.jobs.at(-1)!;
+    expect(job.attempts.map((attempt) => attempt.tier)).toEqual(["M"]);
+  });
+
+  it("asks for the tier input, and tries the same Agent at the next larger tier after a memory kill", async () => {
+    const harness = setup();
+    harness.archestra.maxTiers.set(AGENT_A, "L");
+    harness.archestra.script(AGENT_A, {
+      end: "failed",
+      statusReason:
+        "The run ran out of memory. The agent-runtime container reached its memory limit of 8 GiB (peak usage 8 GiB), and the kernel killed the run's processes.",
+      failure: { code: "pod.oom_killed", retriable: false },
+    });
+    harness.archestra.script(AGENT_A, { end: "completed", files: { "review.json": reviewJson() } });
+    const result = await run(harness.context("pull_request", prEvent(harness.github), { tier: "S" }));
+    expect(result).toMatchObject({ status: "success", agentId: AGENT_A });
+    expect(harness.archestra.starts.map((start) => [start.agentId, (start.limits as { tier: string }).tier])).toEqual([
+      [AGENT_A, "S"],
+      [AGENT_A, "M"],
+    ]);
+    const job = parseState(harness.github.stickyBody()!)!.jobs.at(-1)!;
+    expect(job.attempts.map((attempt) => [attempt.tier, attempt.result])).toEqual([
+      ["S", "non_retriable"],
+      ["M", "completed"],
+    ]);
+    expect(harness.github.stickyBody()).toContain(", tier M)");
+    // Both runs are the action's; both workspaces go.
+    expect(harness.archestra.deletes).toHaveLength(2);
+  });
+
+  it("goes to the next Agent when the larger tier is above the Agent's largest, without a run at its own size", async () => {
+    const harness = setup();
+    // A's own size is M and it allows nothing larger; the memory kill at M has nowhere to go on A.
+    harness.archestra.script(AGENT_A, {
+      end: "failed",
+      statusReason: "Container agent-runtime: OOMKilled (exit code 137, memory limit 16Gi)",
+      failure: { code: "pod.oom_killed", retriable: false },
+    });
+    harness.archestra.script(AGENT_B, { end: "completed", files: { "review.json": reviewJson() } });
+    const result = await run(harness.context("pull_request", prEvent(harness.github)));
+    expect(result).toMatchObject({ status: "success", agentId: AGENT_B });
+    // The refused start at L is recorded; no run started on A after the kill.
+    expect(harness.archestra.starts.map((start) => [start.agentId, (start.limits as { tier?: string }).tier])).toEqual([
+      [AGENT_A, undefined],
+      [AGENT_A, "L"],
+      [AGENT_B, undefined],
+    ]);
+    expect(harness.archestra.starts.filter((start) => start.runId).map((start) => start.agentId)).toEqual([
+      AGENT_A,
+      AGENT_B,
+    ]);
+    const job = parseState(harness.github.stickyBody()!)!.jobs.at(-1)!;
+    expect(job.attempts.map((attempt) => [attempt.agentId, attempt.tier, attempt.result])).toEqual([
+      [AGENT_A, "M", "non_retriable"],
+      [AGENT_A, null, "non_retriable"],
+      [AGENT_B, "M", "completed"],
+    ]);
   });
 
   it("starts without limits on a gateway that predates them, and deletes the workspaces of every run it started", async () => {
