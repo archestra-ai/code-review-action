@@ -9,6 +9,7 @@ const run = (overrides: Partial<AgentRun>): AgentRun => ({
   failure: null,
   turnCreatedAt: null,
   runUrl: null,
+  tier: null,
   workspace: null,
   ...overrides,
 });
