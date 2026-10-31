@@ -4,7 +4,7 @@
 
 - A review asks for the smallest runtime tier with at least two CPUs (`min_cpu: 2`) instead of a tier named `S`: organizations name their tiers themselves now. An Agent none of whose allowed tiers has two CPUs refuses the request, and that run starts with the Agent's own limits, as before.
 - A review asks for a bounded run: a 10-minute idle timeout and a one-hour maximum duration, each at or below the Agent's own limits. An Agent whose limits are lower refuses them; that run takes the Agent's own limits, and the other Agents still get the request.
-- Once the review has posted, the action deletes the workspaces of every run it started, so their volumes do not stay reserved until they expire.
+- Once a review is complete, posted or not, the action deletes the workspaces of every run it started, so their volumes do not stay reserved until they expire.
 
 ## 0.7.0 (2026-10-29)
 
