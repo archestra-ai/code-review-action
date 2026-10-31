@@ -42194,6 +42194,14 @@ async function continueRun(p) {
       );
       return null;
     }
+    const needed = Math.min(p.minRetainedMs, p.deadline - p.clock.now());
+    const retainedUntil = workspace.retainedUntil ? Date.parse(workspace.retainedUntil) : Number.NaN;
+    if (Number.isFinite(retainedUntil) && retainedUntil - p.clock.now() < needed) {
+      p.log.info(
+        `The previous workspace is kept only until ${workspace.retainedUntil}, less than the ${Math.round(needed / 6e4)} min this turn may need, and a turn there stops at that time. Starting a fresh run.`
+      );
+      return null;
+    }
     const names = continuationFileNames(p.turnKey, p.files);
     for (const [index, file2] of p.files.entries()) {
       await p.client.writeWorkspaceFile(p.runId, names[index], Buffer.from(file2.contentBase64, "base64"));
@@ -42336,6 +42344,7 @@ async function launch(ctx, p) {
             resultFile: p.contract.file,
             turnKey: `turn-${ctx.clock.now().toString(36)}`,
             deadline,
+            minRetainedMs: p.timeoutMs,
             clock: ctx.clock,
             log: ctx.log
           });

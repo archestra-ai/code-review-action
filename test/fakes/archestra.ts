@@ -121,6 +121,8 @@ export class FakeArchestra {
   readonly busyContinues = new Map<string, number>();
   /** Run ids whose workspace is no longer retained. */
   readonly expiredWorkspaces = new Set<string>();
+  /** Run ids whose workspace is retained until this time; one hour from the read when unset. */
+  readonly retainedUntil = new Map<string, number>();
   /** "direct": the tools are listed. "run_tool": only search_tools and run_tool are listed. */
   exposure: "direct" | "run_tool" = "direct";
   /** Tools that the gateway does not expose. */
@@ -387,7 +389,9 @@ export class FakeArchestra {
       workspace: own
         ? {
             state: workspaceState,
-            retained_until: new Date(Date.now() + (expired ? -3_600_000 : 3_600_000)).toISOString(),
+            retained_until: new Date(
+              this.retainedUntil.get(runId) ?? Date.now() + (expired ? -3_600_000 : 3_600_000),
+            ).toISOString(),
             can_continue: !expired && !deleted && (shown.ended ? workspaceState === "idle" : true),
             continuation_error: deleted
               ? "This run's workspace was removed and cannot resume."
