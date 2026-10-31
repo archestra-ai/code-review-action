@@ -70,14 +70,14 @@ import {
 const VERDICT_WORDS = { approve: "approved", comment: "commented", request_changes: "changes requested" } as const;
 
 /**
- * A review clones, runs a few checks and writes one file: a run stopped ten
- * minutes after it goes idle, and gone with its files after an hour even when
- * the deletion after the review does not happen. Its container size is the
- * Agent's own, or the `tier` input; the checks of a large repository (a type
- * check of this size holds several GB) do not fit the smallest size, and a run
- * killed for memory is tried again at the next larger one.
+ * A review clones, runs a few checks and writes one file: the smallest tier
+ * with two CPUs, whatever the organization calls it, stopped ten minutes after
+ * it goes idle, and gone with its files after an hour even when the deletion
+ * after the review does not happen. The `min-cpu` and `min-memory-gib` inputs
+ * raise the size for a repository whose checks need more; a run killed for
+ * memory is tried again with more memory either way.
  */
-const REVIEW_RUN_LIMITS = { idleTimeoutMinutes: 10, maxDurationHours: 1 } as const;
+const REVIEW_RUN_LIMITS = { minCpu: 2, idleTimeoutMinutes: 10, maxDurationHours: 1 } as const;
 
 export async function runReview(ctx: ActionContext, prNumber: number): Promise<ActionResult> {
   const { gh, repo, inputs, log } = ctx;
@@ -233,7 +233,11 @@ async function reviewInProgress(
     attachments,
     contract: CONTRACTS.review,
     timeoutMs: inputs.timeoutMs,
-    limits: inputs.tier ? { ...REVIEW_RUN_LIMITS, tier: inputs.tier } : REVIEW_RUN_LIMITS,
+    limits: {
+      ...REVIEW_RUN_LIMITS,
+      ...(inputs.minCpu ? { minCpu: inputs.minCpu } : {}),
+      ...(inputs.minMemoryGib ? { minMemoryGib: inputs.minMemoryGib } : {}),
+    },
     // A fix leaves a short-lived App token in the actor's CODE_REVIEW_GITHUB_TOKEN; a
     // private repository needs a fresh read-only token for the review.
     credentialToken: inputs.cloneToken || null,

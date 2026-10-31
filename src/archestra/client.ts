@@ -26,19 +26,14 @@ export const RUN_TOOLS = {
   delete: "delete_workspace",
 } as const;
 
-/** The container sizes a run can ask for, smallest first. */
-export const TIERS = ["S", "M", "L"] as const;
-export type Tier = (typeof TIERS)[number];
-
-/** The next larger tier, or null above the largest. */
-export function largerTier(tier: Tier): Tier | null {
-  return TIERS[TIERS.indexOf(tier) + 1] ?? null;
-}
-
 /** Limits a run asks for, each at or below its Agent's own. */
 export interface RunLimits {
-  /** Container size: S, M or L. */
-  tier?: Tier;
+  /** A runtime tier by the name the organization gave it. */
+  tier?: string;
+  /** CPUs the work needs: the smallest tier the Agent may use with at least this many. */
+  minCpu?: number;
+  /** GiB of memory the work needs, with the same effect. */
+  minMemoryGib?: number;
   idleTimeoutMinutes?: number;
   /** The run and its saved files end this many hours after the start. */
   maxDurationHours?: number;
@@ -62,7 +57,7 @@ const RunSummarySchema = z.object({
 
 /** The limits a run got, as the gateway reports them on a start. */
 const RunLimitsSchema = z.object({
-  tier: z.enum(TIERS).nullish(),
+  tier: z.string().nullish(),
   idle_timeout_minutes: z.number().nullish(),
   max_duration_hours: z.number().nullish(),
   max_cost_usd: z.number().nullish(),
@@ -126,9 +121,9 @@ export interface StartedRun {
   /** True when the run continued the workspace of an earlier run. */
   continued: boolean;
   /**
-   * The limits the run got: what the gateway reported, else the request when
-   * the gateway accepted it. Null when the run took the Agent's own limits
-   * without saying which, or continued an earlier run.
+   * The limits the run got: what the gateway reported (its tier by name),
+   * else the request when the gateway accepted it. Null when the run took the
+   * Agent's own limits without saying which, or continued an earlier run.
    */
   limits: RunLimits | null;
 }
@@ -202,13 +197,16 @@ export class ArchestraClient {
       // rejection differently, so only the key name is matched.
       const toolError = limits !== null && error instanceof ArchestraApiError && error.kind === "tool";
       const rejectedLimits = toolError && /unrecognized key.*\blimits\b/i.test(error.detail);
-      // An Agent whose own limits are below the request, or that sizes its runs with explicit
-      // resources, refuses them; that Agent's run then takes its own limits. Other Agents still
-      // get the request.
+      // An Agent whose own limits are below the request, or whose tiers have no size that fits,
+      // refuses them; that Agent's run then takes its own limits. Other Agents still get the
+      // request.
       const refusedLimits =
-        toolError && /is above this Agent's|sizes its runs with explicit resources/i.test(error.detail);
+        toolError &&
+        /is above this Agent's|sizes its runs with explicit resources|No tier this Agent's runs may use|There is no tier named|has less than the/i.test(
+          error.detail,
+        );
       if (!rejectedLimits && !refusedLimits) throw error;
-      // A retry at a larger tier after a memory kill is worth running only at that tier.
+      // A retry with more memory after a memory kill is worth running only at that size.
       if (refusedLimits && body.requireLimits) throw error;
       if (rejectedLimits) this.limitsSupported = false;
       applied = false;
@@ -370,6 +368,8 @@ export class ArchestraClient {
 function runLimitsArgs(limits: RunLimits): Record<string, unknown> {
   return {
     ...(limits.tier ? { tier: limits.tier } : {}),
+    ...(limits.minCpu ? { min_cpu: limits.minCpu } : {}),
+    ...(limits.minMemoryGib ? { min_memory_gib: limits.minMemoryGib } : {}),
     ...(limits.idleTimeoutMinutes ? { idle_timeout_minutes: limits.idleTimeoutMinutes } : {}),
     ...(limits.maxDurationHours ? { max_duration_hours: limits.maxDurationHours } : {}),
     ...(limits.maxCostUsd ? { max_cost_usd: limits.maxCostUsd } : {}),

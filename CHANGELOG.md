@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.9.0 (2026-10-31)
+
+- A run killed for memory (`pod.oom_killed`, or "out of memory" in the reason of a deployment without failure codes) is tried again at once on the same agent with more memory than it had: one GiB above half the memory limit the reason names, which is the next tier up, or twice the memory the request implied when the reason names none. At most twice per agent, and only while the gateway puts the retry on a different tier than the one it killed; an Agent with no tier that large refuses the request, which ends that agent's attempts. Before, the failure went to the next agent, sized the same, which died the same way.
+- New `min-cpu` and `min-memory-gib` inputs for a repository whose checks need more than the smallest tier with two CPUs.
+- Each attempt records the name of the tier its run got; the attempts table and the comment's history show it next to the run link.
+
+## 0.8.0 (2026-10-31)
+
+- A review asks for the smallest runtime tier with at least two CPUs (`min_cpu: 2`) instead of a tier named `S`: organizations name their tiers themselves now. An Agent none of whose allowed tiers has two CPUs refuses the request, and that run starts with the Agent's own limits, as before.
+- A review asks for a bounded run: a 10-minute idle timeout and a one-hour maximum duration, each at or below the Agent's own limits. An Agent whose limits are lower refuses them; that run takes the Agent's own limits, and the other Agents still get the request.
+- Once a review is complete, posted or not, the action deletes the workspaces of every run it started, so their volumes do not stay reserved until they expire.
+
 ## 0.7.0 (2026-10-29)
 
 - New `archestra-connect-to` input: a local `host:port`, such as a tunnel's `127.0.0.1:18443`, that the action dials for the gateway instead of the gateway's own address. The gateway's hostname stays the TLS server name, so its certificate is still checked, and nothing else is dialed there. The system resolver is no longer involved for the gateway, so a job needs no `/etc/hosts` entry or packet redirect for it. On GitHub-hosted runners, that routing intermittently made the job resolve `api.github.com` to the tunnel's loopback address, and every GitHub API call then failed TLS against the staging certificate.

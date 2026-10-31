@@ -1,4 +1,3 @@
-import { TIERS, type Tier } from "./archestra/client";
 import { type ConnectTo, parseConnectTo } from "./archestra/connect";
 import type { Strategy } from "./attempts";
 
@@ -45,8 +44,10 @@ export interface Inputs {
   ciRerun: boolean;
   maxAutoFixRounds: number;
   incrementalReview: boolean;
-  /** The container size a review asks for; null for the Agent's own. */
-  tier: Tier | null;
+  /** CPUs a review asks for: the smallest tier the Agent may use with at least this many. Null: the default of 2. */
+  minCpu: number | null;
+  /** GiB of memory a review asks for, with the same effect. Null: none. */
+  minMemoryGib: number | null;
 }
 
 export class InputError extends Error {
@@ -154,7 +155,8 @@ export function readInputs(get: (name: string) => string, readFile: (path: strin
     ciRerun: boolean("ci-rerun", value("ci-rerun") || "false"),
     maxAutoFixRounds,
     incrementalReview: boolean("incremental-review", value("incremental-review") || "true"),
-    tier: value("tier") ? oneOf("tier", value("tier"), TIERS) : null,
+    minCpu: value("min-cpu") ? integer("min-cpu", value("min-cpu"), 1, 64) : null,
+    minMemoryGib: value("min-memory-gib") ? integer("min-memory-gib", value("min-memory-gib"), 1, 512) : null,
   };
 }
 

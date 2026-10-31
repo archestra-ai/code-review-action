@@ -5,7 +5,6 @@ import {
   type ArchestraClient,
   isTerminalState,
   type StartedRun,
-  type Tier,
 } from "./archestra/client";
 import type { AttemptOutcome, AttemptRecord } from "./attempts";
 import { type Classification, classifyApiError, classifyRun } from "./classify";
@@ -61,7 +60,7 @@ export async function executeAttempt<T>(p: {
   const startedAt = clock.now();
   let runId: string | null = null;
   let continued = false;
-  let tier: Tier | null = null;
+  let tier: string | null = null;
   const record = (result: AttemptRecord["result"], reason: string, source: AttemptRecord["source"]): AttemptRecord => ({
     agentId: p.agentId,
     runId,

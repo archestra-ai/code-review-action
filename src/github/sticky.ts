@@ -215,8 +215,8 @@ const AttemptRecordSchema = z.object({
   runUrl: z.string().nullable(),
   /** True when the attempt continued the run of an earlier job. Records written before this field have false. */
   continued: z.boolean().default(false),
-  /** The container size the run got. Records written before this field have null. */
-  tier: z.enum(["S", "M", "L"]).nullable().default(null),
+  /** The name of the tier the run got. Records written before this field have null. */
+  tier: z.string().max(100).nullable().default(null),
   result: z.enum(["completed", "retriable", "non_retriable", "fatal"]),
   reason: z.string(),
   source: z.enum(["api", "failure-field", "message-pattern", "state", "timeout", "contract"]).nullable(),

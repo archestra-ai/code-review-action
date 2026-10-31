@@ -103,10 +103,15 @@ inputs:
   incremental-review:
     description: Set to false to start a fresh run for each review instead of continuing the previous workspace.
     default: "true"
-  tier:
+  min-cpu:
     description: >-
-      Container size a review asks for: S, M or L, at or below the Agent's largest. Empty for the Agent's
-      own size. A run killed for memory is tried again on the same agent at the next larger size either way.
+      CPUs a review asks for: the smallest runtime tier the Agent may use with at least this many.
+      Empty for 2. A run killed for memory is tried again on the same agent with more memory either way.
+    default: ""
+  min-memory-gib:
+    description: >-
+      GiB of memory a review asks for, with the same effect. Set it for a repository whose checks need more
+      than the smallest tier holds; a type check of a large repository alone can hold several GiB.
     default: ""
 
 outputs:

@@ -1,5 +1,5 @@
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
-import { ArchestraClient, type StartedRun } from "../src/archestra/client";
+import { ArchestraClient, type RunLimits, type StartedRun } from "../src/archestra/client";
 import { type AttemptOutcome, orderAgents, runWithFallback } from "../src/attempts";
 import { ReviewResultSchema } from "../src/contracts";
 import { continueRun, executeAttempt, readContract } from "../src/run-attempt";
@@ -65,22 +65,22 @@ describe("runWithFallback", () => {
     expect(result).toMatchObject({ ok: true, value: "a", agentId: "a" });
   });
 
-  it("tries the same runtime at the next larger tier after a memory kill, then the next runtime", async () => {
+  it("tries the same runtime with more memory after a memory kill, then the next runtime", async () => {
     const clock = new FakeClock();
-    const calls: Array<[string, string | null]> = [];
-    const attempt = async (
-      agentId: string,
-      info: { tier: "S" | "M" | "L" | null },
-    ): Promise<AttemptOutcome<string>> => {
-      calls.push([agentId, info.tier]);
+    const calls: Array<[string, number | null]> = [];
+    // The gateway's answer to each size: the tier it lands on.
+    const tiers = (limits: RunLimits | null) =>
+      limits?.minMemoryGib === undefined ? "S" : limits.minMemoryGib <= 8 ? "M" : "L";
+    const attempt = async (agentId: string, info: { limits: RunLimits | null }): Promise<AttemptOutcome<string>> => {
+      calls.push([agentId, info.limits?.minMemoryGib ?? null]);
       const record = {
         agentId,
         runId: null,
         runUrl: null,
         continued: false,
-        tier: info.tier,
+        tier: tiers(info.limits),
         result: "non_retriable" as const,
-        reason: "pod.oom_killed: out of memory",
+        reason: "pod.oom_killed: The run ran out of memory. The container reached its memory limit of 8 GiB.",
         source: "failure-field" as const,
         durationMs: 0,
       };
@@ -91,35 +91,44 @@ describe("runWithFallback", () => {
         record,
       };
     };
-    const result = await runWithFallback({ ...base(clock), retries: 1, maxFallbacks: 2, tier: "S", attempt });
-    // S, M and L on the first runtime, at once; the next runtime starts over at S.
+    const largerLimits = (previous: RunLimits | null) => ({ minMemoryGib: (previous?.minMemoryGib ?? 4) * 2 });
+    const limits = { minCpu: 2 };
+    const result = await runWithFallback({
+      ...base(clock),
+      retries: 1,
+      maxFallbacks: 2,
+      limits,
+      largerLimits,
+      attempt,
+    });
+    // Twice more memory on the first runtime, at once; the next runtime starts over.
     expect(calls).toEqual([
-      ["a", "S"],
-      ["a", "M"],
-      ["a", "L"],
-      ["b", "S"],
+      ["a", null],
+      ["a", 8],
+      ["a", 16],
+      ["b", null],
     ]);
     expect(clock.sleeps).toEqual([]);
     expect(result).toMatchObject({ ok: true, agentId: "b" });
     expect(result.attempts.map((attempt) => attempt.tier)).toEqual(["S", "M", "L", "S"]);
 
-    // The largest tier the caller allows stops the climb earlier.
+    // A retry the gateway put on the tier it just killed has nowhere larger to go.
     calls.length = 0;
-    await runWithFallback({ ...base(clock), retries: 1, maxFallbacks: 2, tier: "S", maxTier: "M", attempt });
+    const stuck = (agentId: string, info: { limits: RunLimits | null }) =>
+      attempt(agentId, info).then((outcome) => ({ ...outcome, record: { ...outcome.record, tier: "M" } }));
+    await runWithFallback({ ...base(clock), retries: 1, maxFallbacks: 2, limits, largerLimits, attempt: stuck });
     expect(calls).toEqual([
-      ["a", "S"],
-      ["a", "M"],
-      ["b", "S"],
+      ["a", null],
+      ["a", 8],
+      ["b", null],
     ]);
 
-    // A run whose size the gateway did not report has no larger size to ask for.
+    // Without a size policy a memory kill goes to the next runtime, as any other failure.
     calls.length = 0;
-    const unsized = (agentId: string, info: { tier: "S" | "M" | "L" | null }) =>
-      attempt(agentId, info).then((outcome) => ({ ...outcome, record: { ...outcome.record, tier: null } }));
-    await runWithFallback({ ...base(clock), retries: 1, maxFallbacks: 2, tier: "S", attempt: unsized });
+    await runWithFallback({ ...base(clock), retries: 1, maxFallbacks: 2, limits, attempt });
     expect(calls).toEqual([
-      ["a", "S"],
-      ["b", "S"],
+      ["a", null],
+      ["b", null],
     ]);
   });
 

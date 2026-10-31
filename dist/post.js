@@ -40334,7 +40334,6 @@ var RUN_TOOLS = {
   credential: "transfer_credential",
   delete: "delete_workspace"
 };
-var TIERS = ["S", "M", "L"];
 var ARCHESTRA_PREFIX = "archestra__";
 var RUN_TOOL = "run_tool";
 var FailureSchema = external_exports.object({ code: external_exports.string(), retriable: external_exports.boolean() });
@@ -40348,7 +40347,7 @@ var RunSummarySchema = external_exports.object({
   state_changed_at: external_exports.string().nullish()
 });
 var RunLimitsSchema = external_exports.object({
-  tier: external_exports.enum(TIERS).nullish(),
+  tier: external_exports.string().nullish(),
   idle_timeout_minutes: external_exports.number().nullish(),
   max_duration_hours: external_exports.number().nullish(),
   max_cost_usd: external_exports.number().nullish()
@@ -40413,7 +40412,9 @@ var ArchestraClient = class {
     } catch (error63) {
       const toolError = limits !== null && error63 instanceof ArchestraApiError && error63.kind === "tool";
       const rejectedLimits = toolError && /unrecognized key.*\blimits\b/i.test(error63.detail);
-      const refusedLimits = toolError && /is above this Agent's|sizes its runs with explicit resources/i.test(error63.detail);
+      const refusedLimits = toolError && /is above this Agent's|sizes its runs with explicit resources|No tier this Agent's runs may use|There is no tier named|has less than the/i.test(
+        error63.detail
+      );
       if (!rejectedLimits && !refusedLimits) throw error63;
       if (refusedLimits && body.requireLimits) throw error63;
       if (rejectedLimits) this.limitsSupported = false;
@@ -40555,6 +40556,8 @@ var ArchestraClient = class {
 function runLimitsArgs(limits) {
   return {
     ...limits.tier ? { tier: limits.tier } : {},
+    ...limits.minCpu ? { min_cpu: limits.minCpu } : {},
+    ...limits.minMemoryGib ? { min_memory_gib: limits.minMemoryGib } : {},
     ...limits.idleTimeoutMinutes ? { idle_timeout_minutes: limits.idleTimeoutMinutes } : {},
     ...limits.maxDurationHours ? { max_duration_hours: limits.maxDurationHours } : {},
     ...limits.maxCostUsd ? { max_cost_usd: limits.maxCostUsd } : {}
@@ -44994,7 +44997,8 @@ function readInputs(get, readFile) {
     ciRerun: boolean4("ci-rerun", value("ci-rerun") || "false"),
     maxAutoFixRounds,
     incrementalReview: boolean4("incremental-review", value("incremental-review") || "true"),
-    tier: value("tier") ? oneOf("tier", value("tier"), TIERS) : null
+    minCpu: value("min-cpu") ? integer2("min-cpu", value("min-cpu"), 1, 64) : null,
+    minMemoryGib: value("min-memory-gib") ? integer2("min-memory-gib", value("min-memory-gib"), 1, 512) : null
   };
 }
 function agentList(name, raw) {
@@ -45264,8 +45268,8 @@ var AttemptRecordSchema = external_exports.object({
   runUrl: external_exports.string().nullable(),
   /** True when the attempt continued the run of an earlier job. Records written before this field have false. */
   continued: external_exports.boolean().default(false),
-  /** The container size the run got. Records written before this field have null. */
-  tier: external_exports.enum(["S", "M", "L"]).nullable().default(null),
+  /** The name of the tier the run got. Records written before this field have null. */
+  tier: external_exports.string().max(100).nullable().default(null),
   result: external_exports.enum(["completed", "retriable", "non_retriable", "fatal"]),
   reason: external_exports.string(),
   source: external_exports.enum(["api", "failure-field", "message-pattern", "state", "timeout", "contract"]).nullable(),

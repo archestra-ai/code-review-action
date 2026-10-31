@@ -1,4 +1,4 @@
-import { largerTier, TIERS, type Tier } from "./archestra/client";
+import type { RunLimits } from "./archestra/client";
 import type { Classification, ClassificationSource, FailureClass } from "./classify";
 import type { Logger } from "./util";
 
@@ -37,8 +37,8 @@ export interface AttemptRecord {
   runUrl: string | null;
   /** True when the attempt continued the run of an earlier job instead of starting one. */
   continued: boolean;
-  /** The container size the run got; null when the gateway did not say or the run never started. */
-  tier: Tier | null;
+  /** The name of the tier the run got; null when the gateway did not say or the run never started. */
+  tier: string | null;
   result: "completed" | FailureClass;
   reason: string;
   source: ClassificationSource | null;
@@ -67,25 +67,29 @@ export interface ProgressReporter {
   attempt: (runtimeIndex: number, agentId: string) => Promise<void>;
   running: (runUrl: string) => Promise<void>;
   retry: (delayMs: number) => Promise<void>;
-  /** Called before the same runtime is tried again at a larger tier after a memory kill. Optional. */
-  largerTier?: (tier: Tier) => Promise<void>;
+  /** Called before the same runtime is tried again with more memory after a memory kill. Optional. */
+  largerSize?: (limits: RunLimits) => Promise<void>;
   next: () => Promise<void>;
   /** Called after each poll of a live run; may read the run's progress file. Optional. */
   poll?: (runId: string) => Promise<void>;
 }
+
+/** How many times one runtime is tried again with more memory after memory kills. */
+export const MAX_MEMORY_ESCALATIONS = 2;
 
 /**
  * Tries the runtimes in order. A retriable failure retries the same runtime
  * (`retries` times, after 30 s then 60 s). A non-retriable failure, or a
  * retriable one with no retries left, goes to the next runtime. A fatal
  * failure stops all attempts. At most 1 + maxFallbacks runtimes are used, so
- * the total is at most N x (1 + retries), plus the larger-tier attempts below.
+ * the total is at most N x (1 + retries), plus the larger-size attempts below.
  *
  * A run killed for memory asked for a container too small for its work, and
- * the next runtime, sized the same, would die the same way. The same runtime
- * is tried again at once at the next larger tier (S, M, L), up to `maxTier`;
- * that does not count as a retry. A run whose size the gateway did not report
- * has no larger size to ask for and goes to the next runtime.
+ * the next runtime, sized the same, would die the same way. When `largerLimits`
+ * is given, the same runtime is tried again at once with the limits it returns
+ * (more memory than the killed run had), at most MAX_MEMORY_ESCALATIONS times
+ * and only while the gateway puts each retry on a different tier than the one
+ * it killed; that does not count as a retry.
  */
 export async function runWithFallback<T>(params: {
   agents: readonly string[];
@@ -97,22 +101,23 @@ export async function runWithFallback<T>(params: {
   log: Logger;
   retryDelaysMs?: readonly number[];
   progress?: ProgressReporter;
-  /** The tier the attempts ask for; null for the Agent's own. */
-  tier?: Tier | null;
-  /** The largest tier a memory kill may move an attempt to. */
-  maxTier?: Tier;
+  /** The limits every first attempt asks for; null for the Agent's own. */
+  limits?: RunLimits | null;
+  /** The limits to ask for after a memory kill, from the killed attempt's limits and reason. */
+  largerLimits?: (previous: RunLimits | null, reason: string) => RunLimits | null;
   attempt: (
     agentId: string,
-    info: { runtimeIndex: number; retry: number; tier: Tier | null },
+    info: { runtimeIndex: number; retry: number; limits: RunLimits | null },
   ) => Promise<AttemptOutcome<T>>;
 }): Promise<FallbackResult<T>> {
   const delays = params.retryDelaysMs ?? DEFAULT_RETRY_DELAYS_MS;
-  const maxTier = params.maxTier ?? "L";
   const attempts: AttemptRecord[] = [];
   const runtimeCount = Math.min(params.agents.length, 1 + Math.max(0, params.maxFallbacks));
   for (let runtimeIndex = 0; runtimeIndex < runtimeCount; runtimeIndex++) {
     const agentId = params.agents[runtimeIndex] as string;
-    let tier = params.tier ?? null;
+    let limits = params.limits ?? null;
+    let escalations = 0;
+    let killedTier: string | null = null;
     let retry = 0;
     while (retry <= params.retries) {
       if (params.now() >= params.deadline) {
@@ -120,10 +125,10 @@ export async function runWithFallback<T>(params: {
         return { ok: false, attempts, fatal: false, deadlineReached: true };
       }
       params.log.info(
-        `Attempt ${attempts.length + 1}: agent ${agentId} (runtime ${runtimeIndex + 1}/${runtimeCount}, retry ${retry}/${params.retries}${tier ? `, tier ${tier}` : ""})`,
+        `Attempt ${attempts.length + 1}: agent ${agentId} (runtime ${runtimeIndex + 1}/${runtimeCount}, retry ${retry}/${params.retries}${escalations > 0 ? `, with at least ${limits?.minMemoryGib} GiB of memory` : ""})`,
       );
       await params.progress?.attempt(runtimeIndex, agentId);
-      const outcome = await params.attempt(agentId, { runtimeIndex, retry, tier });
+      const outcome = await params.attempt(agentId, { runtimeIndex, retry, limits });
       attempts.push(outcome.record);
       if (outcome.ok) {
         return {
@@ -142,13 +147,20 @@ export async function runWithFallback<T>(params: {
       if (classification.class === "fatal") {
         return { ok: false, attempts, fatal: true, deadlineReached: false };
       }
-      const larger = classification.outOfMemory && outcome.record.tier ? largerTier(outcome.record.tier) : null;
-      if (larger && TIERS.indexOf(larger) <= TIERS.indexOf(maxTier)) {
+      // The gateway sized the retry no larger than the killed run: nothing left to ask for.
+      const sameTier = killedTier !== null && outcome.record.tier !== null && outcome.record.tier === killedTier;
+      const larger =
+        classification.outOfMemory && params.largerLimits && escalations < MAX_MEMORY_ESCALATIONS && !sameTier
+          ? params.largerLimits(limits, classification.reason)
+          : null;
+      if (larger) {
+        escalations++;
+        killedTier = outcome.record.tier;
+        limits = larger;
         params.log.info(
-          `The run ran out of memory at tier ${outcome.record.tier}. Trying the same runtime at tier ${larger}.`,
+          `The run ran out of memory${outcome.record.tier ? ` on tier ${outcome.record.tier}` : ""}. Trying the same runtime with at least ${larger.minMemoryGib} GiB of memory.`,
         );
-        await params.progress?.largerTier?.(larger);
-        tier = larger;
+        await params.progress?.largerSize?.(larger);
         continue;
       }
       if (classification.class === "non_retriable") {

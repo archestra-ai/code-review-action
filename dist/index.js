@@ -41203,10 +41203,6 @@ var RUN_TOOLS = {
   credential: "transfer_credential",
   delete: "delete_workspace"
 };
-var TIERS = ["S", "M", "L"];
-function largerTier(tier) {
-  return TIERS[TIERS.indexOf(tier) + 1] ?? null;
-}
 var ARCHESTRA_PREFIX = "archestra__";
 var RUN_TOOL = "run_tool";
 var FailureSchema = external_exports.object({ code: external_exports.string(), retriable: external_exports.boolean() });
@@ -41220,7 +41216,7 @@ var RunSummarySchema = external_exports.object({
   state_changed_at: external_exports.string().nullish()
 });
 var RunLimitsSchema = external_exports.object({
-  tier: external_exports.enum(TIERS).nullish(),
+  tier: external_exports.string().nullish(),
   idle_timeout_minutes: external_exports.number().nullish(),
   max_duration_hours: external_exports.number().nullish(),
   max_cost_usd: external_exports.number().nullish()
@@ -41285,7 +41281,9 @@ var ArchestraClient = class {
     } catch (error63) {
       const toolError = limits !== null && error63 instanceof ArchestraApiError && error63.kind === "tool";
       const rejectedLimits = toolError && /unrecognized key.*\blimits\b/i.test(error63.detail);
-      const refusedLimits = toolError && /is above this Agent's|sizes its runs with explicit resources/i.test(error63.detail);
+      const refusedLimits = toolError && /is above this Agent's|sizes its runs with explicit resources|No tier this Agent's runs may use|There is no tier named|has less than the/i.test(
+        error63.detail
+      );
       if (!rejectedLimits && !refusedLimits) throw error63;
       if (refusedLimits && body.requireLimits) throw error63;
       if (rejectedLimits) this.limitsSupported = false;
@@ -41427,6 +41425,8 @@ var ArchestraClient = class {
 function runLimitsArgs(limits) {
   return {
     ...limits.tier ? { tier: limits.tier } : {},
+    ...limits.minCpu ? { min_cpu: limits.minCpu } : {},
+    ...limits.minMemoryGib ? { min_memory_gib: limits.minMemoryGib } : {},
     ...limits.idleTimeoutMinutes ? { idle_timeout_minutes: limits.idleTimeoutMinutes } : {},
     ...limits.maxDurationHours ? { max_duration_hours: limits.maxDurationHours } : {},
     ...limits.maxCostUsd ? { max_cost_usd: limits.maxCostUsd } : {}
@@ -41653,14 +41653,16 @@ function orderAgents(agents, strategy, options) {
   return [...agents.slice(start), ...agents.slice(0, start)];
 }
 var DEFAULT_RETRY_DELAYS_MS = [3e4, 6e4];
+var MAX_MEMORY_ESCALATIONS = 2;
 async function runWithFallback(params) {
   const delays = params.retryDelaysMs ?? DEFAULT_RETRY_DELAYS_MS;
-  const maxTier = params.maxTier ?? "L";
   const attempts = [];
   const runtimeCount = Math.min(params.agents.length, 1 + Math.max(0, params.maxFallbacks));
   for (let runtimeIndex = 0; runtimeIndex < runtimeCount; runtimeIndex++) {
     const agentId = params.agents[runtimeIndex];
-    let tier = params.tier ?? null;
+    let limits = params.limits ?? null;
+    let escalations = 0;
+    let killedTier = null;
     let retry = 0;
     while (retry <= params.retries) {
       if (params.now() >= params.deadline) {
@@ -41668,10 +41670,10 @@ async function runWithFallback(params) {
         return { ok: false, attempts, fatal: false, deadlineReached: true };
       }
       params.log.info(
-        `Attempt ${attempts.length + 1}: agent ${agentId} (runtime ${runtimeIndex + 1}/${runtimeCount}, retry ${retry}/${params.retries}${tier ? `, tier ${tier}` : ""})`
+        `Attempt ${attempts.length + 1}: agent ${agentId} (runtime ${runtimeIndex + 1}/${runtimeCount}, retry ${retry}/${params.retries}${escalations > 0 ? `, with at least ${limits?.minMemoryGib} GiB of memory` : ""})`
       );
       await params.progress?.attempt(runtimeIndex, agentId);
-      const outcome = await params.attempt(agentId, { runtimeIndex, retry, tier });
+      const outcome = await params.attempt(agentId, { runtimeIndex, retry, limits });
       attempts.push(outcome.record);
       if (outcome.ok) {
         return {
@@ -41690,13 +41692,16 @@ async function runWithFallback(params) {
       if (classification.class === "fatal") {
         return { ok: false, attempts, fatal: true, deadlineReached: false };
       }
-      const larger = classification.outOfMemory && outcome.record.tier ? largerTier(outcome.record.tier) : null;
-      if (larger && TIERS.indexOf(larger) <= TIERS.indexOf(maxTier)) {
+      const sameTier = killedTier !== null && outcome.record.tier !== null && outcome.record.tier === killedTier;
+      const larger = classification.outOfMemory && params.largerLimits && escalations < MAX_MEMORY_ESCALATIONS && !sameTier ? params.largerLimits(limits, classification.reason) : null;
+      if (larger) {
+        escalations++;
+        killedTier = outcome.record.tier;
+        limits = larger;
         params.log.info(
-          `The run ran out of memory at tier ${outcome.record.tier}. Trying the same runtime at tier ${larger}.`
+          `The run ran out of memory${outcome.record.tier ? ` on tier ${outcome.record.tier}` : ""}. Trying the same runtime with at least ${larger.minMemoryGib} GiB of memory.`
         );
-        await params.progress?.largerTier?.(larger);
-        tier = larger;
+        await params.progress?.largerSize?.(larger);
         continue;
       }
       if (classification.class === "non_retriable") {
@@ -42225,6 +42230,22 @@ async function cancelQuietly(client, runId, log) {
   }
 }
 
+// src/sizes.ts
+function memoryLimitGib(reason) {
+  const match = reason.match(/memory limit(?: of)? (\d+(?:\.\d+)?) ?(GiB|Gi|MiB|Mi)\b/i);
+  if (!match) return null;
+  const amount = Number(match[1]);
+  return /^Mi/i.test(match[2]) ? amount / 1024 : amount;
+}
+var DEFAULT_REQUEST_GIB = 4;
+function largerLimits(previous, reason) {
+  const limitGib = memoryLimitGib(reason);
+  const implied = previous?.minMemoryGib ?? (previous?.minCpu ? previous.minCpu * 2 : DEFAULT_REQUEST_GIB);
+  const minMemoryGib = limitGib !== null ? Math.floor(limitGib / 2) + 1 : implied * 2;
+  const { tier: _tier, ...rest } = previous ?? {};
+  return { ...rest, minMemoryGib: Math.max(minMemoryGib, (previous?.minMemoryGib ?? 0) + 1) };
+}
+
 // src/context.ts
 function makeResult(mode, partial2) {
   return {
@@ -42268,7 +42289,8 @@ async function launch(ctx, p) {
     sleep: ctx.clock.sleep,
     log: ctx.log,
     progress: p.progress,
-    tier: p.limits?.tier ?? null,
+    limits: p.limits ?? null,
+    largerLimits,
     attempt: (agentId, info2) => executeAttempt({
       client: ctx.archestra,
       agentId,
@@ -42307,13 +42329,11 @@ async function launch(ctx, p) {
           if (continued) return continued;
           continueFrom = null;
         }
-        const tier = info2.tier;
-        const escalated = tier !== null && tier !== (p.limits?.tier ?? null);
-        const limits = escalated ? { ...p.limits, tier } : p.limits;
+        const escalated = info2.limits !== null && info2.limits !== (p.limits ?? null);
         return ctx.archestra.startRun(agentId, {
           message: p.message,
           attachments: p.attachments,
-          ...limits ? { limits } : {},
+          ...info2.limits ? { limits: info2.limits } : {},
           ...escalated ? { requireLimits: true } : {}
         });
       }
@@ -46678,7 +46698,8 @@ function readInputs(get, readFile) {
     ciRerun: boolean4("ci-rerun", value("ci-rerun") || "false"),
     maxAutoFixRounds,
     incrementalReview: boolean4("incremental-review", value("incremental-review") || "true"),
-    tier: value("tier") ? oneOf("tier", value("tier"), TIERS) : null
+    minCpu: value("min-cpu") ? integer2("min-cpu", value("min-cpu"), 1, 64) : null,
+    minMemoryGib: value("min-memory-gib") ? integer2("min-memory-gib", value("min-memory-gib"), 1, 512) : null
   };
 }
 function agentList(name, raw) {
@@ -47005,8 +47026,8 @@ var AttemptRecordSchema = external_exports.object({
   runUrl: external_exports.string().nullable(),
   /** True when the attempt continued the run of an earlier job. Records written before this field have false. */
   continued: external_exports.boolean().default(false),
-  /** The container size the run got. Records written before this field have null. */
-  tier: external_exports.enum(["S", "M", "L"]).nullable().default(null),
+  /** The name of the tier the run got. Records written before this field have null. */
+  tier: external_exports.string().max(100).nullable().default(null),
   result: external_exports.enum(["completed", "retriable", "non_retriable", "fatal"]),
   reason: external_exports.string(),
   source: external_exports.enum(["api", "failure-field", "message-pattern", "state", "timeout", "contract"]).nullable(),
@@ -47919,12 +47940,12 @@ function progressReporter(ctx, pr, total) {
         true
       );
     },
-    largerTier: (tier) => {
+    largerSize: (limits) => {
       shown = "";
       return stepProgress(
         ctx,
         pr,
-        `the run ran out of memory; trying the same agent again at tier ${tier}`,
+        `the run ran out of memory; trying the same agent again with at least ${limits.minMemoryGib} GiB of memory`,
         null,
         true
       );
@@ -49194,7 +49215,7 @@ async function reviewCommentIds(gh, repo, pr, reviewId) {
 
 // src/modes/review.ts
 var VERDICT_WORDS = { approve: "approved", comment: "commented", request_changes: "changes requested" };
-var REVIEW_RUN_LIMITS = { idleTimeoutMinutes: 10, maxDurationHours: 1 };
+var REVIEW_RUN_LIMITS = { minCpu: 2, idleTimeoutMinutes: 10, maxDurationHours: 1 };
 async function runReview(ctx, prNumber) {
   const { gh, repo, inputs, log } = ctx;
   const pr = await loadPullRequest(gh, repo, prNumber);
@@ -49310,7 +49331,11 @@ async function reviewInProgress(ctx, p) {
     attachments,
     contract: CONTRACTS.review,
     timeoutMs: inputs.timeoutMs,
-    limits: inputs.tier ? { ...REVIEW_RUN_LIMITS, tier: inputs.tier } : REVIEW_RUN_LIMITS,
+    limits: {
+      ...REVIEW_RUN_LIMITS,
+      ...inputs.minCpu ? { minCpu: inputs.minCpu } : {},
+      ...inputs.minMemoryGib ? { minMemoryGib: inputs.minMemoryGib } : {}
+    },
     // A fix leaves a short-lived App token in the actor's CODE_REVIEW_GITHUB_TOKEN; a
     // private repository needs a fresh read-only token for the review.
     credentialToken: inputs.cloneToken || null,

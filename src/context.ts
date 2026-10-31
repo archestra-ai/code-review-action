@@ -5,6 +5,7 @@ import { type AttemptRecord, type FallbackResult, type ProgressReporter, runWith
 import type { Octokit } from "./github/octokit";
 import type { Inputs } from "./inputs";
 import { type AttemptValue, type Clock, continueRun, executeAttempt, readContract } from "./run-attempt";
+import { largerLimits } from "./sizes";
 import type { SavedJob } from "./stopped";
 import type { Attachment, Logger, RepoRef } from "./util";
 
@@ -150,7 +151,8 @@ export async function launch<T>(
     sleep: ctx.clock.sleep,
     log: ctx.log,
     progress: p.progress,
-    tier: p.limits?.tier ?? null,
+    limits: p.limits ?? null,
+    largerLimits,
     attempt: (agentId, info) =>
       executeAttempt<T>({
         client: ctx.archestra,
@@ -190,15 +192,13 @@ export async function launch<T>(
             if (continued) return continued;
             continueFrom = null;
           }
-          // After a memory kill the same runtime is tried at a larger tier. That
+          // After a memory kill the same runtime is tried with more memory. That
           // size is the point of the attempt, so an Agent that refuses it ends it.
-          const tier = info.tier;
-          const escalated = tier !== null && tier !== (p.limits?.tier ?? null);
-          const limits = escalated ? { ...p.limits, tier } : p.limits;
+          const escalated = info.limits !== null && info.limits !== (p.limits ?? null);
           return ctx.archestra.startRun(agentId, {
             message: p.message,
             attachments: p.attachments,
-            ...(limits ? { limits } : {}),
+            ...(info.limits ? { limits: info.limits } : {}),
             ...(escalated ? { requireLimits: true } : {}),
           });
         },
