@@ -41273,7 +41273,9 @@ var ArchestraClient = class {
     } catch (error63) {
       const toolError = limits !== null && error63 instanceof ArchestraApiError && error63.kind === "tool";
       const rejectedLimits = toolError && /unrecognized key.*\blimits\b/i.test(error63.detail);
-      const refusedLimits = toolError && /is above this Agent's|sizes its runs with explicit resources/i.test(error63.detail);
+      const refusedLimits = toolError && /is above this Agent's|sizes its runs with explicit resources|No tier this Agent's runs may use|There is no tier named|has less than the/i.test(
+        error63.detail
+      );
       if (!rejectedLimits && !refusedLimits) throw error63;
       if (rejectedLimits) this.limitsSupported = false;
       data = await this.call(RUN_TOOLS.start, args, "start run");
@@ -41406,6 +41408,8 @@ var ArchestraClient = class {
 function runLimitsArgs(limits) {
   return {
     ...limits.tier ? { tier: limits.tier } : {},
+    ...limits.minCpu ? { min_cpu: limits.minCpu } : {},
+    ...limits.minMemoryGib ? { min_memory_gib: limits.minMemoryGib } : {},
     ...limits.idleTimeoutMinutes ? { idle_timeout_minutes: limits.idleTimeoutMinutes } : {},
     ...limits.maxDurationHours ? { max_duration_hours: limits.maxDurationHours } : {},
     ...limits.maxCostUsd ? { max_cost_usd: limits.maxCostUsd } : {}
@@ -49132,7 +49136,7 @@ async function reviewCommentIds(gh, repo, pr, reviewId) {
 
 // src/modes/review.ts
 var VERDICT_WORDS = { approve: "approved", comment: "commented", request_changes: "changes requested" };
-var REVIEW_RUN_LIMITS = { tier: "S", idleTimeoutMinutes: 10, maxDurationHours: 1 };
+var REVIEW_RUN_LIMITS = { minCpu: 2, idleTimeoutMinutes: 10, maxDurationHours: 1 };
 async function runReview(ctx, prNumber) {
   const { gh, repo, inputs, log } = ctx;
   const pr = await loadPullRequest(gh, repo, prNumber);

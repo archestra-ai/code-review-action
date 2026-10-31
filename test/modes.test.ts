@@ -61,7 +61,11 @@ describe("review mode", () => {
     expect(harness.archestra.starts[0]!.attachmentNames).toEqual(["pr.json", "pr.diff"]);
     expect(Buffer.byteLength(harness.archestra.starts[0]!.message)).toBeLessThanOrEqual(MAX_MESSAGE_BYTES);
     // A review asks for a bounded run, and its workspace goes once the review has posted.
-    expect(harness.archestra.starts[0]!.limits).toEqual({ tier: "S", idle_timeout_minutes: 10, max_duration_hours: 1 });
+    expect(harness.archestra.starts[0]!.limits).toEqual({
+      min_cpu: 2,
+      idle_timeout_minutes: 10,
+      max_duration_hours: 1,
+    });
     expect(harness.archestra.deletes).toEqual([result.runId]);
   });
 
@@ -81,7 +85,10 @@ describe("review mode", () => {
 
   it("starts without limits on an Agent whose own limits refuse them, and keeps asking other Agents", async () => {
     const harness = setup();
-    harness.archestra.limitRefusals.set(AGENT_A, "Tier S is above this Agent's largest tier M");
+    harness.archestra.limitRefusals.set(
+      AGENT_A,
+      "No tier this Agent's runs may use has 2 CPU. Tiers this Agent's runs may use: XS (1 CPU, 2 GiB (4 GiB limit)).",
+    );
     harness.archestra.script(AGENT_A, { end: "failed", statusReason: "Budget exceeded" });
     harness.archestra.script(AGENT_B, { end: "completed", files: { "review.json": reviewJson() } });
     const result = await run(harness.context("pull_request", prEvent(harness.github)));
