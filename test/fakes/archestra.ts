@@ -123,6 +123,8 @@ export class FakeArchestra {
   readonly expiredWorkspaces = new Set<string>();
   /** Run ids whose workspace is retained until this time; one hour from the read when unset. */
   readonly retainedUntil = new Map<string, number>();
+  /** Run ids whose finished run refuses a new turn with this message. */
+  readonly continuationRefusals = new Map<string, string>();
   /** "direct": the tools are listed. "run_tool": only search_tools and run_tool are listed. */
   exposure: "direct" | "run_tool" = "direct";
   /** Tools that the gateway does not expose. */
@@ -414,6 +416,8 @@ export class FakeArchestra {
     if (this.expiredWorkspaces.has(runId) || this.deletedWorkspaces.has(runId)) {
       return toolError("The run is unavailable, busy, or expired. No new run was started.");
     }
+    const refusal = this.continuationRefusals.get(runId);
+    if (refusal) return toolError(refusal);
     const since = this.writes.filter((write) => write.runId === runId && write.turn === run.turns.length);
     const inputs = since.filter((write) => !/\.json$/.test(write.path) || /^turn-/.test(write.path));
     const record: RecordedStart = {

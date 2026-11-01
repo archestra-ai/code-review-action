@@ -2,7 +2,7 @@
 
 ## 0.9.1 (2026-10-31)
 
-- A re-review or a fix no longer continues the previous run when its workspace is kept for less time than one attempt may take (`timeout-minutes`, or `fix-timeout-minutes` for a fix). A turn in a kept workspace stops when the workspace's retention ends, and a new turn does not extend it, so such a re-review was stopped a few minutes after it started. The action starts a fresh run instead.
+- A re-review or a fix no longer continues the previous run when its workspace is kept for less time than one attempt may take (`timeout-minutes`, or `fix-timeout-minutes` for a fix). A turn in a kept workspace stops when the workspace's retention ends, and a new turn does not extend it, so such a re-review was stopped a few minutes after it started. The action starts a fresh run instead, also when the gateway refuses the new turn because too little retention is left.
 
 ## 0.9.0 (2026-10-31)
 

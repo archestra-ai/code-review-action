@@ -515,6 +515,36 @@ describe("continueRun", () => {
     },
   );
 
+  it("returns null when the gateway refuses the new turn for its retention", async () => {
+    const fake = new FakeArchestra();
+    server.use(...fake.handlers());
+    const runId = "99999999-9999-4999-8999-999999999999";
+    fake.seedRun(AGENT_A, runId);
+    fake.continuationRefusals.set(
+      runId,
+      "This run cannot take another turn: its saved files are kept only until a later time. No new turn was started.",
+    );
+    const client = new ArchestraClient({ gatewayUrl: fake.gatewayUrl, token: fake.token });
+    const log = new MemoryLogger();
+    const clock = new FakeClock();
+    const started = await continueRun({
+      client,
+      runId,
+      message: "review again",
+      files: [],
+      resultFile: "review.json",
+      turnKey: "turn-k1",
+      deadline: clock.now() + 3_600_000,
+      minRetainedMs: 600_000,
+      clock,
+      log,
+    });
+    expect(started).toBeNull();
+    expect(fake.starts).toEqual([]);
+    expect(clock.sleeps).toEqual([]);
+    expect(log.lines.join("\n")).toContain("refused a new turn");
+  });
+
   it("returns null for an unknown run", async () => {
     const fake = new FakeArchestra();
     server.use(...fake.handlers());

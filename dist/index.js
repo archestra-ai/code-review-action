@@ -42198,7 +42198,7 @@ async function continueRun(p) {
     const retainedUntil = workspace.retainedUntil ? Date.parse(workspace.retainedUntil) : Number.NaN;
     if (Number.isFinite(retainedUntil) && retainedUntil - p.clock.now() < needed) {
       p.log.info(
-        `The previous workspace is kept only until ${workspace.retainedUntil}, less than the ${Math.round(needed / 6e4)} min this turn may need, and a turn there stops at that time. Starting a fresh run.`
+        `The previous workspace is kept only until ${workspace.retainedUntil}, less than the ${Math.max(1, Math.ceil(needed / 6e4))} min this turn may need, and a turn there stops at that time. Starting a fresh run.`
       );
       return null;
     }
@@ -42220,6 +42220,10 @@ ${names.map((name) => `- ${WORKSPACE_ROOT}/${name}`).join("\n")}` : p.message;
       if (!(error63 instanceof ArchestraApiError) || error63.kind !== "tool") throw error63;
       if (/only the person the run acts as/i.test(error63.detail)) {
         p.log.info("The previous run belongs to another person. Starting a fresh run.");
+        return null;
+      }
+      if (/cannot take another turn/i.test(error63.detail)) {
+        p.log.info(`The previous workspace refused a new turn (${error63.detail}). Starting a fresh run.`);
         return null;
       }
       if (/unavailable, busy, or expired/i.test(error63.detail)) {
