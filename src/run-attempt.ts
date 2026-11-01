@@ -233,8 +233,9 @@ export function continuationFileNames(turnKey: string, files: readonly Attachmen
  * first and the message lists their paths, the way the platform lists
  * attachments. When the workspace is busy, waits until it is free (bounded
  * by `deadline`). Returns null when the run cannot continue for this
- * token: another person's run, or a workspace that is no longer retained.
- * The caller then starts a fresh run.
+ * token: another person's run, a workspace that is no longer retained, or
+ * one retained for less than `minRetainedMs`. The caller then starts a
+ * fresh run.
  */
 export async function continueRun(p: {
   client: ArchestraClient;
@@ -244,6 +245,11 @@ export async function continueRun(p: {
   resultFile: string;
   turnKey: string;
   deadline: number;
+  /**
+   * The time the turn may need. A continued turn stops when its workspace's
+   * retention ends, and a new turn does not extend it.
+   */
+  minRetainedMs: number;
   clock: Clock;
   log: Logger;
   busyWaitMs?: number;
@@ -291,6 +297,14 @@ export async function continueRun(p: {
       );
       return null;
     }
+    const needed = Math.min(p.minRetainedMs, p.deadline - p.clock.now());
+    const retainedUntil = workspace.retainedUntil ? Date.parse(workspace.retainedUntil) : Number.NaN;
+    if (Number.isFinite(retainedUntil) && retainedUntil - p.clock.now() < needed) {
+      p.log.info(
+        `The previous workspace is kept only until ${workspace.retainedUntil}, less than the ${Math.max(1, Math.ceil(needed / 60_000))} min this turn may need, and a turn there stops at that time. Starting a fresh run.`,
+      );
+      return null;
+    }
 
     const names = continuationFileNames(p.turnKey, p.files);
     for (const [index, file] of p.files.entries()) {
@@ -311,6 +325,10 @@ export async function continueRun(p: {
       if (!(error instanceof ArchestraApiError) || error.kind !== "tool") throw error;
       if (/only the person the run acts as/i.test(error.detail)) {
         p.log.info("The previous run belongs to another person. Starting a fresh run.");
+        return null;
+      }
+      if (/cannot take another turn/i.test(error.detail)) {
+        p.log.info(`The previous workspace refused a new turn (${error.detail}). Starting a fresh run.`);
         return null;
       }
       if (/unavailable, busy, or expired/i.test(error.detail)) {

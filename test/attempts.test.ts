@@ -236,6 +236,7 @@ describe("executeAttempt against the fake Archestra gateway", () => {
           resultFile: "review.json",
           turnKey: "turn-k1",
           deadline: clock.now() + 3_600_000,
+          minRetainedMs: 600_000,
           clock,
           log,
         });
@@ -444,6 +445,7 @@ describe("continueRun", () => {
       resultFile: "fix-result.json",
       turnKey: "turn-k1",
       deadline: clock.now() + 600_000,
+      minRetainedMs: 600_000,
       clock,
       log,
     });
@@ -466,11 +468,81 @@ describe("continueRun", () => {
       resultFile: "review.json",
       turnKey: "turn-k1",
       deadline: clock.now() + 600_000,
+      minRetainedMs: 600_000,
       clock,
       log: new MemoryLogger(),
     });
     expect(started).toBeNull();
     expect(fake.calls).toEqual([]);
+  });
+
+  it.each([
+    { minutesLeft: 5, continues: false },
+    { minutesLeft: 15, continues: true },
+  ])(
+    "with $minutesLeft min of retention left and a 10-min turn, continues: $continues",
+    async ({ minutesLeft, continues }) => {
+      const fake = new FakeArchestra();
+      server.use(...fake.handlers());
+      const runId = "99999999-9999-4999-8999-999999999999";
+      fake.seedRun(AGENT_A, runId);
+      fake.retainedUntil.set(runId, Date.now() + minutesLeft * 60_000);
+      fake.script(AGENT_A, { end: "completed", files: {} });
+      const client = new ArchestraClient({ gatewayUrl: fake.gatewayUrl, token: fake.token });
+      const log = new MemoryLogger();
+      const clock = new FakeClock();
+      clock.time = Date.now();
+      const started = await continueRun({
+        client,
+        runId,
+        message: "review again",
+        files: [jsonAttachment("pr.json", { number: 7 })],
+        resultFile: "review.json",
+        turnKey: "turn-k1",
+        deadline: clock.now() + 3_600_000,
+        minRetainedMs: 600_000,
+        clock,
+        log,
+      });
+      if (continues) {
+        expect(started).toMatchObject({ runId, continued: true });
+        return;
+      }
+      expect(started).toBeNull();
+      expect(fake.writes).toEqual([]);
+      expect(fake.starts).toEqual([]);
+      expect(log.lines.join("\n")).toContain("Starting a fresh run");
+    },
+  );
+
+  it("returns null when the gateway refuses the new turn for its retention", async () => {
+    const fake = new FakeArchestra();
+    server.use(...fake.handlers());
+    const runId = "99999999-9999-4999-8999-999999999999";
+    fake.seedRun(AGENT_A, runId);
+    fake.continuationRefusals.set(
+      runId,
+      "This run cannot take another turn: its saved files are kept only until a later time. No new turn was started.",
+    );
+    const client = new ArchestraClient({ gatewayUrl: fake.gatewayUrl, token: fake.token });
+    const log = new MemoryLogger();
+    const clock = new FakeClock();
+    const started = await continueRun({
+      client,
+      runId,
+      message: "review again",
+      files: [],
+      resultFile: "review.json",
+      turnKey: "turn-k1",
+      deadline: clock.now() + 3_600_000,
+      minRetainedMs: 600_000,
+      clock,
+      log,
+    });
+    expect(started).toBeNull();
+    expect(fake.starts).toEqual([]);
+    expect(clock.sleeps).toEqual([]);
+    expect(log.lines.join("\n")).toContain("refused a new turn");
   });
 
   it("returns null for an unknown run", async () => {
@@ -486,6 +558,7 @@ describe("continueRun", () => {
       resultFile: "fix-result.json",
       turnKey: "turn-k1",
       deadline: clock.now() + 600_000,
+      minRetainedMs: 600_000,
       clock,
       log: new MemoryLogger(),
     });

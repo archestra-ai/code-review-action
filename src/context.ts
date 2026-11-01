@@ -190,6 +190,7 @@ export async function launch<T>(
               resultFile: p.contract.file,
               turnKey: `turn-${ctx.clock.now().toString(36)}`,
               deadline,
+              minRetainedMs: p.timeoutMs,
               clock: ctx.clock,
               log: ctx.log,
             });

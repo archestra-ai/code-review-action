@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.9.1 (2026-10-31)
+
+- A re-review or a fix no longer continues the previous run when its workspace is kept for less time than one attempt may take (`timeout-minutes`, or `fix-timeout-minutes` for a fix). A turn in a kept workspace stops when the workspace's retention ends, and a new turn does not extend it, so such a re-review was stopped a few minutes after it started. The action starts a fresh run instead, also when the gateway refuses the new turn because too little retention is left.
+
 ## 0.9.0 (2026-10-31)
 
 - A run killed for memory (`pod.oom_killed`, or "out of memory" in the reason of a deployment without failure codes) is tried again at once on the same agent with more memory than it had: one GiB above half the memory limit the reason names, which is the next tier up, or twice the memory the request implied when the reason names none. At most twice per agent, and only while the gateway puts the retry on a different tier than the one it killed; an Agent with no tier that large refuses the request, which ends that agent's attempts. Before, the failure went to the next agent, sized the same, which died the same way.
