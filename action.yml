@@ -110,8 +110,8 @@ inputs:
     default: ""
   min-memory-gib:
     description: >-
-      GiB of memory a review asks for, with the same effect. Set it for a repository whose checks need more
-      than the smallest tier holds; a type check of a large repository alone can hold several GiB.
+      GiB of memory a review asks for, with the same effect. Set it for a repository whose verifications need more
+      than the smallest tier holds.
     default: ""
 
 outputs:
