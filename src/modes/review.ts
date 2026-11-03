@@ -70,12 +70,13 @@ import {
 const VERDICT_WORDS = { approve: "approved", comment: "commented", request_changes: "changes requested" } as const;
 
 /**
- * A review clones, runs a few checks and writes one file: the smallest tier
- * with two CPUs, whatever the organization calls it, stopped ten minutes after
- * it goes idle, and gone with its files after an hour even when the deletion
- * after the review does not happen. The `min-cpu` and `min-memory-gib` inputs
- * raise the size for a repository whose checks need more; a run killed for
- * memory is tried again with more memory either way.
+ * A review clones, reads and writes one file; it runs none of the repository's
+ * checks, only a small test or script of its own when a finding needs one: the
+ * smallest tier with two CPUs, whatever the organization calls it, stopped ten
+ * minutes after it goes idle, and gone with its files after an hour even when
+ * the deletion after the review does not happen. The `min-cpu` and
+ * `min-memory-gib` inputs raise the size for a repository whose verifications
+ * need more; a run killed for memory is tried again with more memory either way.
  */
 const REVIEW_RUN_LIMITS = { minCpu: 2, idleTimeoutMinutes: 10, maxDurationHours: 1 } as const;
 
