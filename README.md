@@ -143,7 +143,7 @@ When `/archestra fix-ci` runs, it classifies failing checks into categories:
 | Category         | Meaning                                            | Action Taken                                             |
 | ---------------- | -------------------------------------------------- | -------------------------------------------------------- |
 | `pr_caused`      | The pull request broke the check.                  | Agent fixes the code and pushes commits to the branch.   |
-| `flaky`          | The check passed on immediate re-run.              | Re-runs failed jobs if `ci-rerun: true`.                 |
+| `flaky`          | The failing part passes on a local rerun at once.  | Re-runs failed jobs if `ci-rerun: true`.                 |
 | `pre_existing`   | The check also fails on the base branch.           | Suggests a separate fix PR via `/archestra fix-ci-main`. |
 | `infrastructure` | Runner, container registry, or quota failure.      | Reported in summary; manual re-run required.             |
 | `needs_human`    | Cause unclear or fix requires manual intervention. | Diagnostic notes posted in comment.                      |
