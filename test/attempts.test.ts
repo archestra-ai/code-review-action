@@ -629,4 +629,43 @@ describe("continueRun", () => {
     });
     expect(started).toBeNull();
   });
+
+  it("accepts null values on optional contract fields in readContract", async () => {
+    const fake = new FakeArchestra();
+    server.use(...fake.handlers());
+    const runId = "99999999-9999-4999-8999-999999999999";
+    fake.seedRun(AGENT_A, runId);
+    const client = new ArchestraClient({ gatewayUrl: fake.gatewayUrl, token: fake.token });
+    await client.writeWorkspaceFile(
+      runId,
+      "review.json",
+      Buffer.from(
+        JSON.stringify({
+          summary: "Reviewed changes.",
+          findings: [
+            {
+              file: "src/index.ts",
+              line: 10,
+              end_line: null,
+              severity: "medium",
+              title: "Example finding",
+              summary: "Example summary.",
+              failure_scenario: "Example failure scenario.",
+              recommendation: "Example recommendation.",
+              suggestion: null,
+              previous_id: null,
+            },
+          ],
+        }),
+        "utf8",
+      ),
+    );
+    const result = await readContract(client, runId, "review.json", ReviewResultSchema);
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.value.findings[0]?.previous_id).toBeUndefined();
+      expect(result.value.findings[0]?.end_line).toBeUndefined();
+      expect(result.value.findings[0]?.suggestion).toBeUndefined();
+    }
+  });
 });

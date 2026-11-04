@@ -209,7 +209,7 @@ export async function launch<T>(
           }
           let freshAgentId = agentId ?? null;
           setAgentId(freshAgentId);
-          const preferredAgentId = info.runtimeIndex === 0 ? preferredFirstAgentId : null;
+          const preferredAgentId = preferredFirstAgentId;
           const credentialGrantIds: string[] = [];
           if (p.credentialToken) {
             const grantId = await ctx.archestra.transferCredential(

@@ -196,6 +196,19 @@ export async function executeAttempt<T>(p: {
   }
 }
 
+/** Recursively strips `null`-valued object properties so optional Zod fields accept JSON `null` from LLMs. */
+function stripNullObjectValues(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(stripNullObjectValues);
+  if (value && typeof value === "object") {
+    const out: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+      if (v !== null) out[k] = stripNullObjectValues(v);
+    }
+    return out;
+  }
+  return value;
+}
+
 /** Reads a JSON result file from the workspace and validates it. */
 export async function readContract<T>(
   client: ArchestraClient,
@@ -215,7 +228,7 @@ export async function readContract<T>(
   if (json && typeof json === "object" && (json as Record<string, unknown>).archestra_pending === true) {
     return { ok: false, reason: "the run did not write a new result in this turn" };
   }
-  const parsed = schema.safeParse(json);
+  const parsed = schema.safeParse(stripNullObjectValues(json));
   if (!parsed.success) {
     const issues = parsed.error.issues
       .slice(0, 5)
