@@ -1,37 +1,21 @@
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { ArchestraClient, type RunLimits, type StartedRun } from "../src/archestra/client";
-import { type AttemptOutcome, orderAgents, runWithFallback } from "../src/attempts";
+import { type AttemptOutcome, runWithFallback } from "../src/attempts";
 import { ReviewResultSchema } from "../src/contracts";
 import { continueRun, executeAttempt, readContract } from "../src/run-attempt";
 import { jsonAttachment, textAttachment } from "../src/util";
 import { FakeArchestra } from "./fakes/archestra";
 import { AGENT_A, AGENT_B, AGENT_C, FakeClock, MemoryLogger, mockServer, reviewJson } from "./helpers";
 
-describe("orderAgents", () => {
-  const agents = ["a", "b", "c"];
-  it("rotates on (PR number + run attempt) mod N", () => {
-    expect(orderAgents(agents, "rotate", { prNumber: 7, runAttempt: 1, random: Math.random })).toEqual(["c", "a", "b"]);
-    expect(orderAgents(agents, "rotate", { prNumber: 7, runAttempt: 2, random: Math.random })).toEqual(["a", "b", "c"]);
-    // Deterministic: the same inputs give the same order.
-    expect(orderAgents(agents, "rotate", { prNumber: 7, runAttempt: 1, random: Math.random })).toEqual(["c", "a", "b"]);
-  });
-  it("keeps the configured order for ordered", () => {
-    expect(orderAgents(agents, "ordered", { prNumber: 7, runAttempt: 1, random: Math.random })).toEqual(agents);
-  });
-  it("is a permutation for random", () => {
-    const order = orderAgents(agents, "random", { prNumber: 7, runAttempt: 1, random: () => 0 });
-    expect([...order].sort()).toEqual(agents);
-  });
-});
-
 function scripted(results: Array<"ok" | "retriable" | "non_retriable" | "fatal">) {
   const calls: string[] = [];
   let i = 0;
-  const attempt = async (agentId: string): Promise<AttemptOutcome<string>> => {
-    calls.push(agentId);
+  const attempt = async (agentId: string | null): Promise<AttemptOutcome<string>> => {
+    const resolved = agentId ?? "gateway";
+    calls.push(resolved);
     const result = results[i++] ?? "non_retriable";
     const record = {
-      agentId,
+      agentId: resolved,
       runId: null,
       runUrl: null,
       continued: false,
@@ -41,7 +25,7 @@ function scripted(results: Array<"ok" | "retriable" | "non_retriable" | "fatal">
       source: null,
       durationMs: 0,
     };
-    if (result === "ok") return { ok: true, value: agentId, record };
+    if (result === "ok") return { ok: true, value: resolved, record };
     return { ok: false, classification: { class: result, reason: result, source: "api" }, record };
   };
   return { calls, attempt };
@@ -71,10 +55,14 @@ describe("runWithFallback", () => {
     // The gateway's answer to each size: the tier it lands on.
     const tiers = (limits: RunLimits | null) =>
       limits?.minMemoryGib === undefined ? "S" : limits.minMemoryGib <= 8 ? "M" : "L";
-    const attempt = async (agentId: string, info: { limits: RunLimits | null }): Promise<AttemptOutcome<string>> => {
-      calls.push([agentId, info.limits?.minMemoryGib ?? null]);
+    const attempt = async (
+      agentId: string | null,
+      info: { limits: RunLimits | null },
+    ): Promise<AttemptOutcome<string>> => {
+      const resolved = agentId ?? "gateway";
+      calls.push([resolved, info.limits?.minMemoryGib ?? null]);
       const record = {
-        agentId,
+        agentId: resolved,
         runId: null,
         runUrl: null,
         continued: false,
@@ -84,7 +72,7 @@ describe("runWithFallback", () => {
         source: "failure-field" as const,
         durationMs: 0,
       };
-      if (agentId === "b") return { ok: true, value: agentId, record: { ...record, result: "completed" } };
+      if (resolved === "b") return { ok: true, value: resolved, record: { ...record, result: "completed" } };
       return {
         ok: false,
         classification: { class: "non_retriable", reason: record.reason, source: "failure-field", outOfMemory: true },
@@ -114,7 +102,7 @@ describe("runWithFallback", () => {
 
     // A retry the gateway put on the tier it just killed has nowhere larger to go.
     calls.length = 0;
-    const stuck = (agentId: string, info: { limits: RunLimits | null }) =>
+    const stuck = (agentId: string | null, info: { limits: RunLimits | null }) =>
       attempt(agentId, info).then((outcome) => ({ ...outcome, record: { ...outcome.record, tier: "M" } }));
     await runWithFallback({ ...base(clock), retries: 1, maxFallbacks: 2, limits, largerLimits, attempt: stuck });
     expect(calls).toEqual([
@@ -126,7 +114,7 @@ describe("runWithFallback", () => {
     // A gateway that does not say which tier a run got (it accepted the limits
     // without applying them) gives nothing to climb from: the next runtime.
     calls.length = 0;
-    const unsized = (agentId: string, info: { limits: RunLimits | null }) =>
+    const unsized = (agentId: string | null, info: { limits: RunLimits | null }) =>
       attempt(agentId, info).then((outcome) => ({ ...outcome, record: { ...outcome.record, tier: null } }));
     await runWithFallback({ ...base(clock), retries: 1, maxFallbacks: 2, limits, largerLimits, attempt: unsized });
     expect(calls).toEqual([
@@ -195,6 +183,49 @@ describe("runWithFallback", () => {
     });
     expect(calls).toEqual(["a", "a"]);
     expect(result.deadlineReached).toBe(true);
+  });
+
+  it("retries the gateway-selected subagent and excludes failed subagents on fallback when agents are omitted", async () => {
+    const clock = new FakeClock();
+    const seen: Array<{ agentId: string | null; excludeAgentIds: readonly string[] }> = [];
+    const Outcomes: Array<{ picked: string; result: "retriable" | "non_retriable" | "ok" }> = [
+      { picked: AGENT_A, result: "retriable" },
+      { picked: AGENT_A, result: "non_retriable" },
+      { picked: AGENT_B, result: "ok" },
+    ];
+    let step = 0;
+    const result = await runWithFallback({
+      retries: 1,
+      maxFallbacks: 2,
+      deadline: clock.now() + 3_600_000,
+      now: clock.now,
+      sleep: clock.sleep,
+      log: new MemoryLogger(),
+      attempt: async (agentId, info) => {
+        seen.push({ agentId, excludeAgentIds: info.excludeAgentIds });
+        const item = Outcomes[step++]!;
+        const resolved = agentId ?? item.picked;
+        const record = {
+          agentId: resolved,
+          runId: null,
+          runUrl: null,
+          continued: false,
+          tier: null,
+          result: item.result === "ok" ? ("completed" as const) : item.result,
+          reason: item.result,
+          source: null,
+          durationMs: 0,
+        };
+        if (item.result === "ok") return { ok: true, value: resolved, record };
+        return { ok: false, classification: { class: item.result, reason: item.result, source: "api" }, record };
+      },
+    });
+    expect(seen).toEqual([
+      { agentId: null, excludeAgentIds: [] },
+      { agentId: AGENT_A, excludeAgentIds: [] },
+      { agentId: null, excludeAgentIds: [AGENT_A] },
+    ]);
+    expect(result).toMatchObject({ ok: true, agentId: AGENT_B });
   });
 });
 

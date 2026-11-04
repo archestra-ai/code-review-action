@@ -1,14 +1,5 @@
-import { orderAgents } from "../attempts";
 import { renderBrief } from "../briefs";
-import {
-  type ActionContext,
-  type ActionResult,
-  briefTitle,
-  cloneUrl,
-  launch,
-  makeResult,
-  preferAgent,
-} from "../context";
+import { type ActionContext, type ActionResult, briefTitle, cloneUrl, launch, makeResult } from "../context";
 import { CONTRACTS } from "../contracts";
 import { verifyCommits } from "../github/commits";
 import type { FindingSelection, Sender, TriggerSource } from "../github/event";
@@ -106,27 +97,19 @@ export async function runFix(ctx: ActionContext, trigger: FixTriggerInput): Prom
   });
 
   const marker = sticky.marker;
-  const order = orderAgents(inputs.agents, inputs.strategy, {
-    prNumber: pr.number,
-    runAttempt: ctx.runAttempt,
-    random: ctx.random,
-  });
-  const continueFrom =
-    marker.run && marker.agent && order.includes(marker.agent) ? { agentId: marker.agent, runId: marker.run } : null;
-  const agents = preferAgent(order, continueFrom?.agentId ?? null);
+  const continueFrom = marker.run && marker.agent ? { agentId: marker.agent, runId: marker.run } : null;
 
   const doing = `applying ${selected.length} finding${selected.length === 1 ? "" : "s"}`;
   await startProgress(ctx, pr, { doing, login: identity.login });
 
   const outcome = await launch(ctx, {
-    agents,
     continueFrom,
     message,
     attachments,
     contract: CONTRACTS.fix,
     timeoutMs: inputs.fixTimeoutMs,
     credentialToken: inputs.fixToken,
-    progress: progressReporter(ctx, pr, agents.length),
+    progress: progressReporter(ctx, pr),
   });
 
   if (!outcome.ok || !outcome.value) {

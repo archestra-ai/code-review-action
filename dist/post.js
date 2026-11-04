@@ -40383,6 +40383,8 @@ var ArchestraClient = class {
   runUrls = /* @__PURE__ */ new Map();
   /** False once the gateway rejected `limits`: a deployment from before run limits. */
   limitsSupported = true;
+  /** False once the gateway rejected `exclude_agent_ids`. */
+  excludeAgentIdsSupported = true;
   constructor(options) {
     this.gatewayUrl = options.gatewayUrl.replace(/\/+$/, "");
     this.origin = new URL(this.gatewayUrl).origin;
@@ -40400,11 +40402,13 @@ var ArchestraClient = class {
     return this.runUrls.get(runId) ?? `${this.origin}/chat/runs/${runId}`;
   }
   async startRun(agentId, body) {
-    const args = {
-      agent_id: agentId,
+    const excludeAgentIds = this.excludeAgentIdsSupported && body.excludeAgentIds && body.excludeAgentIds.length > 0 ? [...body.excludeAgentIds] : null;
+    const baseArgs = {
+      ...agentId ? { agent_id: agentId } : {},
       message: body.message,
       ...body.attachments.length > 0 ? { attachments: body.attachments } : {}
     };
+    const args = excludeAgentIds ? { ...baseArgs, exclude_agent_ids: excludeAgentIds } : baseArgs;
     const limits = this.limitsSupported && body.limits ? runLimitsArgs(body.limits) : null;
     if (body.requireLimits && limits === null) {
       throw new ArchestraApiError(
@@ -40418,16 +40422,24 @@ var ArchestraClient = class {
     try {
       data = await this.call(RUN_TOOLS.start, limits ? { ...args, limits } : args, "start run");
     } catch (error63) {
-      const toolError = limits !== null && error63 instanceof ArchestraApiError && error63.kind === "tool";
+      const isToolErr = error63 instanceof ArchestraApiError && error63.kind === "tool";
+      const rejectedExclude = excludeAgentIds !== null && isToolErr && /unrecognized key.*\bexclude_agent_ids\b/i.test(error63.detail);
+      const toolError = limits !== null && isToolErr;
       const rejectedLimits = toolError && /unrecognized key.*\blimits\b/i.test(error63.detail);
       const refusedLimits = toolError && /is above this Agent's|sizes its runs with explicit resources|No tier this Agent's runs may use|There is no tier named|has less than the/i.test(
         error63.detail
       );
-      if (!rejectedLimits && !refusedLimits) throw error63;
-      if (body.requireLimits) throw error63;
+      if (!rejectedExclude && !rejectedLimits && !refusedLimits) throw error63;
+      if ((rejectedLimits || refusedLimits) && body.requireLimits) throw error63;
+      if (rejectedExclude) this.excludeAgentIdsSupported = false;
       if (rejectedLimits) this.limitsSupported = false;
-      applied = false;
-      data = await this.call(RUN_TOOLS.start, args, "start run");
+      const retryBase = rejectedExclude ? baseArgs : args;
+      if (rejectedLimits || refusedLimits) {
+        applied = false;
+        data = await this.call(RUN_TOOLS.start, retryBase, "start run");
+      } else {
+        data = await this.call(RUN_TOOLS.start, limits ? { ...retryBase, limits } : retryBase, "start run");
+      }
     }
     const result = parse3(StartResultSchema, data, "start run");
     this.remember(result.run.run_id, result.run_url);
@@ -40440,6 +40452,7 @@ var ArchestraClient = class {
     } : null;
     return {
       runId: result.run.run_id,
+      agentId: result.run.agent_id ?? agentId ?? null,
       state: result.run.state,
       runUrl: result.run_url ?? null,
       previousTurnCreatedAt: null,
@@ -40454,6 +40467,7 @@ var ArchestraClient = class {
     const { run, workspace } = result;
     return {
       runId,
+      agentId: run.agent_id ?? null,
       state: run.state,
       statusReason: run.status_reason ?? null,
       failure: run.failure ?? null,
@@ -40518,7 +40532,7 @@ var ArchestraClient = class {
   async transferCredential(agentId, key, value, label) {
     await this.call(
       RUN_TOOLS.credential,
-      { agent_id: agentId, environment: [{ key, type: "secret", value }], label },
+      { ...agentId ? { agent_id: agentId } : {}, environment: [{ key, type: "secret", value }], label },
       "store runtime credential"
     );
   }
@@ -44926,8 +44940,8 @@ var InputError = class extends Error {
     this.name = "InputError";
   }
 };
-var UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 var MAX_INSTRUCTIONS_BYTES = 64 * 1024;
+var ALL_FALLBACKS = 100;
 function readInputs(get, readFile) {
   const value = (name) => get(name).trim();
   const required2 = (name) => {
@@ -44959,11 +44973,8 @@ function readInputs(get, readFile) {
   const actorToken = archestraAuth === "token" ? value("archestra-token") : "";
   const fallbackToken = archestraAuth === "token" ? value("fallback-token") : "";
   const tokenSource = archestraAuth === "github-actions" ? "github-actions" : actorToken ? "actor" : fallbackToken ? "fallback" : null;
-  let agents = agentList("agents", required2("agents"));
-  const fallbackAgents = value("fallback-agents");
-  if (tokenSource === "fallback" && fallbackAgents) agents = agentList("fallback-agents", fallbackAgents);
   const maxFallbacksRaw = value("max-fallbacks");
-  const maxFallbacks = maxFallbacksRaw === "" || maxFallbacksRaw === "all" ? agents.length - 1 : integer2("max-fallbacks", maxFallbacksRaw, 0, 100);
+  const maxFallbacks = maxFallbacksRaw === "" || maxFallbacksRaw === "all" ? ALL_FALLBACKS : integer2("max-fallbacks", maxFallbacksRaw, 0, ALL_FALLBACKS);
   let instructions = value("instructions");
   const instructionsFile = value("instructions-file");
   if (instructionsFile) {
@@ -44986,8 +44997,6 @@ function readInputs(get, readFile) {
     tokenSource,
     archestraAuth,
     archestraConnectTo,
-    agents,
-    strategy: oneOf("strategy", value("strategy") || "rotate", ["rotate", "ordered", "random"]),
     retries: integer2("retries", value("retries") || "1", 0, 5),
     maxFallbacks,
     timeoutMs: integer2("timeout-minutes", value("timeout-minutes") || "30", 1, 360) * 6e4,
@@ -45010,20 +45019,6 @@ function readInputs(get, readFile) {
     minCpu: value("min-cpu") ? integer2("min-cpu", value("min-cpu"), 1, 64) : null,
     minMemoryGib: value("min-memory-gib") ? integer2("min-memory-gib", value("min-memory-gib"), 1, 512) : null
   };
-}
-function agentList(name, raw) {
-  const agents = [
-    ...new Set(
-      raw.split(/[\s,]+/).map((agent) => agent.trim()).filter(Boolean)
-    )
-  ];
-  for (const agent of agents) {
-    if (!UUID.test(agent)) {
-      throw new InputError(`Input "${name}" has a value that is not an agent ID: "${agent}".`);
-    }
-  }
-  if (agents.length === 0) throw new InputError(`Input "${name}" has no agent IDs.`);
-  return agents;
 }
 function integer2(name, raw, min, max) {
   if (!/^\d+$/.test(raw)) throw new InputError(`Input "${name}" must be a whole number.`);

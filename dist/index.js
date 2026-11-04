@@ -41252,6 +41252,8 @@ var ArchestraClient = class {
   runUrls = /* @__PURE__ */ new Map();
   /** False once the gateway rejected `limits`: a deployment from before run limits. */
   limitsSupported = true;
+  /** False once the gateway rejected `exclude_agent_ids`. */
+  excludeAgentIdsSupported = true;
   constructor(options) {
     this.gatewayUrl = options.gatewayUrl.replace(/\/+$/, "");
     this.origin = new URL(this.gatewayUrl).origin;
@@ -41269,11 +41271,13 @@ var ArchestraClient = class {
     return this.runUrls.get(runId) ?? `${this.origin}/chat/runs/${runId}`;
   }
   async startRun(agentId, body) {
-    const args = {
-      agent_id: agentId,
+    const excludeAgentIds = this.excludeAgentIdsSupported && body.excludeAgentIds && body.excludeAgentIds.length > 0 ? [...body.excludeAgentIds] : null;
+    const baseArgs = {
+      ...agentId ? { agent_id: agentId } : {},
       message: body.message,
       ...body.attachments.length > 0 ? { attachments: body.attachments } : {}
     };
+    const args = excludeAgentIds ? { ...baseArgs, exclude_agent_ids: excludeAgentIds } : baseArgs;
     const limits = this.limitsSupported && body.limits ? runLimitsArgs(body.limits) : null;
     if (body.requireLimits && limits === null) {
       throw new ArchestraApiError(
@@ -41287,16 +41291,24 @@ var ArchestraClient = class {
     try {
       data = await this.call(RUN_TOOLS.start, limits ? { ...args, limits } : args, "start run");
     } catch (error63) {
-      const toolError = limits !== null && error63 instanceof ArchestraApiError && error63.kind === "tool";
+      const isToolErr = error63 instanceof ArchestraApiError && error63.kind === "tool";
+      const rejectedExclude = excludeAgentIds !== null && isToolErr && /unrecognized key.*\bexclude_agent_ids\b/i.test(error63.detail);
+      const toolError = limits !== null && isToolErr;
       const rejectedLimits = toolError && /unrecognized key.*\blimits\b/i.test(error63.detail);
       const refusedLimits = toolError && /is above this Agent's|sizes its runs with explicit resources|No tier this Agent's runs may use|There is no tier named|has less than the/i.test(
         error63.detail
       );
-      if (!rejectedLimits && !refusedLimits) throw error63;
-      if (body.requireLimits) throw error63;
+      if (!rejectedExclude && !rejectedLimits && !refusedLimits) throw error63;
+      if ((rejectedLimits || refusedLimits) && body.requireLimits) throw error63;
+      if (rejectedExclude) this.excludeAgentIdsSupported = false;
       if (rejectedLimits) this.limitsSupported = false;
-      applied = false;
-      data = await this.call(RUN_TOOLS.start, args, "start run");
+      const retryBase = rejectedExclude ? baseArgs : args;
+      if (rejectedLimits || refusedLimits) {
+        applied = false;
+        data = await this.call(RUN_TOOLS.start, retryBase, "start run");
+      } else {
+        data = await this.call(RUN_TOOLS.start, limits ? { ...retryBase, limits } : retryBase, "start run");
+      }
     }
     const result = parse3(StartResultSchema, data, "start run");
     this.remember(result.run.run_id, result.run_url);
@@ -41309,6 +41321,7 @@ var ArchestraClient = class {
     } : null;
     return {
       runId: result.run.run_id,
+      agentId: result.run.agent_id ?? agentId ?? null,
       state: result.run.state,
       runUrl: result.run_url ?? null,
       previousTurnCreatedAt: null,
@@ -41323,6 +41336,7 @@ var ArchestraClient = class {
     const { run: run2, workspace } = result;
     return {
       runId,
+      agentId: run2.agent_id ?? null,
       state: run2.state,
       statusReason: run2.status_reason ?? null,
       failure: run2.failure ?? null,
@@ -41387,7 +41401,7 @@ var ArchestraClient = class {
   async transferCredential(agentId, key, value, label) {
     await this.call(
       RUN_TOOLS.credential,
-      { agent_id: agentId, environment: [{ key, type: "secret", value }], label },
+      { ...agentId ? { agent_id: agentId } : {}, environment: [{ key, type: "secret", value }], label },
       "store runtime credential"
     );
   }
@@ -41647,29 +41661,15 @@ async function cancelIfLive(client, runId, log) {
 }
 
 // src/attempts.ts
-function orderAgents(agents, strategy, options) {
-  const n = agents.length;
-  if (n === 0) return [];
-  if (strategy === "ordered") return [...agents];
-  if (strategy === "random") {
-    const result = [...agents];
-    for (let i = result.length - 1; i > 0; i--) {
-      const j = Math.floor(options.random() * (i + 1));
-      [result[i], result[j]] = [result[j], result[i]];
-    }
-    return result;
-  }
-  const start = ((options.prNumber + options.runAttempt) % n + n) % n;
-  return [...agents.slice(start), ...agents.slice(0, start)];
-}
 var DEFAULT_RETRY_DELAYS_MS = [3e4, 6e4];
 var MAX_MEMORY_ESCALATIONS = 2;
 async function runWithFallback(params) {
   const delays = params.retryDelaysMs ?? DEFAULT_RETRY_DELAYS_MS;
   const attempts = [];
-  const runtimeCount = Math.min(params.agents.length, 1 + Math.max(0, params.maxFallbacks));
+  const excludedAgentIds = [];
+  const runtimeCount = params.agents ? Math.min(params.agents.length, 1 + Math.max(0, params.maxFallbacks)) : 1 + Math.max(0, params.maxFallbacks);
   for (let runtimeIndex = 0; runtimeIndex < runtimeCount; runtimeIndex++) {
-    const agentId = params.agents[runtimeIndex];
+    let currentAgentId = params.agents ? params.agents[runtimeIndex] : null;
     let limits = params.limits ?? null;
     let escalations = 0;
     let killedTier = null;
@@ -41679,17 +41679,30 @@ async function runWithFallback(params) {
         params.log.warning("Overall deadline reached. No more attempts.");
         return { ok: false, attempts, fatal: false, deadlineReached: true };
       }
+      const label = currentAgentId ?? "gateway";
       params.log.info(
-        `Attempt ${attempts.length + 1}: agent ${agentId} (runtime ${runtimeIndex + 1}/${runtimeCount}, retry ${retry}/${params.retries}${escalations > 0 ? `, with at least ${limits?.minMemoryGib} GiB of memory` : ""})`
+        `Attempt ${attempts.length + 1}: agent ${label} (runtime ${runtimeIndex + 1}${params.agents ? `/${runtimeCount}` : ""}, retry ${retry}/${params.retries}${escalations > 0 ? `, with at least ${limits?.minMemoryGib} GiB of memory` : ""})`
       );
-      await params.progress?.attempt(runtimeIndex, agentId);
-      const outcome = await params.attempt(agentId, { runtimeIndex, retry, limits, escalations });
+      await params.progress?.attempt(runtimeIndex, currentAgentId);
+      const outcome = await params.attempt(currentAgentId, {
+        runtimeIndex,
+        retry,
+        limits,
+        escalations,
+        excludeAgentIds: [...excludedAgentIds]
+      });
+      if (outcome.record.agentId && outcome.record.agentId !== "gateway") {
+        currentAgentId = outcome.record.agentId;
+      }
+      if (!params.agents && excludedAgentIds.length > 0 && !outcome.ok && outcome.classification.source === "api" && /no remaining fallback subagents|agent not found/i.test(outcome.classification.reason)) {
+        return { ok: false, attempts, fatal: false, deadlineReached: false };
+      }
       attempts.push(outcome.record);
       if (outcome.ok) {
         return {
           ok: true,
           value: outcome.value,
-          agentId,
+          agentId: currentAgentId ?? outcome.record.agentId,
           attempts,
           fatal: false,
           deadlineReached: false
@@ -41716,6 +41729,9 @@ async function runWithFallback(params) {
         continue;
       }
       if (classification.class === "non_retriable") {
+        if (currentAgentId && !excludedAgentIds.includes(currentAgentId)) {
+          excludedAgentIds.push(currentAgentId);
+        }
         if (runtimeIndex + 1 < runtimeCount) await params.progress?.next();
         break;
       }
@@ -41724,8 +41740,13 @@ async function runWithFallback(params) {
         params.log.info(`Retrying the same runtime in ${Math.round((delay ?? 0) / 1e3)} s.`);
         await params.progress?.retry(delay ?? 0);
         await params.sleep(delay ?? 0);
-      } else if (runtimeIndex + 1 < runtimeCount) {
-        await params.progress?.next();
+      } else {
+        if (currentAgentId && !excludedAgentIds.includes(currentAgentId)) {
+          excludedAgentIds.push(currentAgentId);
+        }
+        if (runtimeIndex + 1 < runtimeCount) {
+          await params.progress?.next();
+        }
       }
       retry += 1;
     }
@@ -41739,6 +41760,11 @@ var TOOL_ERROR_PATTERNS = [
     pattern: /not assigned to this agent|unknown tool|tool .* (?:is not available|not found)/i,
     class: "fatal",
     label: "the gateway does not expose the Remote Agents tools"
+  },
+  {
+    pattern: /no runtime subagents are assigned/i,
+    class: "fatal",
+    label: "no runtime subagents are assigned to the MCP gateway"
   },
   {
     pattern: /\[appa\]|guardrails/i,
@@ -42003,11 +42029,12 @@ var PENDING_RESULT = { archestra_pending: true };
 async function executeAttempt(p) {
   const { client, clock, log } = p;
   const startedAt = clock.now();
+  let resolvedAgentId = p.agentId || "gateway";
   let runId = null;
   let continued = false;
   let tier = null;
   const record2 = (result, reason, source) => ({
-    agentId: p.agentId,
+    agentId: resolvedAgentId,
     runId,
     runUrl: runId ? client.runUrl(runId) : null,
     continued,
@@ -42029,12 +42056,13 @@ async function executeAttempt(p) {
     if (error63 instanceof ArchestraApiError) return fail(classifyApiError(error63));
     throw error63;
   }
+  if (started.agentId) resolvedAgentId = started.agentId;
   runId = started.runId;
   continued = started.continued;
   tier = started.limits?.tier ?? null;
   const liveRunId = runId;
   p.onLive(liveRunId);
-  log.info(`Run on agent ${p.agentId}: ${client.runUrl(liveRunId)}`);
+  log.info(`Run on agent ${resolvedAgentId}: ${client.runUrl(liveRunId)}`);
   const stopAt = Math.min(startedAt + p.timeoutMs, p.deadline);
   let interval = POLL_MIN_MS;
   let lastState = "";
@@ -42237,6 +42265,7 @@ ${names.map((name) => `- ${WORKSPACE_ROOT}/${name}`).join("\n")}` : p.message;
     }
     return {
       runId: p.runId,
+      agentId: previous.agentId,
       state: "submitted",
       runUrl: previous.runUrl,
       previousTurnCreatedAt: status === "continued" ? previous.turnCreatedAt : null,
@@ -42304,6 +42333,7 @@ function briefTitle(title) {
 async function launch(ctx, p) {
   const deadline = overallDeadline(ctx);
   let continueFrom = p.continueFrom;
+  const preferredFirstAgentId = p.continueFrom?.agentId ?? null;
   return runWithFallback({
     agents: p.agents,
     retries: ctx.inputs.retries,
@@ -42315,59 +42345,59 @@ async function launch(ctx, p) {
     progress: p.progress,
     limits: p.limits ?? null,
     largerLimits,
-    attempt: (agentId, info2) => executeAttempt({
-      client: ctx.archestra,
-      agentId,
-      timeoutMs: p.timeoutMs,
-      deadline,
-      clock: ctx.clock,
-      log: ctx.log,
-      onLive: (runId) => {
-        ctx.saveLiveRun(runId);
-        if (runId && p.progress) void p.progress.running(ctx.archestra.runUrl(runId));
-      },
-      readResult: (runId) => readContract(ctx.archestra, runId, p.contract.file, p.contract.schema),
-      onPoll: p.progress?.poll,
-      start: async () => {
-        if (ctx.isStopping()) throw new Error("The job was canceled; no new run starts.");
-        if (p.credentialToken) {
-          await ctx.archestra.transferCredential(
-            agentId,
-            "CODE_REVIEW_GITHUB_TOKEN",
-            p.credentialToken,
-            "GitHub token of the code review action"
-          );
-        }
-        const escalated = info2.escalations > 0;
-        if (continueFrom && continueFrom.agentId === agentId && !escalated) {
-          const continued = await continueRun({
-            client: ctx.archestra,
-            runId: continueFrom.runId,
+    attempt: (agentId, info2) => {
+      const targetAgentId = agentId ?? (info2.runtimeIndex === 0 ? preferredFirstAgentId : null);
+      return executeAttempt({
+        client: ctx.archestra,
+        agentId: targetAgentId,
+        timeoutMs: p.timeoutMs,
+        deadline,
+        clock: ctx.clock,
+        log: ctx.log,
+        onLive: (runId) => {
+          ctx.saveLiveRun(runId);
+          if (runId && p.progress) void p.progress.running(ctx.archestra.runUrl(runId));
+        },
+        readResult: (runId) => readContract(ctx.archestra, runId, p.contract.file, p.contract.schema),
+        onPoll: p.progress?.poll,
+        start: async () => {
+          if (ctx.isStopping()) throw new Error("The job was canceled; no new run starts.");
+          if (p.credentialToken) {
+            await ctx.archestra.transferCredential(
+              targetAgentId,
+              "CODE_REVIEW_GITHUB_TOKEN",
+              p.credentialToken,
+              "GitHub token of the code review action"
+            );
+          }
+          const escalated = info2.escalations > 0;
+          if (continueFrom && (!targetAgentId || continueFrom.agentId === targetAgentId) && !escalated) {
+            const continued = await continueRun({
+              client: ctx.archestra,
+              runId: continueFrom.runId,
+              message: p.message,
+              files: p.attachments,
+              resultFile: p.contract.file,
+              turnKey: `turn-${ctx.clock.now().toString(36)}`,
+              deadline,
+              minRetainedMs: p.timeoutMs,
+              clock: ctx.clock,
+              log: ctx.log
+            });
+            if (continued) return continued;
+            continueFrom = null;
+          }
+          return ctx.archestra.startRun(targetAgentId, {
             message: p.message,
-            files: p.attachments,
-            resultFile: p.contract.file,
-            turnKey: `turn-${ctx.clock.now().toString(36)}`,
-            deadline,
-            minRetainedMs: p.timeoutMs,
-            clock: ctx.clock,
-            log: ctx.log
+            attachments: p.attachments,
+            excludeAgentIds: info2.excludeAgentIds,
+            ...info2.limits ? { limits: info2.limits } : {},
+            ...escalated ? { requireLimits: true } : {}
           });
-          if (continued) return continued;
-          continueFrom = null;
         }
-        return ctx.archestra.startRun(agentId, {
-          message: p.message,
-          attachments: p.attachments,
-          ...info2.limits ? { limits: info2.limits } : {},
-          ...escalated ? { requireLimits: true } : {}
-        });
-      }
-    })
+      });
+    }
   });
-}
-function preferAgent(order, first) {
-  if (!first || !order.includes(first)) return order;
-  return [first, ...order.filter((agent) => agent !== first)];
 }
 
 // src/env.ts
@@ -46642,8 +46672,8 @@ var InputError = class extends Error {
     this.name = "InputError";
   }
 };
-var UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 var MAX_INSTRUCTIONS_BYTES = 64 * 1024;
+var ALL_FALLBACKS = 100;
 function readInputs(get, readFile) {
   const value = (name) => get(name).trim();
   const required2 = (name) => {
@@ -46675,11 +46705,8 @@ function readInputs(get, readFile) {
   const actorToken = archestraAuth === "token" ? value("archestra-token") : "";
   const fallbackToken = archestraAuth === "token" ? value("fallback-token") : "";
   const tokenSource = archestraAuth === "github-actions" ? "github-actions" : actorToken ? "actor" : fallbackToken ? "fallback" : null;
-  let agents = agentList("agents", required2("agents"));
-  const fallbackAgents = value("fallback-agents");
-  if (tokenSource === "fallback" && fallbackAgents) agents = agentList("fallback-agents", fallbackAgents);
   const maxFallbacksRaw = value("max-fallbacks");
-  const maxFallbacks = maxFallbacksRaw === "" || maxFallbacksRaw === "all" ? agents.length - 1 : integer2("max-fallbacks", maxFallbacksRaw, 0, 100);
+  const maxFallbacks = maxFallbacksRaw === "" || maxFallbacksRaw === "all" ? ALL_FALLBACKS : integer2("max-fallbacks", maxFallbacksRaw, 0, ALL_FALLBACKS);
   let instructions = value("instructions");
   const instructionsFile = value("instructions-file");
   if (instructionsFile) {
@@ -46702,8 +46729,6 @@ function readInputs(get, readFile) {
     tokenSource,
     archestraAuth,
     archestraConnectTo,
-    agents,
-    strategy: oneOf("strategy", value("strategy") || "rotate", ["rotate", "ordered", "random"]),
     retries: integer2("retries", value("retries") || "1", 0, 5),
     maxFallbacks,
     timeoutMs: integer2("timeout-minutes", value("timeout-minutes") || "30", 1, 360) * 6e4,
@@ -46726,20 +46751,6 @@ function readInputs(get, readFile) {
     minCpu: value("min-cpu") ? integer2("min-cpu", value("min-cpu"), 1, 64) : null,
     minMemoryGib: value("min-memory-gib") ? integer2("min-memory-gib", value("min-memory-gib"), 1, 512) : null
   };
-}
-function agentList(name, raw) {
-  const agents = [
-    ...new Set(
-      raw.split(/[\s,]+/).map((agent) => agent.trim()).filter(Boolean)
-    )
-  ];
-  for (const agent of agents) {
-    if (!UUID.test(agent)) {
-      throw new InputError(`Input "${name}" has a value that is not an agent ID: "${agent}".`);
-    }
-  }
-  if (agents.length === 0) throw new InputError(`Input "${name}" has no agent IDs.`);
-  return agents;
 }
 function integer2(name, raw, min, max) {
   if (!/^\d+$/.test(raw)) throw new InputError(`Input "${name}" must be a whole number.`);
@@ -47949,13 +47960,9 @@ function progressReporter(ctx, pr, total) {
     },
     attempt: (index, agentId) => {
       shown = "";
-      return stepProgress(
-        ctx,
-        pr,
-        `starting a run on agent ${index + 1} of ${total} (\`${agentId.slice(0, 8)}\`)`,
-        null,
-        true
-      );
+      const totalSuffix = total !== void 0 ? ` of ${total}` : "";
+      const idSuffix = agentId ? ` (\`${agentId.slice(0, 8)}\`)` : "";
+      return stepProgress(ctx, pr, `starting a run on agent ${index + 1}${totalSuffix}${idSuffix}`, null, true);
     },
     running: (runUrl) => stepProgress(ctx, pr, "waiting for the runtime to finish", runUrl),
     retry: (delayMs) => {
@@ -48334,24 +48341,17 @@ async function runFix(ctx, trigger) {
     authorEmail: identity.email
   });
   const marker = sticky.marker;
-  const order = orderAgents(inputs.agents, inputs.strategy, {
-    prNumber: pr.number,
-    runAttempt: ctx.runAttempt,
-    random: ctx.random
-  });
-  const continueFrom = marker.run && marker.agent && order.includes(marker.agent) ? { agentId: marker.agent, runId: marker.run } : null;
-  const agents = preferAgent(order, continueFrom?.agentId ?? null);
+  const continueFrom = marker.run && marker.agent ? { agentId: marker.agent, runId: marker.run } : null;
   const doing = `applying ${selected.length} finding${selected.length === 1 ? "" : "s"}`;
   await startProgress(ctx, pr, { doing, login: identity.login });
   const outcome = await launch(ctx, {
-    agents,
     continueFrom,
     message,
     attachments,
     contract: CONTRACTS.fix,
     timeoutMs: inputs.fixTimeoutMs,
     credentialToken: inputs.fixToken,
-    progress: progressReporter(ctx, pr, agents.length)
+    progress: progressReporter(ctx, pr)
   });
   if (!outcome.ok || !outcome.value) {
     const reason = outcome.fatal ? fatalReason(outcome.attempts) : "No runtime completed the fix.";
@@ -48679,24 +48679,17 @@ async function runFixCi(ctx, trigger) {
     authorEmail: identity.email
   });
   const marker = sticky?.marker ?? null;
-  const order = orderAgents(inputs.agents, inputs.strategy, {
-    prNumber: pr.number,
-    runAttempt: ctx.runAttempt,
-    random: ctx.random
-  });
-  const continueFrom = marker?.run && marker.agent && order.includes(marker.agent) ? { agentId: marker.agent, runId: marker.run } : null;
+  const continueFrom = marker?.run && marker.agent ? { agentId: marker.agent, runId: marker.run } : null;
   const doing = `triaging ${evidence.failures.length} failing check${evidence.failures.length === 1 ? "" : "s"}`;
   await startProgress(ctx, pr, { doing, login: identity.login });
-  const agents = preferAgent(order, continueFrom?.agentId ?? null);
   const outcome = await launch(ctx, {
-    agents,
     continueFrom,
     message,
     attachments,
     contract: CONTRACTS["fix-ci"],
     timeoutMs: inputs.fixTimeoutMs,
     credentialToken: inputs.fixToken,
-    progress: progressReporter(ctx, pr, agents.length)
+    progress: progressReporter(ctx, pr)
   });
   if (!outcome.ok || !outcome.value) {
     const reason = outcome.fatal ? fatalReason(outcome.attempts) : "No runtime completed the triage.";
@@ -48844,24 +48837,17 @@ async function runFixCiMain(ctx, trigger) {
     authorEmail: identity.email
   });
   const marker = sticky?.marker ?? null;
-  const order = orderAgents(inputs.agents, inputs.strategy, {
-    prNumber: pr.number,
-    runAttempt: ctx.runAttempt,
-    random: ctx.random
-  });
-  const continueFrom = marker?.run && marker.agent && order.includes(marker.agent) ? { agentId: marker.agent, runId: marker.run } : null;
+  const continueFrom = marker?.run && marker.agent ? { agentId: marker.agent, runId: marker.run } : null;
   const doing = `preparing a fix PR against ${baseBranch} for ${checks.map((check3) => `\`${check3.replace(/`/g, "'")}\``).join(", ")}`;
   await startProgress(ctx, pr, { doing, login: identity.login });
-  const agents = preferAgent(order, continueFrom?.agentId ?? null);
   const outcome = await launch(ctx, {
-    agents,
     continueFrom,
     message,
     attachments,
     contract: CONTRACTS["fix-ci-main"],
     timeoutMs: inputs.fixTimeoutMs,
     credentialToken: inputs.fixToken,
-    progress: progressReporter(ctx, pr, agents.length)
+    progress: progressReporter(ctx, pr)
   });
   if (!outcome.ok || !outcome.value) {
     const reason = outcome.fatal ? fatalReason(outcome.attempts) : "No runtime completed the fix.";
@@ -49261,13 +49247,7 @@ async function runReview(ctx, prNumber) {
   const failingChecks = checks.failing;
   const previous = sticky?.state ?? null;
   const marker = sticky?.marker ?? null;
-  const order = orderAgents(inputs.agents, inputs.strategy, {
-    prNumber: pr.number,
-    runAttempt: ctx.runAttempt,
-    random: ctx.random
-  });
-  const incremental = inputs.incrementalReview && previous?.status === "reviewed" && marker?.run && marker.agent && order.includes(marker.agent) ? { agentId: marker.agent, runId: marker.run } : null;
-  const agents = preferAgent(order, incremental?.agentId ?? null);
+  const incremental = inputs.incrementalReview && previous?.status === "reviewed" && marker?.run && marker.agent ? { agentId: marker.agent, runId: marker.run } : null;
   const attachments = [
     jsonAttachment("pr.json", prAttachmentData(pr, repo, files, diff.truncated)),
     textAttachment("pr.diff", diff.diff, "text/x-diff")
@@ -49310,7 +49290,6 @@ async function runReview(ctx, prNumber) {
       diff,
       previous,
       incremental,
-      agents,
       attachments,
       stickyId,
       failingChecks,
@@ -49340,7 +49319,7 @@ async function runReview(ctx, prNumber) {
 }
 async function reviewInProgress(ctx, p) {
   const { gh, repo, inputs, log } = ctx;
-  const { pr, files, previous, incremental, agents, attachments, failingChecks, lastSha, sinceSha } = p;
+  const { pr, files, previous, incremental, attachments, failingChecks, lastSha, sinceSha } = p;
   const previousFindings = previous?.findings ?? [];
   const message = renderBrief("review", {
     repo: fullName(repo),
@@ -49353,7 +49332,6 @@ async function reviewInProgress(ctx, p) {
     reviewScope: reviewScope(lastSha, sinceSha, pr.headSha)
   });
   const outcome = await launch(ctx, {
-    agents,
     continueFrom: incremental,
     message,
     attachments,
@@ -49367,7 +49345,7 @@ async function reviewInProgress(ctx, p) {
     // A fix leaves a short-lived App token in the actor's CODE_REVIEW_GITHUB_TOKEN; a
     // private repository needs a fresh read-only token for the review.
     credentialToken: inputs.cloneToken || null,
-    progress: progressReporter(ctx, pr, agents.length)
+    progress: progressReporter(ctx, pr)
   });
   if (!outcome.ok || !outcome.value) {
     const reason = outcome.fatal ? fatalReason(outcome.attempts) : outcome.deadlineReached ? "The overall time limit was reached." : "All attempts failed.";

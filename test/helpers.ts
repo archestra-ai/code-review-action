@@ -40,16 +40,18 @@ export function testInputs(overrides: Record<string, string> = {}, archestra = n
   const values: Record<string, string> = {
     "archestra-gateway-url": archestra.gatewayUrl,
     "archestra-token": archestra.token,
-    agents: [AGENT_A, AGENT_B, AGENT_C].join("\n"),
-    strategy: "ordered",
     "github-token": "ghs_job_token",
     "fix-token": "ghs_app_token",
     ...overrides,
   };
-  return readInputs(
+  const inputs = readInputs(
     (name) => values[name] ?? "",
     () => "",
   );
+  return {
+    ...inputs,
+    maxFallbacks: Math.min(inputs.maxFallbacks, Math.max(0, archestra.gatewayAgents.length - 1)),
+  };
 }
 
 export interface Harness {

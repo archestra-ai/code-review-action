@@ -13,10 +13,6 @@ on:
         description: The Archestra MCP gateway endpoint.
         type: string
         required: true
-      agents:
-        description: Agent IDs, one for each line.
-        type: string
-        required: true
       timeout-minutes:
         description: The time limit for the job.
         type: number
@@ -94,8 +90,6 @@ jobs:
         with:
           archestra-gateway-url: ${{ inputs.gateway-url }}
           archestra-token: ${{ secrets.ARCHESTRA_TOKEN }}
-          agents: ${{ inputs.agents }}
-          strategy: rotate
           retries: 1
           timeout-minutes: 30
           fail-on: never

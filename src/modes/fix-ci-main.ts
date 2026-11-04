@@ -1,14 +1,5 @@
-import { orderAgents } from "../attempts";
 import { renderBrief } from "../briefs";
-import {
-  type ActionContext,
-  type ActionResult,
-  briefTitle,
-  cloneUrl,
-  launch,
-  makeResult,
-  preferAgent,
-} from "../context";
+import { type ActionContext, type ActionResult, briefTitle, cloneUrl, launch, makeResult } from "../context";
 import { CONTRACTS, FIX_CI_BRANCH_PREFIX } from "../contracts";
 import { collectCiEvidence } from "../github/ci";
 import { verifyCommits } from "../github/commits";
@@ -89,27 +80,19 @@ export async function runFixCiMain(
   });
 
   const marker = sticky?.marker ?? null;
-  const order = orderAgents(inputs.agents, inputs.strategy, {
-    prNumber: pr.number,
-    runAttempt: ctx.runAttempt,
-    random: ctx.random,
-  });
-  const continueFrom =
-    marker?.run && marker.agent && order.includes(marker.agent) ? { agentId: marker.agent, runId: marker.run } : null;
+  const continueFrom = marker?.run && marker.agent ? { agentId: marker.agent, runId: marker.run } : null;
 
   const doing = `preparing a fix PR against ${baseBranch} for ${checks.map((check) => `\`${check.replace(/`/g, "'")}\``).join(", ")}`;
   await startProgress(ctx, pr, { doing, login: identity.login });
-  const agents = preferAgent(order, continueFrom?.agentId ?? null);
 
   const outcome = await launch(ctx, {
-    agents,
     continueFrom,
     message,
     attachments,
     contract: CONTRACTS["fix-ci-main"],
     timeoutMs: inputs.fixTimeoutMs,
     credentialToken: inputs.fixToken,
-    progress: progressReporter(ctx, pr, agents.length),
+    progress: progressReporter(ctx, pr),
   });
 
   if (!outcome.ok || !outcome.value) {

@@ -1,6 +1,5 @@
 import { describe, expect, it } from "vitest";
 import { InputError, readInputs } from "../src/inputs";
-import { AGENT_A, AGENT_B } from "./helpers";
 
 const read = (values: Record<string, string>) =>
   readInputs(
@@ -8,7 +7,6 @@ const read = (values: Record<string, string>) =>
       ({
         "archestra-gateway-url": "https://archestra.example.com/v1/mcp/code-review",
         "archestra-token": "token",
-        agents: `${AGENT_A}, ${AGENT_A}\n${AGENT_B}`,
         "github-token": "ghs_job",
         ...values,
       })[name] ?? "",
@@ -16,13 +14,12 @@ const read = (values: Record<string, string>) =>
   );
 
 describe("readInputs", () => {
-  it("reads the gateway, the actor's token and the agents without duplicates", () => {
+  it("reads the gateway and the actor's token with gateway-managed subagent defaults", () => {
     expect(read({})).toMatchObject({
       gatewayUrl: "https://archestra.example.com/v1/mcp/code-review",
       token: "token",
       tokenSource: "actor",
-      agents: [AGENT_A, AGENT_B],
-      maxFallbacks: 1,
+      maxFallbacks: 100,
     });
   });
 
@@ -36,30 +33,21 @@ describe("readInputs", () => {
   });
 
   it("prefers the actor's token over the fallback token", () => {
-    expect(read({ "fallback-token": "shared", "fallback-agents": AGENT_B })).toMatchObject({
+    expect(read({ "fallback-token": "shared" })).toMatchObject({
       token: "token",
       tokenSource: "actor",
-      agents: [AGENT_A, AGENT_B],
     });
   });
 
-  it("uses the fallback token and its agents when the actor has no token", () => {
-    expect(read({ "archestra-token": "", "fallback-token": "shared", "fallback-agents": AGENT_B })).toMatchObject({
+  it("uses the fallback token when the actor has no token", () => {
+    expect(read({ "archestra-token": "", "fallback-token": "shared" })).toMatchObject({
       token: "shared",
       tokenSource: "fallback",
-      agents: [AGENT_B],
     });
   });
 
   it("accepts no token at all; the run skips later", () => {
     expect(read({ "archestra-token": "" })).toMatchObject({ token: "", tokenSource: null });
-  });
-
-  it("rejects an agent value that is not an ID", () => {
-    expect(() => read({ agents: "claude-code" })).toThrow(InputError);
-    expect(() => read({ "archestra-token": "", "fallback-token": "x", "fallback-agents": "x" })).toThrow(
-      /fallback-agents/,
-    );
   });
 
   it("reads fix-commands, and rejects a value that is not a boolean", () => {

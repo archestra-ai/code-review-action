@@ -99,6 +99,7 @@ export interface RunFailure {
 export interface AgentRun {
   /** Stable across turns: the first turn's id, also the workspace id. */
   runId: string;
+  agentId: string | null;
   state: string;
   statusReason: string | null;
   failure: RunFailure | null;
@@ -117,6 +118,7 @@ export interface AgentRun {
 
 export interface StartedRun {
   runId: string;
+  agentId: string | null;
   state: string;
   runUrl: string | null;
   /** For a continuation: the previous turn's creation time, to tell the new turn apart. */
@@ -155,6 +157,8 @@ export class ArchestraClient {
   private readonly runUrls = new Map<string, string>();
   /** False once the gateway rejected `limits`: a deployment from before run limits. */
   private limitsSupported = true;
+  /** False once the gateway rejected `exclude_agent_ids`. */
+  private excludeAgentIdsSupported = true;
 
   constructor(options: ArchestraClientOptions) {
     this.gatewayUrl = options.gatewayUrl.replace(/\/+$/, "");
@@ -175,20 +179,26 @@ export class ArchestraClient {
   }
 
   async startRun(
-    agentId: string,
+    agentId: string | null,
     body: {
       message: string;
       attachments: Attachment[];
+      excludeAgentIds?: readonly string[];
       limits?: RunLimits;
       /** Fail instead of starting with the Agent's own limits when it refuses the request. */
       requireLimits?: boolean;
     },
   ): Promise<StartedRun> {
-    const args = {
-      agent_id: agentId,
+    const excludeAgentIds =
+      this.excludeAgentIdsSupported && body.excludeAgentIds && body.excludeAgentIds.length > 0
+        ? [...body.excludeAgentIds]
+        : null;
+    const baseArgs = {
+      ...(agentId ? { agent_id: agentId } : {}),
       message: body.message,
       ...(body.attachments.length > 0 ? { attachments: body.attachments } : {}),
     };
+    const args = excludeAgentIds ? { ...baseArgs, exclude_agent_ids: excludeAgentIds } : baseArgs;
     const limits = this.limitsSupported && body.limits ? runLimitsArgs(body.limits) : null;
     // A retry with more memory after a memory kill is worth running only at that size: a
     // deployment that cannot take the request would run the Agent's own size again.
@@ -207,7 +217,10 @@ export class ArchestraClient {
       // A deployment from before run limits ignores the argument or, when its schema is strict,
       // rejects it; the run then takes the Agent's defaults. Zod and the gateway word the
       // rejection differently, so only the key name is matched.
-      const toolError = limits !== null && error instanceof ArchestraApiError && error.kind === "tool";
+      const isToolErr = error instanceof ArchestraApiError && error.kind === "tool";
+      const rejectedExclude =
+        excludeAgentIds !== null && isToolErr && /unrecognized key.*\bexclude_agent_ids\b/i.test(error.detail);
+      const toolError = limits !== null && isToolErr;
       const rejectedLimits = toolError && /unrecognized key.*\blimits\b/i.test(error.detail);
       // An Agent whose own limits are below the request, or whose tiers have no size that fits,
       // refuses them; that Agent's run then takes its own limits. Other Agents still get the
@@ -217,11 +230,17 @@ export class ArchestraClient {
         /is above this Agent's|sizes its runs with explicit resources|No tier this Agent's runs may use|There is no tier named|has less than the/i.test(
           error.detail,
         );
-      if (!rejectedLimits && !refusedLimits) throw error;
-      if (body.requireLimits) throw error;
+      if (!rejectedExclude && !rejectedLimits && !refusedLimits) throw error;
+      if ((rejectedLimits || refusedLimits) && body.requireLimits) throw error;
+      if (rejectedExclude) this.excludeAgentIdsSupported = false;
       if (rejectedLimits) this.limitsSupported = false;
-      applied = false;
-      data = await this.call(RUN_TOOLS.start, args, "start run");
+      const retryBase = rejectedExclude ? baseArgs : args;
+      if (rejectedLimits || refusedLimits) {
+        applied = false;
+        data = await this.call(RUN_TOOLS.start, retryBase, "start run");
+      } else {
+        data = await this.call(RUN_TOOLS.start, limits ? { ...retryBase, limits } : retryBase, "start run");
+      }
     }
     const result = parse(StartResultSchema, data, "start run");
     this.remember(result.run.run_id, result.run_url);
@@ -236,6 +255,7 @@ export class ArchestraClient {
       : null;
     return {
       runId: result.run.run_id,
+      agentId: result.run.agent_id ?? agentId ?? null,
       state: result.run.state,
       runUrl: result.run_url ?? null,
       previousTurnCreatedAt: null,
@@ -251,6 +271,7 @@ export class ArchestraClient {
     const { run, workspace } = result;
     return {
       runId,
+      agentId: run.agent_id ?? null,
       state: run.state,
       statusReason: run.status_reason ?? null,
       failure: run.failure ?? null,
@@ -323,10 +344,10 @@ export class ArchestraClient {
    * reaches the agent's next turn, so store it before starting or
    * continuing the run.
    */
-  async transferCredential(agentId: string, key: string, value: string, label: string): Promise<void> {
+  async transferCredential(agentId: string | null, key: string, value: string, label: string): Promise<void> {
     await this.call(
       RUN_TOOLS.credential,
-      { agent_id: agentId, environment: [{ key, type: "secret", value }], label },
+      { ...(agentId ? { agent_id: agentId } : {}), environment: [{ key, type: "secret", value }], label },
       "store runtime credential",
     );
   }

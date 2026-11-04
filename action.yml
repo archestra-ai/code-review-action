@@ -28,15 +28,6 @@ inputs:
   fallback-token:
     description: Shared platform token used when the actor has no personal token.
     default: ""
-  agents:
-    description: Archestra agent IDs, one per line. Each agent must have a dedicated runtime.
-    required: true
-  fallback-agents:
-    description: Agent IDs to use with fallback-token. Defaults to agents.
-    default: ""
-  strategy:
-    description: Agent selection strategy ("rotate", "ordered", or "random").
-    default: rotate
   retries:
     description: Number of retries on the same agent after a temporary failure (0 to 5).
     default: "1"
