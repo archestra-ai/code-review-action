@@ -172,7 +172,7 @@ export async function launch<T>(
         },
         readResult: (runId) => readContract(ctx.archestra, runId, p.contract.file, p.contract.schema),
         onPoll: p.progress?.poll,
-        start: async () => {
+        start: async (setAgentId) => {
           if (ctx.isStopping()) throw new Error("The job was canceled; no new run starts.");
           // After a memory kill the same runtime is tried with more memory. That
           // size is the point of the attempt, so it starts a fresh run (a continued
@@ -180,6 +180,7 @@ export async function launch<T>(
           const escalated = info.escalations > 0;
           if (continueFrom && targetAgentId && continueFrom.agentId === targetAgentId && !escalated) {
             const continuationAgentId = continueFrom.agentId;
+            setAgentId(continuationAgentId);
             const continued = await continueRun({
               client: ctx.archestra,
               runId: continueFrom.runId,
@@ -205,7 +206,9 @@ export async function launch<T>(
             if (continued) return continued;
             continueFrom = null;
           }
-          const freshAgentId = agentId ?? null;
+          let freshAgentId = agentId ?? null;
+          setAgentId(freshAgentId);
+          const preferredAgentId = info.runtimeIndex === 0 ? preferredFirstAgentId : null;
           const credentialGrantIds: string[] = [];
           if (p.credentialToken) {
             const grantId = await ctx.archestra.transferCredential(
@@ -213,7 +216,15 @@ export async function launch<T>(
               "CODE_REVIEW_GITHUB_TOKEN",
               p.credentialToken,
               "GitHub token of the code review action",
-              { ephemeral: true },
+              {
+                ephemeral: true,
+                preferredAgentId,
+                excludeAgentIds: info.excludeAgentIds,
+                onAgentSelected: (selectedId) => {
+                  freshAgentId = selectedId;
+                  setAgentId(selectedId);
+                },
+              },
             );
             if (grantId) credentialGrantIds.push(grantId);
           }
@@ -221,6 +232,11 @@ export async function launch<T>(
             message: p.message,
             attachments: p.attachments,
             excludeAgentIds: info.excludeAgentIds,
+            preferredAgentId,
+            onAgentSelected: (selectedId) => {
+              freshAgentId = selectedId;
+              setAgentId(selectedId);
+            },
             ...(credentialGrantIds.length > 0 ? { credentialGrantIds } : {}),
             ...(info.limits ? { limits: info.limits } : {}),
             ...(escalated ? { requireLimits: true } : {}),

@@ -110,6 +110,8 @@ export class FakeArchestra {
   readonly deletedWorkspaces = new Set<string>();
   /** Old deployments: start_agent_run has no `limits` argument. */
   rejectLimits = false;
+  /** Old deployments: start_agent_run and transfer_credential require `agent_id`. */
+  rejectOmittedAgentId = false;
   /** Agents whose own limits refuse a request, with the platform's message. */
   readonly limitRefusals = new Map<string, string>();
   /** An Agent's default tier; M when unset, as on the platform. */
@@ -245,7 +247,18 @@ export class FakeArchestra {
       this.exposure === "run_tool"
         ? ["archestra__search_tools", "archestra__run_tool"]
         : TOOL_NAMES.filter((name) => !this.hiddenTools.has(name)).map((name) => `archestra__${name}`);
-    return [...names, "archestra__whoami"].map((name) => ({ name, inputSchema: { type: "object" } }));
+    const delegationTools =
+      this.exposure === "run_tool"
+        ? []
+        : this.gatewayAgents.map((id, index) => ({
+            name: `agent__reviewer_${index + 1}`,
+            inputSchema: { type: "object" },
+            _meta: { targetAgentId: id },
+          }));
+    return [
+      ...[...names, "archestra__whoami"].map((name) => ({ name, inputSchema: { type: "object" } })),
+      ...delegationTools,
+    ];
   }
 
   private callTool(caller: string, name: string, args: Record<string, unknown>): ToolOutcome {
@@ -282,6 +295,11 @@ export class FakeArchestra {
 
   private start(caller: string, args: Record<string, unknown>): ToolOutcome {
     const explicitAgentId = typeof args.agent_id === "string" && args.agent_id.length > 0 ? args.agent_id : null;
+    if (this.rejectOmittedAgentId && !explicitAgentId) {
+      return toolError(
+        "Validation error in archestra__start_agent_run: agent_id: Invalid input: expected string, received undefined",
+      );
+    }
     const excluded = new Set(Array.isArray(args.exclude_agent_ids) ? (args.exclude_agent_ids as string[]) : []);
     const candidates = this.gatewayAgents.filter((id) => !excluded.has(id));
     if (!explicitAgentId && this.gatewayAgents.length === 0) {
@@ -514,10 +532,13 @@ export class FakeArchestra {
     const entry = (args.environment as Array<{ key: string; type: string; value?: string }> | undefined)?.[0];
     if (!entry) return toolError("Validation error: environment");
     if (entry.type !== "secret") return toolError("Validation error: environment.0.type");
-    const agentId =
-      typeof args.agent_id === "string" && args.agent_id.length > 0
-        ? args.agent_id
-        : (this.gatewayAgents[0] ?? "gateway");
+    const explicitAgentId = typeof args.agent_id === "string" && args.agent_id.length > 0 ? args.agent_id : null;
+    if (this.rejectOmittedAgentId && !explicitAgentId) {
+      return toolError(
+        "Validation error in archestra__transfer_credential: agent_id: Invalid input: expected string, received undefined",
+      );
+    }
+    const agentId = explicitAgentId ?? this.gatewayAgents[0] ?? "gateway";
     this.credentials.push({ agentId, key: entry.key, valueLength: entry.value?.length ?? 0 });
     return toolResult({
       key: entry.key,

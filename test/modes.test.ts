@@ -849,6 +849,16 @@ describe("fix mode", () => {
       { agentId: AGENT_B, key: "CODE_REVIEW_GITHUB_TOKEN", valueLength: "ghs_app_token".length },
     ]);
   });
+
+  it("falls back to subagent IDs advertised in tools/list when the gateway requires agent_id", async () => {
+    const harness = setup();
+    harness.archestra.rejectOmittedAgentId = true;
+    harness.archestra.script(AGENT_A, { end: "failed", statusReason: "OpenCode failed (exit 1)" });
+    harness.archestra.script(AGENT_B, { end: "completed", files: { "review.json": reviewJson() } });
+    const result = await run(harness.context("pull_request", prEvent(harness.github)));
+    expect(result).toMatchObject({ status: "success", agentId: AGENT_B });
+    expect(harness.archestra.starts.map((start) => start.agentId)).toEqual([AGENT_A, AGENT_B]);
+  });
 });
 
 describe("fix-ci and fix-ci-main modes", () => {

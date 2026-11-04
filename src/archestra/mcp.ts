@@ -115,20 +115,36 @@ export class McpSession {
 
   /** Lists the names of all tools, following the pagination cursor. */
   async listToolNames(operation: string): Promise<string[]> {
-    const names: string[] = [];
+    const tools = await this.listTools(operation);
+    return tools.map((tool) => tool.name);
+  }
+
+  /** Lists all tools and any delegated local subagent IDs advertised in `_meta`, following the pagination cursor. */
+  async listTools(operation: string): Promise<Array<{ name: string; targetAgentId: string | null }>> {
+    const tools: Array<{ name: string; targetAgentId: string | null }> = [];
     let cursor: string | undefined;
     for (let page = 0; page < 50; page++) {
       const result = (await this.request("tools/list", cursor ? { cursor } : {}, operation)) as {
-        tools?: Array<{ name?: unknown }>;
+        tools?: Array<{ name?: unknown; _meta?: unknown }>;
         nextCursor?: unknown;
       };
       for (const tool of result.tools ?? []) {
-        if (typeof tool.name === "string") names.push(tool.name);
+        if (typeof tool.name !== "string") continue;
+        const meta = tool._meta && typeof tool._meta === "object" ? (tool._meta as Record<string, unknown>) : null;
+        const targetAgentId =
+          tool.name.startsWith("agent__") &&
+          tool.name !== "agent__self" &&
+          meta?.targetType !== "external_a2a" &&
+          typeof meta?.targetAgentId === "string" &&
+          meta.targetAgentId.length > 0
+            ? meta.targetAgentId
+            : null;
+        tools.push({ name: tool.name, targetAgentId });
       }
       if (typeof result.nextCursor !== "string" || result.nextCursor === "") break;
       cursor = result.nextCursor;
     }
-    return names;
+    return tools;
   }
 
   async request(method: string, params: Record<string, unknown>, operation: string): Promise<unknown> {
