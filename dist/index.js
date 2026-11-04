@@ -42277,6 +42277,17 @@ async function executeAttempt(p) {
     }
   }
 }
+function stripNullObjectValues(value) {
+  if (Array.isArray(value)) return value.map(stripNullObjectValues);
+  if (value && typeof value === "object") {
+    const out = {};
+    for (const [k, v] of Object.entries(value)) {
+      if (v !== null) out[k] = stripNullObjectValues(v);
+    }
+    return out;
+  }
+  return value;
+}
 async function readContract(client, runId, path, schema) {
   const data = await client.readWorkspaceFile(runId, path);
   if (!data) return { ok: false, reason: "the run finished without writing its result" };
@@ -42289,7 +42300,7 @@ async function readContract(client, runId, path, schema) {
   if (json2 && typeof json2 === "object" && json2.archestra_pending === true) {
     return { ok: false, reason: "the run did not write a new result in this turn" };
   }
-  const parsed = schema.safeParse(json2);
+  const parsed = schema.safeParse(stripNullObjectValues(json2));
   if (!parsed.success) {
     const issues = parsed.error.issues.slice(0, 5).map((issue3) => `${issue3.path.join(".") || "(root)"}: ${issue3.message}`).join("; ");
     return { ok: false, reason: `the result does not match the contract: ${issues}` };
@@ -42516,7 +42527,7 @@ async function launch(ctx, p) {
           }
           let freshAgentId = agentId ?? null;
           setAgentId(freshAgentId);
-          const preferredAgentId = info2.runtimeIndex === 0 ? preferredFirstAgentId : null;
+          const preferredAgentId = preferredFirstAgentId;
           const credentialGrantIds = [];
           if (p.credentialToken) {
             const grantId = await ctx.archestra.transferCredential(
