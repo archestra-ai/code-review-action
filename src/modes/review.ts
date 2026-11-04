@@ -99,9 +99,7 @@ export async function runReview(ctx: ActionContext, prNumber: number): Promise<A
 
   // A re-review continues the retained workspace of the last review when available.
   const incremental =
-    inputs.incrementalReview && previous?.status === "reviewed" && marker?.run && marker.agent
-      ? { agentId: marker.agent, runId: marker.run }
-      : null;
+    inputs.incrementalReview && marker?.run && marker.agent ? { agentId: marker.agent, runId: marker.run } : null;
 
   const attachments = [
     jsonAttachment("pr.json", prAttachmentData(pr, repo, files, diff.truncated)),
@@ -148,6 +146,7 @@ export async function runReview(ctx: ActionContext, prNumber: number): Promise<A
       diff,
       previous,
       incremental,
+      preferredAgentId: marker?.agent ?? null,
       attachments,
       stickyId,
       failingChecks,
@@ -187,6 +186,7 @@ async function reviewInProgress(
     diff: { diff: string; truncated: boolean };
     previous: StickyState | null;
     incremental: { agentId: string; runId: string } | null;
+    preferredAgentId: string | null;
     attachments: Attachment[];
     stickyId: number;
     failingChecks: number;
@@ -199,7 +199,7 @@ async function reviewInProgress(
   },
 ): Promise<ActionResult> {
   const { gh, repo, inputs, log } = ctx;
-  const { pr, files, previous, incremental, attachments, failingChecks, lastSha, sinceSha } = p;
+  const { pr, files, previous, incremental, preferredAgentId, attachments, failingChecks, lastSha, sinceSha } = p;
   const previousFindings = previous?.findings ?? [];
   const message = renderBrief("review", {
     repo: fullName(repo),
@@ -214,6 +214,7 @@ async function reviewInProgress(
 
   const outcome = await launch(ctx, {
     continueFrom: incremental,
+    preferredAgentId,
     message,
     attachments,
     contract: CONTRACTS.review,
