@@ -46,7 +46,7 @@ export const PENDING_RESULT = { archestra_pending: true } as const;
 export async function executeAttempt<T>(p: {
   client: ArchestraClient;
   agentId: string | null;
-  start: () => Promise<StartedRun>;
+  start: (setAgentId: (agentId: string | null) => void) => Promise<StartedRun>;
   readResult: (runId: string) => Promise<ContractResult<T>>;
   timeoutMs: number;
   deadline: number;
@@ -81,7 +81,9 @@ export async function executeAttempt<T>(p: {
 
   let started: StartedRun;
   try {
-    started = await p.start();
+    started = await p.start((selectedId) => {
+      resolvedAgentId = selectedId;
+    });
   } catch (error) {
     if (error instanceof ArchestraApiError) return fail(classifyApiError(error));
     throw error;

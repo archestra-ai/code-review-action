@@ -41054,17 +41054,25 @@ var McpSession = class {
   }
   /** Lists the names of all tools, following the pagination cursor. */
   async listToolNames(operation) {
-    const names = [];
+    const tools = await this.listTools(operation);
+    return tools.map((tool) => tool.name);
+  }
+  /** Lists all tools and any delegated local subagent IDs advertised in `_meta`, following the pagination cursor. */
+  async listTools(operation) {
+    const tools = [];
     let cursor;
     for (let page = 0; page < 50; page++) {
       const result = await this.request("tools/list", cursor ? { cursor } : {}, operation);
       for (const tool of result.tools ?? []) {
-        if (typeof tool.name === "string") names.push(tool.name);
+        if (typeof tool.name !== "string") continue;
+        const meta3 = tool._meta && typeof tool._meta === "object" ? tool._meta : null;
+        const targetAgentId = tool.name.startsWith("agent__") && tool.name !== "agent__self" && meta3?.targetType !== "external_a2a" && typeof meta3?.targetAgentId === "string" && meta3.targetAgentId.length > 0 ? meta3.targetAgentId : null;
+        tools.push({ name: tool.name, targetAgentId });
       }
       if (typeof result.nextCursor !== "string" || result.nextCursor === "") break;
       cursor = result.nextCursor;
     }
-    return names;
+    return tools;
   }
   async request(method, params, operation) {
     await this.ensureInitialized(operation);
@@ -41252,6 +41260,7 @@ var ArchestraClient = class {
   session;
   toolNames = null;
   runTool = null;
+  advertisedAgentIds = [];
   runUrls = /* @__PURE__ */ new Map();
   /** False once the gateway rejected `limits`: a deployment from before run limits. */
   limitsSupported = true;
@@ -41261,6 +41270,8 @@ var ArchestraClient = class {
   credentialGrantsSupported = true;
   /** False once the gateway rejected `ephemeral` on `transfer_credential`. */
   ephemeralCredentialSupported = true;
+  /** False once the gateway rejected an omitted `agent_id`: a deployment from before gateway subagent selection. */
+  gatewayAgentSelectionSupported = true;
   constructor(options) {
     this.gatewayUrl = options.gatewayUrl.replace(/\/+$/, "");
     this.origin = new URL(this.gatewayUrl).origin;
@@ -41278,10 +41289,16 @@ var ArchestraClient = class {
     return this.runUrls.get(runId) ?? `${this.origin}/chat/runs/${runId}`;
   }
   async startRun(agentId, body) {
-    const excludeAgentIds = this.excludeAgentIdsSupported && body.excludeAgentIds && body.excludeAgentIds.length > 0 ? [...body.excludeAgentIds] : null;
+    await this.resolveTools("start run");
+    let effectiveAgentId = agentId;
+    if (!effectiveAgentId && !this.gatewayAgentSelectionSupported) {
+      effectiveAgentId = this.selectLegacyGatewayAgent(body.preferredAgentId, body.excludeAgentIds, "start run");
+      if (effectiveAgentId) body.onAgentSelected?.(effectiveAgentId);
+    }
+    const excludeAgentIds = !effectiveAgentId && this.excludeAgentIdsSupported && body.excludeAgentIds && body.excludeAgentIds.length > 0 ? [...body.excludeAgentIds] : null;
     const credentialGrantIds = this.credentialGrantsSupported && body.credentialGrantIds && body.credentialGrantIds.length > 0 ? [...body.credentialGrantIds] : null;
     const baseArgs = {
-      ...agentId ? { agent_id: agentId } : {},
+      ...effectiveAgentId ? { agent_id: effectiveAgentId } : {},
       message: body.message,
       ...body.attachments.length > 0 ? { attachments: body.attachments } : {}
     };
@@ -41304,6 +41321,16 @@ var ArchestraClient = class {
       data = await this.call(RUN_TOOLS.start, limits ? { ...args, limits } : args, "start run");
     } catch (error63) {
       const isToolErr = error63 instanceof ArchestraApiError && error63.kind === "tool";
+      const rejectedOmittedAgentId = !effectiveAgentId && isToolErr && /\bagent_id\b.*expected string/i.test(error63.detail);
+      if (rejectedOmittedAgentId) {
+        this.gatewayAgentSelectionSupported = false;
+        this.excludeAgentIdsSupported = false;
+        this.credentialGrantsSupported = false;
+        const legacyAgentId = this.selectLegacyGatewayAgent(body.preferredAgentId, body.excludeAgentIds, "start run");
+        if (!legacyAgentId) throw error63;
+        body.onAgentSelected?.(legacyAgentId);
+        return this.startRun(legacyAgentId, body);
+      }
       const rejectedExclude = excludeAgentIds !== null && isToolErr && /unrecognized key.*\bexclude_agent_ids\b/i.test(error63.detail);
       const rejectedGrants = credentialGrantIds !== null && isToolErr && /unrecognized key.*\bcredential_grant_ids\b/i.test(error63.detail);
       const toolError = limits !== null && isToolErr;
@@ -41339,7 +41366,7 @@ var ArchestraClient = class {
     } : null;
     return {
       runId: result.run.run_id,
-      agentId: result.run.agent_id ?? agentId ?? null,
+      agentId: result.run.agent_id ?? effectiveAgentId ?? null,
       state: result.run.state,
       runUrl: result.run_url ?? null,
       previousTurnCreatedAt: null,
@@ -41418,8 +41445,18 @@ var ArchestraClient = class {
    * back to persistent storage if the gateway predates ephemeral grants).
    */
   async transferCredential(agentId, key, value, label, options) {
+    await this.resolveTools("store runtime credential");
+    let effectiveAgentId = agentId;
+    if (!effectiveAgentId && !this.gatewayAgentSelectionSupported) {
+      effectiveAgentId = this.selectLegacyGatewayAgent(
+        options?.preferredAgentId,
+        options?.excludeAgentIds,
+        "store runtime credential"
+      );
+      if (effectiveAgentId) options?.onAgentSelected?.(effectiveAgentId);
+    }
     const baseArgs = {
-      ...agentId ? { agent_id: agentId } : {},
+      ...effectiveAgentId ? { agent_id: effectiveAgentId } : {},
       environment: [{ key, type: "secret", value }],
       label
     };
@@ -41432,13 +41469,43 @@ var ArchestraClient = class {
         "store runtime credential"
       );
     } catch (error63) {
-      const rejectedEphemeral = useEphemeral && error63 instanceof ArchestraApiError && error63.kind === "tool" && /unrecognized key.*\bephemeral\b/i.test(error63.detail);
+      const isToolErr = error63 instanceof ArchestraApiError && error63.kind === "tool";
+      const rejectedOmittedAgentId = !effectiveAgentId && isToolErr && /\bagent_id\b.*expected string/i.test(error63.detail);
+      if (rejectedOmittedAgentId) {
+        this.gatewayAgentSelectionSupported = false;
+        this.ephemeralCredentialSupported = false;
+        this.credentialGrantsSupported = false;
+        this.excludeAgentIdsSupported = false;
+        const legacyAgentId = this.selectLegacyGatewayAgent(
+          options?.preferredAgentId,
+          options?.excludeAgentIds,
+          "store runtime credential"
+        );
+        if (!legacyAgentId) throw error63;
+        options?.onAgentSelected?.(legacyAgentId);
+        return this.transferCredential(legacyAgentId, key, value, label, options);
+      }
+      const rejectedEphemeral = useEphemeral && isToolErr && /unrecognized key.*\bephemeral\b/i.test(error63.detail);
       if (!rejectedEphemeral) throw error63;
       this.ephemeralCredentialSupported = false;
       data = await this.call(RUN_TOOLS.credential, baseArgs, "store runtime credential");
     }
     const parsed = TransferCredentialResultSchema.safeParse(data);
     return parsed.success ? parsed.data.credential_grant_id ?? null : null;
+  }
+  selectLegacyGatewayAgent(preferredAgentId, excludeAgentIds, operation) {
+    const excluded = new Set(excludeAgentIds ?? []);
+    const available = this.advertisedAgentIds.filter((id) => !excluded.has(id));
+    if (preferredAgentId && !excluded.has(preferredAgentId)) {
+      if (this.advertisedAgentIds.length === 0 || available.includes(preferredAgentId)) {
+        return preferredAgentId;
+      }
+    }
+    if (available.length > 0) return available[0] ?? null;
+    if (excluded.size > 0 && (this.advertisedAgentIds.length > 0 || preferredAgentId)) {
+      throw new ArchestraApiError(operation, "tool", "No remaining fallback subagents are available on this gateway.");
+    }
+    return null;
   }
   remember(runId, runUrl) {
     if (runUrl) this.runUrls.set(runId, runUrl);
@@ -41463,14 +41530,22 @@ var ArchestraClient = class {
     );
   }
   resolveTools(operation) {
-    this.toolNames ??= this.session.listToolNames(operation).then(
-      (names) => {
+    this.toolNames ??= this.session.listTools(operation).then(
+      (tools) => {
+        const names = tools.map((tool) => tool.name);
         const byShortName = /* @__PURE__ */ new Map();
         for (const shortName of [...Object.values(RUN_TOOLS), RUN_TOOL]) {
           const match = names.find((name) => name === `${ARCHESTRA_PREFIX}${shortName}`) ?? names.find((name) => name === shortName) ?? names.find((name) => name.endsWith(`__${shortName}`));
           if (match) byShortName.set(shortName, match);
         }
         this.runTool = byShortName.get(RUN_TOOL) ?? null;
+        const advertised = [];
+        for (const tool of tools) {
+          if (tool.targetAgentId && !advertised.includes(tool.targetAgentId)) {
+            advertised.push(tool.targetAgentId);
+          }
+        }
+        this.advertisedAgentIds = advertised;
         return byShortName;
       },
       (error63) => {
@@ -42095,7 +42170,9 @@ async function executeAttempt(p) {
   });
   let started;
   try {
-    started = await p.start();
+    started = await p.start((selectedId) => {
+      resolvedAgentId = selectedId;
+    });
   } catch (error63) {
     if (error63 instanceof ArchestraApiError) return fail(classifyApiError(error63));
     throw error63;
@@ -42408,11 +42485,12 @@ async function launch(ctx, p) {
         },
         readResult: (runId) => readContract(ctx.archestra, runId, p.contract.file, p.contract.schema),
         onPoll: p.progress?.poll,
-        start: async () => {
+        start: async (setAgentId) => {
           if (ctx.isStopping()) throw new Error("The job was canceled; no new run starts.");
           const escalated = info2.escalations > 0;
           if (continueFrom && targetAgentId && continueFrom.agentId === targetAgentId && !escalated) {
             const continuationAgentId = continueFrom.agentId;
+            setAgentId(continuationAgentId);
             const continued = await continueRun({
               client: ctx.archestra,
               runId: continueFrom.runId,
@@ -42436,7 +42514,9 @@ async function launch(ctx, p) {
             if (continued) return continued;
             continueFrom = null;
           }
-          const freshAgentId = agentId ?? null;
+          let freshAgentId = agentId ?? null;
+          setAgentId(freshAgentId);
+          const preferredAgentId = info2.runtimeIndex === 0 ? preferredFirstAgentId : null;
           const credentialGrantIds = [];
           if (p.credentialToken) {
             const grantId = await ctx.archestra.transferCredential(
@@ -42444,7 +42524,15 @@ async function launch(ctx, p) {
               "CODE_REVIEW_GITHUB_TOKEN",
               p.credentialToken,
               "GitHub token of the code review action",
-              { ephemeral: true }
+              {
+                ephemeral: true,
+                preferredAgentId,
+                excludeAgentIds: info2.excludeAgentIds,
+                onAgentSelected: (selectedId) => {
+                  freshAgentId = selectedId;
+                  setAgentId(selectedId);
+                }
+              }
             );
             if (grantId) credentialGrantIds.push(grantId);
           }
@@ -42452,6 +42540,11 @@ async function launch(ctx, p) {
             message: p.message,
             attachments: p.attachments,
             excludeAgentIds: info2.excludeAgentIds,
+            preferredAgentId,
+            onAgentSelected: (selectedId) => {
+              freshAgentId = selectedId;
+              setAgentId(selectedId);
+            },
             ...credentialGrantIds.length > 0 ? { credentialGrantIds } : {},
             ...info2.limits ? { limits: info2.limits } : {},
             ...escalated ? { requireLimits: true } : {}
