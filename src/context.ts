@@ -129,6 +129,7 @@ export async function launch<T>(
   p: {
     agents?: string[];
     continueFrom: { agentId: string; runId: string } | null;
+    preferredAgentId?: string | null;
     message: string;
     attachments: Attachment[];
     contract: { file: string; schema: z.ZodType<T> };
@@ -142,7 +143,7 @@ export async function launch<T>(
 ): Promise<FallbackResult<AttemptValue<T>>> {
   const deadline = overallDeadline(ctx);
   let continueFrom = p.continueFrom;
-  const preferredFirstAgentId = p.continueFrom?.agentId ?? null;
+  const preferredFirstAgentId = p.continueFrom?.agentId ?? p.preferredAgentId ?? null;
   return runWithFallback<AttemptValue<T>>({
     agents: p.agents,
     retries: ctx.inputs.retries,
