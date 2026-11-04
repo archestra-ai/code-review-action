@@ -833,6 +833,22 @@ describe("fix mode", () => {
     expect(harness.archestra.starts[1]).toMatchObject({ kind: "start", agentId: AGENT_A });
     expect(harness.archestra.starts[1]!.attachmentNames).toEqual(["fix-request.json", "pr.json", "pr.diff"]);
   });
+
+  it("lets the gateway pick an active subagent when the review's workspace expired and its agent was removed", async () => {
+    const { harness, result: review } = await reviewed();
+    harness.archestra.expiredWorkspaces.add(review.runId!);
+    harness.archestra.gatewayAgents.splice(0, harness.archestra.gatewayAgents.length, AGENT_B);
+    harness.archestra.script(AGENT_B, {
+      end: "completed",
+      files: { "fix-result.json": { applied: [], skipped: [], notes: "" } },
+    });
+    const fixResult = await run(harness.context("issue_comment", issueCommentEvent(harness.github, "/archestra fix")));
+    expect(fixResult.status).toBe("success");
+    expect(harness.archestra.starts[1]).toMatchObject({ kind: "start", agentId: AGENT_B });
+    expect(harness.archestra.credentials).toEqual([
+      { agentId: AGENT_B, key: "CODE_REVIEW_GITHUB_TOKEN", valueLength: "ghs_app_token".length },
+    ]);
+  });
 });
 
 describe("fix-ci and fix-ci-main modes", () => {

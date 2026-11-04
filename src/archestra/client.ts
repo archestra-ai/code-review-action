@@ -91,6 +91,10 @@ const FileResultSchema = z.object({
   size: z.number().optional(),
 });
 
+const TransferCredentialResultSchema = z.object({
+  credential_grant_id: z.string().nullish(),
+});
+
 export interface RunFailure {
   code: string;
   retriable: boolean;
@@ -159,6 +163,10 @@ export class ArchestraClient {
   private limitsSupported = true;
   /** False once the gateway rejected `exclude_agent_ids`. */
   private excludeAgentIdsSupported = true;
+  /** False once the gateway rejected `credential_grant_ids`. */
+  private credentialGrantsSupported = true;
+  /** False once the gateway rejected `ephemeral` on `transfer_credential`. */
+  private ephemeralCredentialSupported = true;
 
   constructor(options: ArchestraClientOptions) {
     this.gatewayUrl = options.gatewayUrl.replace(/\/+$/, "");
@@ -184,6 +192,7 @@ export class ArchestraClient {
       message: string;
       attachments: Attachment[];
       excludeAgentIds?: readonly string[];
+      credentialGrantIds?: readonly string[];
       limits?: RunLimits;
       /** Fail instead of starting with the Agent's own limits when it refuses the request. */
       requireLimits?: boolean;
@@ -193,12 +202,20 @@ export class ArchestraClient {
       this.excludeAgentIdsSupported && body.excludeAgentIds && body.excludeAgentIds.length > 0
         ? [...body.excludeAgentIds]
         : null;
+    const credentialGrantIds =
+      this.credentialGrantsSupported && body.credentialGrantIds && body.credentialGrantIds.length > 0
+        ? [...body.credentialGrantIds]
+        : null;
     const baseArgs = {
       ...(agentId ? { agent_id: agentId } : {}),
       message: body.message,
       ...(body.attachments.length > 0 ? { attachments: body.attachments } : {}),
     };
-    const args = excludeAgentIds ? { ...baseArgs, exclude_agent_ids: excludeAgentIds } : baseArgs;
+    const args = {
+      ...baseArgs,
+      ...(excludeAgentIds ? { exclude_agent_ids: excludeAgentIds } : {}),
+      ...(credentialGrantIds ? { credential_grant_ids: credentialGrantIds } : {}),
+    };
     const limits = this.limitsSupported && body.limits ? runLimitsArgs(body.limits) : null;
     // A retry with more memory after a memory kill is worth running only at that size: a
     // deployment that cannot take the request would run the Agent's own size again.
@@ -220,6 +237,8 @@ export class ArchestraClient {
       const isToolErr = error instanceof ArchestraApiError && error.kind === "tool";
       const rejectedExclude =
         excludeAgentIds !== null && isToolErr && /unrecognized key.*\bexclude_agent_ids\b/i.test(error.detail);
+      const rejectedGrants =
+        credentialGrantIds !== null && isToolErr && /unrecognized key.*\bcredential_grant_ids\b/i.test(error.detail);
       const toolError = limits !== null && isToolErr;
       const rejectedLimits = toolError && /unrecognized key.*\blimits\b/i.test(error.detail);
       // An Agent whose own limits are below the request, or whose tiers have no size that fits,
@@ -230,11 +249,16 @@ export class ArchestraClient {
         /is above this Agent's|sizes its runs with explicit resources|No tier this Agent's runs may use|There is no tier named|has less than the/i.test(
           error.detail,
         );
-      if (!rejectedExclude && !rejectedLimits && !refusedLimits) throw error;
+      if (!rejectedExclude && !rejectedGrants && !rejectedLimits && !refusedLimits) throw error;
       if ((rejectedLimits || refusedLimits) && body.requireLimits) throw error;
       if (rejectedExclude) this.excludeAgentIdsSupported = false;
+      if (rejectedGrants) this.credentialGrantsSupported = false;
       if (rejectedLimits) this.limitsSupported = false;
-      const retryBase = rejectedExclude ? baseArgs : args;
+      const retryBase = {
+        ...baseArgs,
+        ...(!rejectedExclude && excludeAgentIds ? { exclude_agent_ids: excludeAgentIds } : {}),
+        ...(!rejectedGrants && credentialGrantIds ? { credential_grant_ids: credentialGrantIds } : {}),
+      };
       if (rejectedLimits || refusedLimits) {
         applied = false;
         data = await this.call(RUN_TOOLS.start, retryBase, "start run");
@@ -340,16 +364,43 @@ export class ArchestraClient {
   }
 
   /**
-   * Stores a personal credential of the token's user on the agent. It
-   * reaches the agent's next turn, so store it before starting or
-   * continuing the run.
+   * Stores a personal credential of the token's user on the agent. When
+   * `options.ephemeral` is true, requests a one-time `credential_grant_id`
+   * handle that `startRun` binds only to the selected subagent pod (falling
+   * back to persistent storage if the gateway predates ephemeral grants).
    */
-  async transferCredential(agentId: string | null, key: string, value: string, label: string): Promise<void> {
-    await this.call(
-      RUN_TOOLS.credential,
-      { ...(agentId ? { agent_id: agentId } : {}), environment: [{ key, type: "secret", value }], label },
-      "store runtime credential",
-    );
+  async transferCredential(
+    agentId: string | null,
+    key: string,
+    value: string,
+    label: string,
+    options?: { ephemeral?: boolean },
+  ): Promise<string | null> {
+    const baseArgs = {
+      ...(agentId ? { agent_id: agentId } : {}),
+      environment: [{ key, type: "secret", value }],
+      label,
+    };
+    const useEphemeral = Boolean(options?.ephemeral) && this.ephemeralCredentialSupported;
+    let data: Record<string, unknown>;
+    try {
+      data = await this.call(
+        RUN_TOOLS.credential,
+        useEphemeral ? { ...baseArgs, ephemeral: true } : baseArgs,
+        "store runtime credential",
+      );
+    } catch (error) {
+      const rejectedEphemeral =
+        useEphemeral &&
+        error instanceof ArchestraApiError &&
+        error.kind === "tool" &&
+        /unrecognized key.*\bephemeral\b/i.test(error.detail);
+      if (!rejectedEphemeral) throw error;
+      this.ephemeralCredentialSupported = false;
+      data = await this.call(RUN_TOOLS.credential, baseArgs, "store runtime credential");
+    }
+    const parsed = TransferCredentialResultSchema.safeParse(data);
+    return parsed.success ? (parsed.data.credential_grant_id ?? null) : null;
   }
 
   private remember(runId: string, runUrl: string | null | undefined): void {

@@ -155,7 +155,10 @@ export async function launch<T>(
     limits: p.limits ?? null,
     largerLimits,
     attempt: (agentId, info) => {
-      const targetAgentId = agentId ?? (info.runtimeIndex === 0 ? preferredFirstAgentId : null);
+      if (info.runtimeIndex > 0) {
+        continueFrom = null;
+      }
+      const targetAgentId = agentId ?? (info.runtimeIndex === 0 && continueFrom ? preferredFirstAgentId : null);
       return executeAttempt<T>({
         client: ctx.archestra,
         agentId: targetAgentId,
@@ -171,19 +174,12 @@ export async function launch<T>(
         onPoll: p.progress?.poll,
         start: async () => {
           if (ctx.isStopping()) throw new Error("The job was canceled; no new run starts.");
-          if (p.credentialToken) {
-            await ctx.archestra.transferCredential(
-              targetAgentId,
-              "CODE_REVIEW_GITHUB_TOKEN",
-              p.credentialToken,
-              "GitHub token of the code review action",
-            );
-          }
           // After a memory kill the same runtime is tried with more memory. That
           // size is the point of the attempt, so it starts a fresh run (a continued
           // workspace keeps its first turn's size) and an Agent that refuses it ends it.
           const escalated = info.escalations > 0;
-          if (continueFrom && (!targetAgentId || continueFrom.agentId === targetAgentId) && !escalated) {
+          if (continueFrom && targetAgentId && continueFrom.agentId === targetAgentId && !escalated) {
+            const continuationAgentId = continueFrom.agentId;
             const continued = await continueRun({
               client: ctx.archestra,
               runId: continueFrom.runId,
@@ -195,14 +191,37 @@ export async function launch<T>(
               minRetainedMs: p.timeoutMs,
               clock: ctx.clock,
               log: ctx.log,
+              beforeSteer: p.credentialToken
+                ? async () => {
+                    await ctx.archestra.transferCredential(
+                      continuationAgentId,
+                      "CODE_REVIEW_GITHUB_TOKEN",
+                      p.credentialToken as string,
+                      "GitHub token of the code review action",
+                    );
+                  }
+                : undefined,
             });
             if (continued) return continued;
             continueFrom = null;
           }
-          return ctx.archestra.startRun(targetAgentId, {
+          const freshAgentId = agentId ?? null;
+          const credentialGrantIds: string[] = [];
+          if (p.credentialToken) {
+            const grantId = await ctx.archestra.transferCredential(
+              freshAgentId,
+              "CODE_REVIEW_GITHUB_TOKEN",
+              p.credentialToken,
+              "GitHub token of the code review action",
+              { ephemeral: true },
+            );
+            if (grantId) credentialGrantIds.push(grantId);
+          }
+          return ctx.archestra.startRun(freshAgentId, {
             message: p.message,
             attachments: p.attachments,
             excludeAgentIds: info.excludeAgentIds,
+            ...(credentialGrantIds.length > 0 ? { credentialGrantIds } : {}),
             ...(info.limits ? { limits: info.limits } : {}),
             ...(escalated ? { requireLimits: true } : {}),
           });

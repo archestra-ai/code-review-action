@@ -32,7 +32,9 @@ inputs:
     description: Number of retries on the same agent after a temporary failure (0 to 5).
     default: "1"
   max-fallbacks:
-    description: Number of alternative agents to try after a permanent failure. Defaults to all remaining agents.
+    description: >-
+      Number of alternative agents to try after a permanent failure. Empty defaults to 4 (up to 5 total subagents);
+      set "all" to try all remaining subagents.
     default: ""
   timeout-minutes:
     description: Timeout for a single review attempt, in minutes.

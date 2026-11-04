@@ -19,8 +19,9 @@ describe("readInputs", () => {
       gatewayUrl: "https://archestra.example.com/v1/mcp/code-review",
       token: "token",
       tokenSource: "actor",
-      maxFallbacks: 100,
+      maxFallbacks: 4,
     });
+    expect(read({ "max-fallbacks": "all" }).maxFallbacks).toBe(100);
   });
 
   it.each([

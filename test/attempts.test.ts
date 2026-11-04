@@ -227,6 +227,40 @@ describe("runWithFallback", () => {
     ]);
     expect(result).toMatchObject({ ok: true, agentId: AGENT_B });
   });
+
+  it("stops fallback slots when a gateway-mode failure occurred before any subagent was selected", async () => {
+    const clock = new FakeClock();
+    let calls = 0;
+    const result = await runWithFallback({
+      retries: 1,
+      maxFallbacks: 4,
+      deadline: clock.now() + 3_600_000,
+      now: clock.now,
+      sleep: clock.sleep,
+      log: new MemoryLogger(),
+      attempt: async () => {
+        calls++;
+        return {
+          ok: false,
+          classification: { class: "retriable", reason: "HTTP 503", source: "api" },
+          record: {
+            agentId: null,
+            runId: null,
+            runUrl: null,
+            continued: false,
+            tier: null,
+            result: "retriable",
+            reason: "HTTP 503",
+            source: "api",
+            durationMs: 0,
+          },
+        };
+      },
+    });
+    expect(calls).toBe(2);
+    expect(result.ok).toBe(false);
+    expect(result.attempts.every((a) => a.agentId === null)).toBe(true);
+  });
 });
 
 describe("executeAttempt against the fake Archestra gateway", () => {

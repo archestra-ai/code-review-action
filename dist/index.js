@@ -41243,6 +41243,9 @@ var FileResultSchema = external_exports.object({
   content: external_exports.string().optional(),
   size: external_exports.number().optional()
 });
+var TransferCredentialResultSchema = external_exports.object({
+  credential_grant_id: external_exports.string().nullish()
+});
 var ArchestraClient = class {
   gatewayUrl;
   origin;
@@ -41254,6 +41257,10 @@ var ArchestraClient = class {
   limitsSupported = true;
   /** False once the gateway rejected `exclude_agent_ids`. */
   excludeAgentIdsSupported = true;
+  /** False once the gateway rejected `credential_grant_ids`. */
+  credentialGrantsSupported = true;
+  /** False once the gateway rejected `ephemeral` on `transfer_credential`. */
+  ephemeralCredentialSupported = true;
   constructor(options) {
     this.gatewayUrl = options.gatewayUrl.replace(/\/+$/, "");
     this.origin = new URL(this.gatewayUrl).origin;
@@ -41272,12 +41279,17 @@ var ArchestraClient = class {
   }
   async startRun(agentId, body) {
     const excludeAgentIds = this.excludeAgentIdsSupported && body.excludeAgentIds && body.excludeAgentIds.length > 0 ? [...body.excludeAgentIds] : null;
+    const credentialGrantIds = this.credentialGrantsSupported && body.credentialGrantIds && body.credentialGrantIds.length > 0 ? [...body.credentialGrantIds] : null;
     const baseArgs = {
       ...agentId ? { agent_id: agentId } : {},
       message: body.message,
       ...body.attachments.length > 0 ? { attachments: body.attachments } : {}
     };
-    const args = excludeAgentIds ? { ...baseArgs, exclude_agent_ids: excludeAgentIds } : baseArgs;
+    const args = {
+      ...baseArgs,
+      ...excludeAgentIds ? { exclude_agent_ids: excludeAgentIds } : {},
+      ...credentialGrantIds ? { credential_grant_ids: credentialGrantIds } : {}
+    };
     const limits = this.limitsSupported && body.limits ? runLimitsArgs(body.limits) : null;
     if (body.requireLimits && limits === null) {
       throw new ArchestraApiError(
@@ -41293,16 +41305,22 @@ var ArchestraClient = class {
     } catch (error63) {
       const isToolErr = error63 instanceof ArchestraApiError && error63.kind === "tool";
       const rejectedExclude = excludeAgentIds !== null && isToolErr && /unrecognized key.*\bexclude_agent_ids\b/i.test(error63.detail);
+      const rejectedGrants = credentialGrantIds !== null && isToolErr && /unrecognized key.*\bcredential_grant_ids\b/i.test(error63.detail);
       const toolError = limits !== null && isToolErr;
       const rejectedLimits = toolError && /unrecognized key.*\blimits\b/i.test(error63.detail);
       const refusedLimits = toolError && /is above this Agent's|sizes its runs with explicit resources|No tier this Agent's runs may use|There is no tier named|has less than the/i.test(
         error63.detail
       );
-      if (!rejectedExclude && !rejectedLimits && !refusedLimits) throw error63;
+      if (!rejectedExclude && !rejectedGrants && !rejectedLimits && !refusedLimits) throw error63;
       if ((rejectedLimits || refusedLimits) && body.requireLimits) throw error63;
       if (rejectedExclude) this.excludeAgentIdsSupported = false;
+      if (rejectedGrants) this.credentialGrantsSupported = false;
       if (rejectedLimits) this.limitsSupported = false;
-      const retryBase = rejectedExclude ? baseArgs : args;
+      const retryBase = {
+        ...baseArgs,
+        ...!rejectedExclude && excludeAgentIds ? { exclude_agent_ids: excludeAgentIds } : {},
+        ...!rejectedGrants && credentialGrantIds ? { credential_grant_ids: credentialGrantIds } : {}
+      };
       if (rejectedLimits || refusedLimits) {
         applied = false;
         data = await this.call(RUN_TOOLS.start, retryBase, "start run");
@@ -41394,16 +41412,33 @@ var ArchestraClient = class {
     );
   }
   /**
-   * Stores a personal credential of the token's user on the agent. It
-   * reaches the agent's next turn, so store it before starting or
-   * continuing the run.
+   * Stores a personal credential of the token's user on the agent. When
+   * `options.ephemeral` is true, requests a one-time `credential_grant_id`
+   * handle that `startRun` binds only to the selected subagent pod (falling
+   * back to persistent storage if the gateway predates ephemeral grants).
    */
-  async transferCredential(agentId, key, value, label) {
-    await this.call(
-      RUN_TOOLS.credential,
-      { ...agentId ? { agent_id: agentId } : {}, environment: [{ key, type: "secret", value }], label },
-      "store runtime credential"
-    );
+  async transferCredential(agentId, key, value, label, options) {
+    const baseArgs = {
+      ...agentId ? { agent_id: agentId } : {},
+      environment: [{ key, type: "secret", value }],
+      label
+    };
+    const useEphemeral = Boolean(options?.ephemeral) && this.ephemeralCredentialSupported;
+    let data;
+    try {
+      data = await this.call(
+        RUN_TOOLS.credential,
+        useEphemeral ? { ...baseArgs, ephemeral: true } : baseArgs,
+        "store runtime credential"
+      );
+    } catch (error63) {
+      const rejectedEphemeral = useEphemeral && error63 instanceof ArchestraApiError && error63.kind === "tool" && /unrecognized key.*\bephemeral\b/i.test(error63.detail);
+      if (!rejectedEphemeral) throw error63;
+      this.ephemeralCredentialSupported = false;
+      data = await this.call(RUN_TOOLS.credential, baseArgs, "store runtime credential");
+    }
+    const parsed = TransferCredentialResultSchema.safeParse(data);
+    return parsed.success ? parsed.data.credential_grant_id ?? null : null;
   }
   remember(runId, runUrl) {
     if (runUrl) this.runUrls.set(runId, runUrl);
@@ -41669,6 +41704,7 @@ async function runWithFallback(params) {
   const excludedAgentIds = [];
   const runtimeCount = params.agents ? Math.min(params.agents.length, 1 + Math.max(0, params.maxFallbacks)) : 1 + Math.max(0, params.maxFallbacks);
   for (let runtimeIndex = 0; runtimeIndex < runtimeCount; runtimeIndex++) {
+    const excludedBeforeSlot = excludedAgentIds.length;
     let currentAgentId = params.agents ? params.agents[runtimeIndex] : null;
     let limits = params.limits ?? null;
     let escalations = 0;
@@ -41691,7 +41727,7 @@ async function runWithFallback(params) {
         escalations,
         excludeAgentIds: [...excludedAgentIds]
       });
-      if (outcome.record.agentId && outcome.record.agentId !== "gateway") {
+      if (outcome.record.agentId) {
         currentAgentId = outcome.record.agentId;
       }
       if (!params.agents && excludedAgentIds.length > 0 && !outcome.ok && outcome.classification.source === "api" && /no remaining fallback subagents|agent not found/i.test(outcome.classification.reason)) {
@@ -41699,10 +41735,11 @@ async function runWithFallback(params) {
       }
       attempts.push(outcome.record);
       if (outcome.ok) {
+        const resolvedAgentId = currentAgentId ?? outcome.record.agentId ?? void 0;
         return {
           ok: true,
           value: outcome.value,
-          agentId: currentAgentId ?? outcome.record.agentId,
+          ...resolvedAgentId ? { agentId: resolvedAgentId } : {},
           attempts,
           fatal: false,
           deadlineReached: false
@@ -41732,7 +41769,10 @@ async function runWithFallback(params) {
         if (currentAgentId && !excludedAgentIds.includes(currentAgentId)) {
           excludedAgentIds.push(currentAgentId);
         }
-        if (runtimeIndex + 1 < runtimeCount) await params.progress?.next();
+        const addedExclusion = excludedAgentIds.length > excludedBeforeSlot;
+        if (runtimeIndex + 1 < runtimeCount && (params.agents || addedExclusion)) {
+          await params.progress?.next();
+        }
         break;
       }
       if (retry < params.retries) {
@@ -41744,11 +41784,15 @@ async function runWithFallback(params) {
         if (currentAgentId && !excludedAgentIds.includes(currentAgentId)) {
           excludedAgentIds.push(currentAgentId);
         }
-        if (runtimeIndex + 1 < runtimeCount) {
+        const addedExclusion = excludedAgentIds.length > excludedBeforeSlot;
+        if (runtimeIndex + 1 < runtimeCount && (params.agents || addedExclusion)) {
           await params.progress?.next();
         }
       }
       retry += 1;
+    }
+    if (!params.agents && excludedAgentIds.length === excludedBeforeSlot) {
+      break;
     }
   }
   return { ok: false, attempts, fatal: false, deadlineReached: false };
@@ -42029,7 +42073,7 @@ var PENDING_RESULT = { archestra_pending: true };
 async function executeAttempt(p) {
   const { client, clock, log } = p;
   const startedAt = clock.now();
-  let resolvedAgentId = p.agentId || "gateway";
+  let resolvedAgentId = p.agentId ?? null;
   let runId = null;
   let continued = false;
   let tier = null;
@@ -42062,7 +42106,7 @@ async function executeAttempt(p) {
   tier = started.limits?.tier ?? null;
   const liveRunId = runId;
   p.onLive(liveRunId);
-  log.info(`Run on agent ${resolvedAgentId}: ${client.runUrl(liveRunId)}`);
+  log.info(`Run on agent ${resolvedAgentId ?? "gateway"}: ${client.runUrl(liveRunId)}`);
   const stopAt = Math.min(startedAt + p.timeoutMs, p.deadline);
   let interval = POLL_MIN_MS;
   let lastState = "";
@@ -42241,6 +42285,7 @@ async function continueRun(p) {
 
 Attached files are available for this run:
 ${names.map((name) => `- ${WORKSPACE_ROOT}/${name}`).join("\n")}` : p.message;
+    await p.beforeSteer?.();
     let status;
     try {
       status = await p.client.steerRun(p.runId, message);
@@ -42346,7 +42391,10 @@ async function launch(ctx, p) {
     limits: p.limits ?? null,
     largerLimits,
     attempt: (agentId, info2) => {
-      const targetAgentId = agentId ?? (info2.runtimeIndex === 0 ? preferredFirstAgentId : null);
+      if (info2.runtimeIndex > 0) {
+        continueFrom = null;
+      }
+      const targetAgentId = agentId ?? (info2.runtimeIndex === 0 && continueFrom ? preferredFirstAgentId : null);
       return executeAttempt({
         client: ctx.archestra,
         agentId: targetAgentId,
@@ -42362,16 +42410,9 @@ async function launch(ctx, p) {
         onPoll: p.progress?.poll,
         start: async () => {
           if (ctx.isStopping()) throw new Error("The job was canceled; no new run starts.");
-          if (p.credentialToken) {
-            await ctx.archestra.transferCredential(
-              targetAgentId,
-              "CODE_REVIEW_GITHUB_TOKEN",
-              p.credentialToken,
-              "GitHub token of the code review action"
-            );
-          }
           const escalated = info2.escalations > 0;
-          if (continueFrom && (!targetAgentId || continueFrom.agentId === targetAgentId) && !escalated) {
+          if (continueFrom && targetAgentId && continueFrom.agentId === targetAgentId && !escalated) {
+            const continuationAgentId = continueFrom.agentId;
             const continued = await continueRun({
               client: ctx.archestra,
               runId: continueFrom.runId,
@@ -42382,15 +42423,36 @@ async function launch(ctx, p) {
               deadline,
               minRetainedMs: p.timeoutMs,
               clock: ctx.clock,
-              log: ctx.log
+              log: ctx.log,
+              beforeSteer: p.credentialToken ? async () => {
+                await ctx.archestra.transferCredential(
+                  continuationAgentId,
+                  "CODE_REVIEW_GITHUB_TOKEN",
+                  p.credentialToken,
+                  "GitHub token of the code review action"
+                );
+              } : void 0
             });
             if (continued) return continued;
             continueFrom = null;
           }
-          return ctx.archestra.startRun(targetAgentId, {
+          const freshAgentId = agentId ?? null;
+          const credentialGrantIds = [];
+          if (p.credentialToken) {
+            const grantId = await ctx.archestra.transferCredential(
+              freshAgentId,
+              "CODE_REVIEW_GITHUB_TOKEN",
+              p.credentialToken,
+              "GitHub token of the code review action",
+              { ephemeral: true }
+            );
+            if (grantId) credentialGrantIds.push(grantId);
+          }
+          return ctx.archestra.startRun(freshAgentId, {
             message: p.message,
             attachments: p.attachments,
             excludeAgentIds: info2.excludeAgentIds,
+            ...credentialGrantIds.length > 0 ? { credentialGrantIds } : {},
             ...info2.limits ? { limits: info2.limits } : {},
             ...escalated ? { requireLimits: true } : {}
           });
@@ -46674,6 +46736,7 @@ var InputError = class extends Error {
 };
 var MAX_INSTRUCTIONS_BYTES = 64 * 1024;
 var ALL_FALLBACKS = 100;
+var DEFAULT_GATEWAY_MAX_FALLBACKS = 4;
 function readInputs(get, readFile) {
   const value = (name) => get(name).trim();
   const required2 = (name) => {
@@ -46706,7 +46769,7 @@ function readInputs(get, readFile) {
   const fallbackToken = archestraAuth === "token" ? value("fallback-token") : "";
   const tokenSource = archestraAuth === "github-actions" ? "github-actions" : actorToken ? "actor" : fallbackToken ? "fallback" : null;
   const maxFallbacksRaw = value("max-fallbacks");
-  const maxFallbacks = maxFallbacksRaw === "" || maxFallbacksRaw === "all" ? ALL_FALLBACKS : integer2("max-fallbacks", maxFallbacksRaw, 0, ALL_FALLBACKS);
+  const maxFallbacks = maxFallbacksRaw === "" ? DEFAULT_GATEWAY_MAX_FALLBACKS : maxFallbacksRaw === "all" ? ALL_FALLBACKS : integer2("max-fallbacks", maxFallbacksRaw, 0, ALL_FALLBACKS);
   let instructions = value("instructions");
   const instructionsFile = value("instructions-file");
   if (instructionsFile) {
@@ -47057,7 +47120,7 @@ var StoredFindingSchema = ReviewFindingSchema.extend({
   excerpt: external_exports.string().max(2e3).nullable().default(null)
 });
 var AttemptRecordSchema = external_exports.object({
-  agentId: external_exports.string(),
+  agentId: external_exports.string().nullable(),
   runId: external_exports.string().nullable(),
   runUrl: external_exports.string().nullable(),
   /** True when the attempt continued the run of an earlier job. Records written before this field have false. */
@@ -47616,7 +47679,7 @@ function historyTable(jobs) {
       if (only.runUrl) result.push(`(${runLink(only)})`);
     } else if (job.attempts.length > 0) {
       const attempts = job.attempts.map(
-        (attempt, n) => `${n + 1}. \`${attempt.agentId.slice(0, 8)}\` ${attemptResult(attempt)}, ${formatDuration(attempt.durationMs)}${attempt.runUrl ? ` (${runLink(attempt)})` : ""}`
+        (attempt, n) => `${n + 1}. \`${(attempt.agentId ?? "gateway").slice(0, 8)}\` ${attemptResult(attempt)}, ${formatDuration(attempt.durationMs)}${attempt.runUrl ? ` (${runLink(attempt)})` : ""}`
       );
       result.push(`\xB7 ${job.attempts.length} attempts: ${attempts.join("; ")}`);
     }
@@ -47627,7 +47690,7 @@ function historyTable(jobs) {
 }
 function attemptsTable(attempts) {
   const rows = attempts.map(
-    (attempt, index) => `| ${index + 1} | \`${attempt.agentId.slice(0, 8)}\` | ${runCell(attempt)} | ${attemptResult(attempt)} | ${formatDuration(attempt.durationMs)} |`
+    (attempt, index) => `| ${index + 1} | \`${(attempt.agentId ?? "gateway").slice(0, 8)}\` | ${runCell(attempt)} | ${attemptResult(attempt)} | ${formatDuration(attempt.durationMs)} |`
   );
   return ["| # | Agent | Run | Result | Duration |", "| --- | --- | --- | --- | --- |", ...rows].join("\n");
 }

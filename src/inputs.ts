@@ -56,6 +56,7 @@ export class InputError extends Error {
 
 const MAX_INSTRUCTIONS_BYTES = 64 * 1024;
 const ALL_FALLBACKS = 100;
+const DEFAULT_GATEWAY_MAX_FALLBACKS = 4;
 
 /**
  * Reads and validates the action inputs. `get` returns "" for an input that
@@ -99,9 +100,11 @@ export function readInputs(get: (name: string) => string, readFile: (path: strin
 
   const maxFallbacksRaw = value("max-fallbacks");
   const maxFallbacks =
-    maxFallbacksRaw === "" || maxFallbacksRaw === "all"
-      ? ALL_FALLBACKS
-      : integer("max-fallbacks", maxFallbacksRaw, 0, ALL_FALLBACKS);
+    maxFallbacksRaw === ""
+      ? DEFAULT_GATEWAY_MAX_FALLBACKS
+      : maxFallbacksRaw === "all"
+        ? ALL_FALLBACKS
+        : integer("max-fallbacks", maxFallbacksRaw, 0, ALL_FALLBACKS);
 
   let instructions = value("instructions");
   const instructionsFile = value("instructions-file");

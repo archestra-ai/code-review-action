@@ -3,7 +3,7 @@ import type { Classification, ClassificationSource, FailureClass } from "./class
 import type { Logger } from "./util";
 
 export interface AttemptRecord {
-  agentId: string;
+  agentId: string | null;
   runId: string | null;
   runUrl: string | null;
   /** True when the attempt continued the run of an earlier job instead of starting one. */
@@ -99,6 +99,7 @@ export async function runWithFallback<T>(params: {
     ? Math.min(params.agents.length, 1 + Math.max(0, params.maxFallbacks))
     : 1 + Math.max(0, params.maxFallbacks);
   for (let runtimeIndex = 0; runtimeIndex < runtimeCount; runtimeIndex++) {
+    const excludedBeforeSlot = excludedAgentIds.length;
     let currentAgentId: string | null = params.agents ? (params.agents[runtimeIndex] as string) : null;
     let limits = params.limits ?? null;
     let escalations = 0;
@@ -121,7 +122,7 @@ export async function runWithFallback<T>(params: {
         escalations,
         excludeAgentIds: [...excludedAgentIds],
       });
-      if (outcome.record.agentId && outcome.record.agentId !== "gateway") {
+      if (outcome.record.agentId) {
         currentAgentId = outcome.record.agentId;
       }
       if (
@@ -135,10 +136,11 @@ export async function runWithFallback<T>(params: {
       }
       attempts.push(outcome.record);
       if (outcome.ok) {
+        const resolvedAgentId = currentAgentId ?? outcome.record.agentId ?? undefined;
         return {
           ok: true,
           value: outcome.value,
-          agentId: currentAgentId ?? outcome.record.agentId,
+          ...(resolvedAgentId ? { agentId: resolvedAgentId } : {}),
           attempts,
           fatal: false,
           deadlineReached: false,
@@ -175,7 +177,10 @@ export async function runWithFallback<T>(params: {
         if (currentAgentId && !excludedAgentIds.includes(currentAgentId)) {
           excludedAgentIds.push(currentAgentId);
         }
-        if (runtimeIndex + 1 < runtimeCount) await params.progress?.next();
+        const addedExclusion = excludedAgentIds.length > excludedBeforeSlot;
+        if (runtimeIndex + 1 < runtimeCount && (params.agents || addedExclusion)) {
+          await params.progress?.next();
+        }
         break;
       }
       if (retry < params.retries) {
@@ -187,11 +192,15 @@ export async function runWithFallback<T>(params: {
         if (currentAgentId && !excludedAgentIds.includes(currentAgentId)) {
           excludedAgentIds.push(currentAgentId);
         }
-        if (runtimeIndex + 1 < runtimeCount) {
+        const addedExclusion = excludedAgentIds.length > excludedBeforeSlot;
+        if (runtimeIndex + 1 < runtimeCount && (params.agents || addedExclusion)) {
           await params.progress?.next();
         }
       }
       retry += 1;
+    }
+    if (!params.agents && excludedAgentIds.length === excludedBeforeSlot) {
+      break;
     }
   }
   return { ok: false, attempts, fatal: false, deadlineReached: false };

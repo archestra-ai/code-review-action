@@ -519,7 +519,18 @@ export class FakeArchestra {
         ? args.agent_id
         : (this.gatewayAgents[0] ?? "gateway");
     this.credentials.push({ agentId, key: entry.key, valueLength: entry.value?.length ?? 0 });
-    return toolResult({ key: entry.key, scope: "personal", valueStored: true });
+    return toolResult({
+      key: entry.key,
+      scope: "personal",
+      valueStored: args.ephemeral !== true,
+      ...(args.ephemeral === true
+        ? {
+            ephemeral: true,
+            credential_grant_id: `00000000-0000-4000-8000-${String(++this.counter).padStart(12, "0")}`,
+            expires_in_seconds: 300,
+          }
+        : {}),
+    });
   }
 
   private newTurn(script: TurnScript): FakeTurn {
