@@ -645,7 +645,7 @@ describe("progress comment", () => {
       '<img src="https://raw.githubusercontent.com/archestra-ai/code-review-action/0000000/assets/progress.gif" width="14" height="14" alt="Archestra is working" />',
     );
     expect(history[0]).toContain("- preparing the inputs");
-    expect(history.some((body) => body.includes("- starting a run on agent 1 of 3"))).toBe(true);
+    expect(history.some((body) => body.includes("- starting a run on agent 1"))).toBe(true);
     expect(
       history.some((body) =>
         body.includes("- waiting for the runtime to finish ([run](https://archestra.test/chat/runs/"),
@@ -668,9 +668,9 @@ describe("progress comment", () => {
     harness.archestra.script(AGENT_B, { end: "completed", files: { "review.json": reviewJson() } });
     await run(harness.context("pull_request", prEvent(harness.github)));
     const steps = harness.github.stickyHistory.map((body) => body.split("\n")[3] ?? "");
-    expect(steps).toContain("- starting a run on agent 1 of 3 (`11111111`)");
+    expect(steps).toContain("- starting a run on agent 1");
     expect(steps).toContain("- the run failed; moving to the next agent");
-    expect(steps).toContain("- starting a run on agent 2 of 3 (`22222222`)");
+    expect(steps).toContain("- starting a run on agent 2");
     // The failed run's link does not stick to the next agent's steps.
     expect(steps.filter((step) => step.includes("[run]")).length).toBe(2);
   });
@@ -697,14 +697,13 @@ describe("identity", () => {
     expect(harness.archestra.calls).toEqual([]);
   });
 
-  it("uses the fallback token and the fallback agents when the actor has no token", async () => {
+  it("uses the fallback token when the actor has no token", async () => {
     const harness = setup();
     harness.archestra.script(AGENT_B, { end: "completed", files: { "review.json": reviewJson() } });
     const result = await run(
       harness.context("pull_request", prEvent(harness.github), {
         "archestra-token": "",
         "fallback-token": harness.archestra.otherToken,
-        "fallback-agents": AGENT_B,
       }),
     );
     expect(result).toMatchObject({ status: "success", agentId: AGENT_B });
@@ -833,6 +832,22 @@ describe("fix mode", () => {
     await run(harness.context("issue_comment", issueCommentEvent(harness.github, "/archestra fix")));
     expect(harness.archestra.starts[1]).toMatchObject({ kind: "start", agentId: AGENT_A });
     expect(harness.archestra.starts[1]!.attachmentNames).toEqual(["fix-request.json", "pr.json", "pr.diff"]);
+  });
+
+  it("lets the gateway pick an active subagent when the review's workspace expired and its agent was removed", async () => {
+    const { harness, result: review } = await reviewed();
+    harness.archestra.expiredWorkspaces.add(review.runId!);
+    harness.archestra.gatewayAgents.splice(0, harness.archestra.gatewayAgents.length, AGENT_B);
+    harness.archestra.script(AGENT_B, {
+      end: "completed",
+      files: { "fix-result.json": { applied: [], skipped: [], notes: "" } },
+    });
+    const fixResult = await run(harness.context("issue_comment", issueCommentEvent(harness.github, "/archestra fix")));
+    expect(fixResult.status).toBe("success");
+    expect(harness.archestra.starts[1]).toMatchObject({ kind: "start", agentId: AGENT_B });
+    expect(harness.archestra.credentials).toEqual([
+      { agentId: AGENT_B, key: "CODE_REVIEW_GITHUB_TOKEN", valueLength: "ghs_app_token".length },
+    ]);
   });
 });
 

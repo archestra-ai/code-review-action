@@ -118,16 +118,16 @@ export function briefTitle(title: string): string {
 
 /**
  * Starts the work on the runtimes with the retry and fallback policy. When
- * `continueFrom` names one of the agents, the first attempt on that agent
- * continues the retained workspace; a workspace that this token cannot
- * continue gives a fresh run on the same agent. When `credentialToken` is
- * set, it is stored as the actor's CODE_REVIEW_GITHUB_TOKEN credential on the agent
- * before each attempt; it reaches the next turn.
+ * `continueFrom` names an earlier run, the first attempt continues its
+ * retained workspace; a workspace that this token cannot continue gives a
+ * fresh run on the same agent. When `credentialToken` is set, it is stored as
+ * the actor's CODE_REVIEW_GITHUB_TOKEN credential before each attempt; it
+ * reaches the next turn.
  */
 export async function launch<T>(
   ctx: ActionContext,
   p: {
-    agents: string[];
+    agents?: string[];
     continueFrom: { agentId: string; runId: string } | null;
     message: string;
     attachments: Attachment[];
@@ -142,6 +142,7 @@ export async function launch<T>(
 ): Promise<FallbackResult<AttemptValue<T>>> {
   const deadline = overallDeadline(ctx);
   let continueFrom = p.continueFrom;
+  const preferredFirstAgentId = p.continueFrom?.agentId ?? null;
   return runWithFallback<AttemptValue<T>>({
     agents: p.agents,
     retries: ctx.inputs.retries,
@@ -153,10 +154,14 @@ export async function launch<T>(
     progress: p.progress,
     limits: p.limits ?? null,
     largerLimits,
-    attempt: (agentId, info) =>
-      executeAttempt<T>({
+    attempt: (agentId, info) => {
+      if (info.runtimeIndex > 0) {
+        continueFrom = null;
+      }
+      const targetAgentId = agentId ?? (info.runtimeIndex === 0 && continueFrom ? preferredFirstAgentId : null);
+      return executeAttempt<T>({
         client: ctx.archestra,
-        agentId,
+        agentId: targetAgentId,
         timeoutMs: p.timeoutMs,
         deadline,
         clock: ctx.clock,
@@ -169,19 +174,12 @@ export async function launch<T>(
         onPoll: p.progress?.poll,
         start: async () => {
           if (ctx.isStopping()) throw new Error("The job was canceled; no new run starts.");
-          if (p.credentialToken) {
-            await ctx.archestra.transferCredential(
-              agentId,
-              "CODE_REVIEW_GITHUB_TOKEN",
-              p.credentialToken,
-              "GitHub token of the code review action",
-            );
-          }
           // After a memory kill the same runtime is tried with more memory. That
           // size is the point of the attempt, so it starts a fresh run (a continued
           // workspace keeps its first turn's size) and an Agent that refuses it ends it.
           const escalated = info.escalations > 0;
-          if (continueFrom && continueFrom.agentId === agentId && !escalated) {
+          if (continueFrom && targetAgentId && continueFrom.agentId === targetAgentId && !escalated) {
+            const continuationAgentId = continueFrom.agentId;
             const continued = await continueRun({
               client: ctx.archestra,
               runId: continueFrom.runId,
@@ -193,23 +191,42 @@ export async function launch<T>(
               minRetainedMs: p.timeoutMs,
               clock: ctx.clock,
               log: ctx.log,
+              beforeSteer: p.credentialToken
+                ? async () => {
+                    await ctx.archestra.transferCredential(
+                      continuationAgentId,
+                      "CODE_REVIEW_GITHUB_TOKEN",
+                      p.credentialToken as string,
+                      "GitHub token of the code review action",
+                    );
+                  }
+                : undefined,
             });
             if (continued) return continued;
             continueFrom = null;
           }
-          return ctx.archestra.startRun(agentId, {
+          const freshAgentId = agentId ?? null;
+          const credentialGrantIds: string[] = [];
+          if (p.credentialToken) {
+            const grantId = await ctx.archestra.transferCredential(
+              freshAgentId,
+              "CODE_REVIEW_GITHUB_TOKEN",
+              p.credentialToken,
+              "GitHub token of the code review action",
+              { ephemeral: true },
+            );
+            if (grantId) credentialGrantIds.push(grantId);
+          }
+          return ctx.archestra.startRun(freshAgentId, {
             message: p.message,
             attachments: p.attachments,
+            excludeAgentIds: info.excludeAgentIds,
+            ...(credentialGrantIds.length > 0 ? { credentialGrantIds } : {}),
             ...(info.limits ? { limits: info.limits } : {}),
             ...(escalated ? { requireLimits: true } : {}),
           });
         },
-      }),
+      });
+    },
   });
-}
-
-/** Puts `first` at the front of the agent order, when it is configured. */
-export function preferAgent(order: string[], first: string | null): string[] {
-  if (!first || !order.includes(first)) return order;
-  return [first, ...order.filter((agent) => agent !== first)];
 }

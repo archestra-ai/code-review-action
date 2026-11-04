@@ -210,7 +210,7 @@ const StoredFindingSchema = ReviewFindingSchema.extend({
 export type StoredFinding = z.infer<typeof StoredFindingSchema>;
 
 const AttemptRecordSchema = z.object({
-  agentId: z.string(),
+  agentId: z.string().nullable(),
   runId: z.string().nullable(),
   runUrl: z.string().nullable(),
   /** True when the attempt continued the run of an earlier job. Records written before this field have false. */
@@ -950,7 +950,7 @@ export function historyTable(jobs: JobRecord[]): string {
     } else if (job.attempts.length > 0) {
       const attempts = job.attempts.map(
         (attempt, n) =>
-          `${n + 1}. \`${attempt.agentId.slice(0, 8)}\` ${attemptResult(attempt)}, ${formatDuration(attempt.durationMs)}${attempt.runUrl ? ` (${runLink(attempt)})` : ""}`,
+          `${n + 1}. \`${(attempt.agentId ?? "gateway").slice(0, 8)}\` ${attemptResult(attempt)}, ${formatDuration(attempt.durationMs)}${attempt.runUrl ? ` (${runLink(attempt)})` : ""}`,
       );
       result.push(`· ${job.attempts.length} attempts: ${attempts.join("; ")}`);
     }
@@ -966,7 +966,7 @@ export function historyTable(jobs: JobRecord[]): string {
 export function attemptsTable(attempts: AttemptRecord[]): string {
   const rows = attempts.map(
     (attempt, index) =>
-      `| ${index + 1} | \`${attempt.agentId.slice(0, 8)}\` | ${runCell(attempt)} | ${attemptResult(attempt)} | ${formatDuration(attempt.durationMs)} |`,
+      `| ${index + 1} | \`${(attempt.agentId ?? "gateway").slice(0, 8)}\` | ${runCell(attempt)} | ${attemptResult(attempt)} | ${formatDuration(attempt.durationMs)} |`,
   );
   return ["| # | Agent | Run | Result | Duration |", "| --- | --- | --- | --- | --- |", ...rows].join("\n");
 }

@@ -4,6 +4,7 @@ import { classifyApiError, classifyFailureMessage, classifyRun } from "../src/cl
 
 const run = (overrides: Partial<AgentRun>): AgentRun => ({
   runId: "r",
+  agentId: null,
   state: "failed",
   statusReason: null,
   failure: null,

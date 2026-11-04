@@ -29,6 +29,11 @@ export const TOOL_ERROR_PATTERNS: ReadonlyArray<{ pattern: RegExp; class: Failur
     label: "the gateway does not expose the Remote Agents tools",
   },
   {
+    pattern: /no runtime subagents are assigned/i,
+    class: "fatal",
+    label: "no runtime subagents are assigned to the MCP gateway",
+  },
+  {
     pattern: /\[appa\]|guardrails/i,
     class: "non_retriable",
     label: "refused by Guardrails",

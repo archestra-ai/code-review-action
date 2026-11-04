@@ -2,37 +2,8 @@ import type { RunLimits } from "./archestra/client";
 import type { Classification, ClassificationSource, FailureClass } from "./classify";
 import type { Logger } from "./util";
 
-export type Strategy = "rotate" | "ordered" | "random";
-
-/**
- * Puts the agents in the order the action tries them.
- * - rotate: start at (PR number + run attempt) mod N, then continue in order.
- *   The same PR goes to the same runtime on each new workflow run.
- * - ordered: the configured order.
- * - random: a random permutation.
- */
-export function orderAgents(
-  agents: readonly string[],
-  strategy: Strategy,
-  options: { prNumber: number; runAttempt: number; random: () => number },
-): string[] {
-  const n = agents.length;
-  if (n === 0) return [];
-  if (strategy === "ordered") return [...agents];
-  if (strategy === "random") {
-    const result = [...agents];
-    for (let i = result.length - 1; i > 0; i--) {
-      const j = Math.floor(options.random() * (i + 1));
-      [result[i], result[j]] = [result[j] as string, result[i] as string];
-    }
-    return result;
-  }
-  const start = (((options.prNumber + options.runAttempt) % n) + n) % n;
-  return [...agents.slice(start), ...agents.slice(0, start)];
-}
-
 export interface AttemptRecord {
-  agentId: string;
+  agentId: string | null;
   runId: string | null;
   runUrl: string | null;
   /** True when the attempt continued the run of an earlier job instead of starting one. */
@@ -64,7 +35,7 @@ export const DEFAULT_RETRY_DELAYS_MS: readonly number[] = [30_000, 60_000];
 
 /** Progress callbacks; each may update a comment and must not throw. */
 export interface ProgressReporter {
-  attempt: (runtimeIndex: number, agentId: string) => Promise<void>;
+  attempt: (runtimeIndex: number, agentId?: string | null) => Promise<void>;
   running: (runUrl: string) => Promise<void>;
   retry: (delayMs: number) => Promise<void>;
   /** Called before the same runtime is tried again with more memory after a memory kill. Optional. */
@@ -78,11 +49,13 @@ export interface ProgressReporter {
 export const MAX_MEMORY_ESCALATIONS = 2;
 
 /**
- * Tries the runtimes in order. A retriable failure retries the same runtime
- * (`retries` times, after 30 s then 60 s). A non-retriable failure, or a
- * retriable one with no retries left, goes to the next runtime. A fatal
- * failure stops all attempts. At most 1 + maxFallbacks runtimes are used, so
- * the total is at most N x (1 + retries), plus the larger-size attempts below.
+ * Tries the runtimes with retry and fallback. A retriable failure retries the
+ * same runtime (`retries` times, after 30 s then 60 s). A non-retriable
+ * failure, or a retriable one with no retries left, goes to the next runtime
+ * (excluding already-failed subagents when the MCP gateway selects subagents).
+ * A fatal failure stops all attempts. At most 1 + maxFallbacks runtimes are
+ * used, so the total is at most N x (1 + retries), plus the larger-size
+ * attempts below.
  *
  * A run killed for memory asked for a container too small for its work, and
  * the next runtime, sized the same, would die the same way. When `largerLimits`
@@ -92,7 +65,7 @@ export const MAX_MEMORY_ESCALATIONS = 2;
  * it killed; that does not count as a retry.
  */
 export async function runWithFallback<T>(params: {
-  agents: readonly string[];
+  agents?: readonly string[];
   retries: number;
   maxFallbacks: number;
   deadline: number;
@@ -106,7 +79,7 @@ export async function runWithFallback<T>(params: {
   /** The limits to ask for after a memory kill, from the killed attempt's limits and reason. */
   largerLimits?: (previous: RunLimits | null, reason: string) => RunLimits | null;
   attempt: (
-    agentId: string,
+    agentId: string | null,
     info: {
       runtimeIndex: number;
       retry: number;
@@ -114,14 +87,20 @@ export async function runWithFallback<T>(params: {
       limits: RunLimits | null;
       /** How many memory kills raised the limits before this attempt on this runtime. */
       escalations: number;
+      /** Subagent IDs that already failed in earlier runtime slots. */
+      excludeAgentIds: readonly string[];
     },
   ) => Promise<AttemptOutcome<T>>;
 }): Promise<FallbackResult<T>> {
   const delays = params.retryDelaysMs ?? DEFAULT_RETRY_DELAYS_MS;
   const attempts: AttemptRecord[] = [];
-  const runtimeCount = Math.min(params.agents.length, 1 + Math.max(0, params.maxFallbacks));
+  const excludedAgentIds: string[] = [];
+  const runtimeCount = params.agents
+    ? Math.min(params.agents.length, 1 + Math.max(0, params.maxFallbacks))
+    : 1 + Math.max(0, params.maxFallbacks);
   for (let runtimeIndex = 0; runtimeIndex < runtimeCount; runtimeIndex++) {
-    const agentId = params.agents[runtimeIndex] as string;
+    const excludedBeforeSlot = excludedAgentIds.length;
+    let currentAgentId: string | null = params.agents ? (params.agents[runtimeIndex] as string) : null;
     let limits = params.limits ?? null;
     let escalations = 0;
     let killedTier: string | null = null;
@@ -131,17 +110,37 @@ export async function runWithFallback<T>(params: {
         params.log.warning("Overall deadline reached. No more attempts.");
         return { ok: false, attempts, fatal: false, deadlineReached: true };
       }
+      const label = currentAgentId ?? "gateway";
       params.log.info(
-        `Attempt ${attempts.length + 1}: agent ${agentId} (runtime ${runtimeIndex + 1}/${runtimeCount}, retry ${retry}/${params.retries}${escalations > 0 ? `, with at least ${limits?.minMemoryGib} GiB of memory` : ""})`,
+        `Attempt ${attempts.length + 1}: agent ${label} (runtime ${runtimeIndex + 1}${params.agents ? `/${runtimeCount}` : ""}, retry ${retry}/${params.retries}${escalations > 0 ? `, with at least ${limits?.minMemoryGib} GiB of memory` : ""})`,
       );
-      await params.progress?.attempt(runtimeIndex, agentId);
-      const outcome = await params.attempt(agentId, { runtimeIndex, retry, limits, escalations });
+      await params.progress?.attempt(runtimeIndex, currentAgentId);
+      const outcome = await params.attempt(currentAgentId, {
+        runtimeIndex,
+        retry,
+        limits,
+        escalations,
+        excludeAgentIds: [...excludedAgentIds],
+      });
+      if (outcome.record.agentId) {
+        currentAgentId = outcome.record.agentId;
+      }
+      if (
+        !params.agents &&
+        excludedAgentIds.length > 0 &&
+        !outcome.ok &&
+        outcome.classification.source === "api" &&
+        /no remaining fallback subagents|agent not found/i.test(outcome.classification.reason)
+      ) {
+        return { ok: false, attempts, fatal: false, deadlineReached: false };
+      }
       attempts.push(outcome.record);
       if (outcome.ok) {
+        const resolvedAgentId = currentAgentId ?? outcome.record.agentId ?? undefined;
         return {
           ok: true,
           value: outcome.value,
-          agentId,
+          ...(resolvedAgentId ? { agentId: resolvedAgentId } : {}),
           attempts,
           fatal: false,
           deadlineReached: false,
@@ -175,7 +174,13 @@ export async function runWithFallback<T>(params: {
         continue;
       }
       if (classification.class === "non_retriable") {
-        if (runtimeIndex + 1 < runtimeCount) await params.progress?.next();
+        if (currentAgentId && !excludedAgentIds.includes(currentAgentId)) {
+          excludedAgentIds.push(currentAgentId);
+        }
+        const addedExclusion = excludedAgentIds.length > excludedBeforeSlot;
+        if (runtimeIndex + 1 < runtimeCount && (params.agents || addedExclusion)) {
+          await params.progress?.next();
+        }
         break;
       }
       if (retry < params.retries) {
@@ -183,10 +188,19 @@ export async function runWithFallback<T>(params: {
         params.log.info(`Retrying the same runtime in ${Math.round((delay ?? 0) / 1000)} s.`);
         await params.progress?.retry(delay ?? 0);
         await params.sleep(delay ?? 0);
-      } else if (runtimeIndex + 1 < runtimeCount) {
-        await params.progress?.next();
+      } else {
+        if (currentAgentId && !excludedAgentIds.includes(currentAgentId)) {
+          excludedAgentIds.push(currentAgentId);
+        }
+        const addedExclusion = excludedAgentIds.length > excludedBeforeSlot;
+        if (runtimeIndex + 1 < runtimeCount && (params.agents || addedExclusion)) {
+          await params.progress?.next();
+        }
       }
       retry += 1;
+    }
+    if (!params.agents && excludedAgentIds.length === excludedBeforeSlot) {
+      break;
     }
   }
   return { ok: false, attempts, fatal: false, deadlineReached: false };

@@ -96,6 +96,11 @@ export class FakeArchestra {
   readonly token = "archestra_token_maria";
   /** Another person's token: runs are theirs. */
   readonly otherToken = "archestra_token_other";
+  readonly gatewayAgents: string[] = [
+    "11111111-1111-4111-8111-111111111111",
+    "22222222-2222-4222-8222-222222222222",
+    "33333333-3333-4333-8333-333333333333",
+  ];
   readonly runs = new Map<string, FakeRun>();
   readonly scripts = new Map<string, RunScript[]>();
   readonly starts: RecordedStart[] = [];
@@ -276,7 +281,17 @@ export class FakeArchestra {
   }
 
   private start(caller: string, args: Record<string, unknown>): ToolOutcome {
-    const agentId = String(args.agent_id);
+    const explicitAgentId = typeof args.agent_id === "string" && args.agent_id.length > 0 ? args.agent_id : null;
+    const excluded = new Set(Array.isArray(args.exclude_agent_ids) ? (args.exclude_agent_ids as string[]) : []);
+    const candidates = this.gatewayAgents.filter((id) => !excluded.has(id));
+    if (!explicitAgentId && this.gatewayAgents.length === 0) {
+      return toolError("No runtime subagents are assigned to this MCP gateway.");
+    }
+    if (!explicitAgentId && candidates.length === 0) {
+      return toolError("No remaining fallback subagents are available on this gateway.");
+    }
+    const agentId =
+      explicitAgentId ?? candidates.find((id) => (this.scripts.get(id)?.length ?? 0) > 0) ?? candidates[0]!;
     const attachments = Array.isArray(args.attachments)
       ? (args.attachments as Array<{ name: string; contentBase64: string }>)
       : [];
@@ -499,8 +514,23 @@ export class FakeArchestra {
     const entry = (args.environment as Array<{ key: string; type: string; value?: string }> | undefined)?.[0];
     if (!entry) return toolError("Validation error: environment");
     if (entry.type !== "secret") return toolError("Validation error: environment.0.type");
-    this.credentials.push({ agentId: String(args.agent_id), key: entry.key, valueLength: entry.value?.length ?? 0 });
-    return toolResult({ key: entry.key, scope: "personal", valueStored: true });
+    const agentId =
+      typeof args.agent_id === "string" && args.agent_id.length > 0
+        ? args.agent_id
+        : (this.gatewayAgents[0] ?? "gateway");
+    this.credentials.push({ agentId, key: entry.key, valueLength: entry.value?.length ?? 0 });
+    return toolResult({
+      key: entry.key,
+      scope: "personal",
+      valueStored: args.ephemeral !== true,
+      ...(args.ephemeral === true
+        ? {
+            ephemeral: true,
+            credential_grant_id: `00000000-0000-4000-8000-${String(++this.counter).padStart(12, "0")}`,
+            expires_in_seconds: 300,
+          }
+        : {}),
+    });
   }
 
   private newTurn(script: TurnScript): FakeTurn {

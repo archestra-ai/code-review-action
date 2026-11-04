@@ -116,9 +116,6 @@ jobs:
         with:
           archestra-gateway-url: https://archestra.example.com/v1/mcp/code-review
           archestra-token: ${{ secrets.ARCHESTRA_TOKEN }}
-          agents: |
-            11111111-1111-4111-8111-111111111111
-            22222222-2222-4222-8222-222222222222
           fix-token: ${{ steps.app-token.outputs.token }}
 ```
 
@@ -203,9 +200,6 @@ To allow agents to push fixes and trigger follow-up CI runs:
 | `archestra-gateway-url`   | _required_            | Archestra MCP gateway endpoint.                                                                                                                      |
 | `archestra-token`         | `""`                  | Actor platform token. If empty, the action skips execution unless `fallback-token` is set.                                                           |
 | `fallback-token`          | `""`                  | Shared platform token used when actor token is missing.                                                                                              |
-| `agents`                  | _required_            | Agent IDs, one per line.                                                                                                                             |
-| `fallback-agents`         | `agents`              | Agent IDs to use with `fallback-token`.                                                                                                              |
-| `strategy`                | `rotate`              | Agent selection: `rotate`, `ordered`, or `random`.                                                                                                   |
 | `retries`                 | `1`                   | Retries on the same agent after a temporary failure.                                                                                                 |
 | `max-fallbacks`           | _all_                 | Number of alternative agents to try after permanent failure.                                                                                         |
 | `timeout-minutes`         | `30`                  | Timeout per review attempt.                                                                                                                          |

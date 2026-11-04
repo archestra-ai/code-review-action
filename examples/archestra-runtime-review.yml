@@ -7,7 +7,6 @@
 #   ARCHESTRA_REVIEW_APP_PRIVATE_KEY: GitHub App private key for pushing fixes.
 # Variables:
 #   ARCHESTRA_REVIEW_GATEWAY_URL: MCP gateway endpoint (e.g. https://archestra.example.com/v1/mcp/code-review).
-#   ARCHESTRA_REVIEW_AGENTS: Agent IDs, one per line.
 name: Archestra Runtime Review
 
 on:
@@ -49,7 +48,6 @@ jobs:
     with:
       kind: review
       gateway-url: ${{ vars.ARCHESTRA_REVIEW_GATEWAY_URL }}
-      agents: ${{ vars.ARCHESTRA_REVIEW_AGENTS }}
       timeout-minutes: 90
     # GitHub resolves this lookup before it starts the called job; only the
     # matching token is passed, not the caller's complete secrets context.
@@ -79,7 +77,6 @@ jobs:
     with:
       kind: fix
       gateway-url: ${{ vars.ARCHESTRA_REVIEW_GATEWAY_URL }}
-      agents: ${{ vars.ARCHESTRA_REVIEW_AGENTS }}
       timeout-minutes: 120
     secrets:
       ARCHESTRA_TOKEN: ${{ secrets[needs.actor.outputs.secret_name] }} # zizmor: ignore[overprovisioned-secrets,obfuscation]

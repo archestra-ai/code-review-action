@@ -1,4 +1,3 @@
-import { orderAgents } from "../attempts";
 import { renderBrief } from "../briefs";
 import { deleteRunWorkspaces } from "../cleanup";
 import {
@@ -9,7 +8,6 @@ import {
   cloneUrl,
   launch,
   makeResult,
-  preferAgent,
   repoUrl,
 } from "../context";
 import { CONTRACTS } from "../contracts";
@@ -99,22 +97,11 @@ export async function runReview(ctx: ActionContext, prNumber: number): Promise<A
   const previous = sticky?.state ?? null;
   const marker = sticky?.marker ?? null;
 
-  // A re-review continues the retained workspace of the last review when its
-  // agent is still configured (cheaper; it can report fixed findings).
-  const order = orderAgents(inputs.agents, inputs.strategy, {
-    prNumber: pr.number,
-    runAttempt: ctx.runAttempt,
-    random: ctx.random,
-  });
+  // A re-review continues the retained workspace of the last review when available.
   const incremental =
-    inputs.incrementalReview &&
-    previous?.status === "reviewed" &&
-    marker?.run &&
-    marker.agent &&
-    order.includes(marker.agent)
+    inputs.incrementalReview && previous?.status === "reviewed" && marker?.run && marker.agent
       ? { agentId: marker.agent, runId: marker.run }
       : null;
-  const agents = preferAgent(order, incremental?.agentId ?? null);
 
   const attachments = [
     jsonAttachment("pr.json", prAttachmentData(pr, repo, files, diff.truncated)),
@@ -161,7 +148,6 @@ export async function runReview(ctx: ActionContext, prNumber: number): Promise<A
       diff,
       previous,
       incremental,
-      agents,
       attachments,
       stickyId,
       failingChecks,
@@ -201,7 +187,6 @@ async function reviewInProgress(
     diff: { diff: string; truncated: boolean };
     previous: StickyState | null;
     incremental: { agentId: string; runId: string } | null;
-    agents: string[];
     attachments: Attachment[];
     stickyId: number;
     failingChecks: number;
@@ -214,7 +199,7 @@ async function reviewInProgress(
   },
 ): Promise<ActionResult> {
   const { gh, repo, inputs, log } = ctx;
-  const { pr, files, previous, incremental, agents, attachments, failingChecks, lastSha, sinceSha } = p;
+  const { pr, files, previous, incremental, attachments, failingChecks, lastSha, sinceSha } = p;
   const previousFindings = previous?.findings ?? [];
   const message = renderBrief("review", {
     repo: fullName(repo),
@@ -228,7 +213,6 @@ async function reviewInProgress(
   });
 
   const outcome = await launch(ctx, {
-    agents,
     continueFrom: incremental,
     message,
     attachments,
@@ -242,7 +226,7 @@ async function reviewInProgress(
     // A fix leaves a short-lived App token in the actor's CODE_REVIEW_GITHUB_TOKEN; a
     // private repository needs a fresh read-only token for the review.
     credentialToken: inputs.cloneToken || null,
-    progress: progressReporter(ctx, pr, agents.length),
+    progress: progressReporter(ctx, pr),
   });
 
   if (!outcome.ok || !outcome.value) {

@@ -45,7 +45,7 @@ export const PENDING_RESULT = { archestra_pending: true } as const;
  */
 export async function executeAttempt<T>(p: {
   client: ArchestraClient;
-  agentId: string;
+  agentId: string | null;
   start: () => Promise<StartedRun>;
   readResult: (runId: string) => Promise<ContractResult<T>>;
   timeoutMs: number;
@@ -58,11 +58,12 @@ export async function executeAttempt<T>(p: {
 }): Promise<AttemptOutcome<AttemptValue<T>>> {
   const { client, clock, log } = p;
   const startedAt = clock.now();
+  let resolvedAgentId: string | null = p.agentId ?? null;
   let runId: string | null = null;
   let continued = false;
   let tier: string | null = null;
   const record = (result: AttemptRecord["result"], reason: string, source: AttemptRecord["source"]): AttemptRecord => ({
-    agentId: p.agentId,
+    agentId: resolvedAgentId,
     runId,
     runUrl: runId ? client.runUrl(runId) : null,
     continued,
@@ -85,12 +86,13 @@ export async function executeAttempt<T>(p: {
     if (error instanceof ArchestraApiError) return fail(classifyApiError(error));
     throw error;
   }
+  if (started.agentId) resolvedAgentId = started.agentId;
   runId = started.runId;
   continued = started.continued;
   tier = started.limits?.tier ?? null;
   const liveRunId = runId;
   p.onLive(liveRunId);
-  log.info(`Run on agent ${p.agentId}: ${client.runUrl(liveRunId)}`);
+  log.info(`Run on agent ${resolvedAgentId ?? "gateway"}: ${client.runUrl(liveRunId)}`);
 
   const stopAt = Math.min(startedAt + p.timeoutMs, p.deadline);
   let interval = POLL_MIN_MS;
@@ -253,6 +255,8 @@ export async function continueRun(p: {
   clock: Clock;
   log: Logger;
   busyWaitMs?: number;
+  /** Called once the workspace is verified to be continuable, right before steering the new turn. */
+  beforeSteer?: () => Promise<void>;
 }): Promise<StartedRun | null> {
   const wait = p.busyWaitMs ?? 30_000;
   const tooLarge = p.files.find((file) => Buffer.byteLength(file.contentBase64, "base64") > MAX_WORKSPACE_FILE_BYTES);
@@ -318,6 +322,7 @@ export async function continueRun(p: {
         ? `${p.message}\n\nAttached files are available for this run:\n${names.map((name) => `- ${WORKSPACE_ROOT}/${name}`).join("\n")}`
         : p.message;
 
+    await p.beforeSteer?.();
     let status: "continued" | "steered";
     try {
       status = await p.client.steerRun(p.runId, message);
@@ -342,6 +347,7 @@ export async function continueRun(p: {
     }
     return {
       runId: p.runId,
+      agentId: previous.agentId,
       state: "submitted",
       runUrl: previous.runUrl,
       previousTurnCreatedAt: status === "continued" ? previous.turnCreatedAt : null,
