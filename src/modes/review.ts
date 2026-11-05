@@ -445,9 +445,9 @@ export function reviewScope(lastSha: string | null, sinceSha: string | null, hea
 
 /**
  * Archestra refused the job's GitHub Actions sign-in. An author who has not set up reviews is
- * skipped without a word. For other refusals, a review event says why in the review comment, so
- * the author knows what to do; a pull request that is never reviewed (a draft, a bot's) gets
- * nothing. Only a failed sign-in fails the job.
+ * skipped with no note and no warning; only the job log and summary say why. For other refusals,
+ * a review event says why in the review comment, so the author knows what to do; a pull request
+ * that is never reviewed (a draft, a bot's) gets nothing. Only a failed sign-in fails the job.
  */
 export async function refuseAccess(
   ctx: ActionContext,

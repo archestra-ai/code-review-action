@@ -284,9 +284,11 @@ describe("GitHub Actions sign-in", () => {
     harness.github.pr.draft = true;
     const draft = await run({
       ...harness.context("pull_request", prEvent(harness.github), inputs),
-      signIn: refusedBy({ reason: "not_linked", message: "not connected", login: "alice" }),
+      // A refusal that posts a note on a reviewed pull request, so the draft check decides.
+      signIn: refusedBy({ reason: "ambiguous_link", message: "connected to two accounts", login: "alice" }),
     });
     expect(draft.status).toBe("skipped");
+    expect(draft.summary).toMatch(/^No review: /);
     expect(harness.github.stickyBody()).toBeNull();
     harness.github.pr.draft = false;
     const failed = await run({
