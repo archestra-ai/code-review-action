@@ -90,7 +90,6 @@ export async function runFixCiMain(
     message,
     attachments,
     contract: CONTRACTS["fix-ci-main"],
-    timeoutMs: inputs.fixTimeoutMs,
     credentialToken: inputs.fixToken,
     progress: progressReporter(ctx, pr),
   });

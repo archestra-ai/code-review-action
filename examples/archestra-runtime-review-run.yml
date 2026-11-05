@@ -90,11 +90,8 @@ jobs:
         with:
           archestra-gateway-url: ${{ inputs.gateway-url }}
           archestra-token: ${{ secrets.ARCHESTRA_TOKEN }}
-          retries: 1
-          timeout-minutes: 30
           fail-on: never
           # Read-only token for private repo clone. Remove for public repositories.
           clone-token: ${{ steps.clone-token.outputs.token }}
           fix-token: ${{ steps.app-token.outputs.token }}
-          fix-timeout-minutes: 45
           ci-rerun: false

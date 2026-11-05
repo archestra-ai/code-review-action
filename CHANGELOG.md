@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.12.0 (2026-11-05)
+
+- Delegate all runtime tier sizing, timeouts, retries, OOM tier escalation, and subagent failover to the Archestra MCP gateway and Agent Runtime configuration on the platform. Removed client-side `retries`, `max-fallbacks`, `timeout-minutes`, `fix-timeout-minutes`, `overall-timeout-minutes`, `min-cpu`, and `min-memory-gib` inputs, `REVIEW_RUN_LIMITS`, and the client-side retry/OOM/fallback loop.
+
 ## 0.10.0 (2026-11-03)
 
 - The runtime runs none of the repository's checks any more. Until now a review ran the type check of the changed packages, the linter on the changed files and the test files of the diff, after a dependency installation; the pull request's own CI runs all of that on the same commit, and the reviewer already gets the results (`checks.json`). Now a review reads, waits up to ten minutes at the end for a check still running, and runs code only for a new, small test or script of its own that settles one finding or one claim of the pull request description, run after at most the dependency install of the one package it tests, and deleted afterwards. A fix runs no check either: CI runs them on the pushed commit; a fix verifies itself the same way, and a test the finding asks for is committed with it. The CI triage and the base-branch fix reproduce only the failing part of the one failing command (for example one test file, or one package's type check), only when the log, the annotations and the base-branch result do not settle the class or the cause, and once after a fix to see that the failure is gone; CI runs the whole check on the pushed commit.

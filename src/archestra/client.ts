@@ -26,20 +26,6 @@ export const RUN_TOOLS = {
   delete: "delete_workspace",
 } as const;
 
-/** Limits a run asks for, each at or below its Agent's own. */
-export interface RunLimits {
-  /** A runtime tier by the name the organization gave it. */
-  tier?: string;
-  /** CPUs the work needs: the smallest tier the Agent may use with at least this many. */
-  minCpu?: number;
-  /** GiB of memory the work needs, with the same effect. */
-  minMemoryGib?: number;
-  idleTimeoutMinutes?: number;
-  /** The run and its saved files end this many hours after the start. */
-  maxDurationHours?: number;
-  maxCostUsd?: number;
-}
-
 const ARCHESTRA_PREFIX = "archestra__";
 const RUN_TOOL = "run_tool";
 
@@ -58,9 +44,6 @@ const RunSummarySchema = z.object({
 /** The limits a run got, as the gateway reports them on a start. */
 const RunLimitsSchema = z.object({
   tier: z.string().nullish(),
-  idle_timeout_minutes: z.number().nullish(),
-  max_duration_hours: z.number().nullish(),
-  max_cost_usd: z.number().nullish(),
 });
 
 const StartResultSchema = z.object({
@@ -129,12 +112,8 @@ export interface StartedRun {
   previousTurnCreatedAt: string | null;
   /** True when the run continued the workspace of an earlier run. */
   continued: boolean;
-  /**
-   * The limits the run got: what the gateway reported (its tier by name),
-   * else the request when the gateway accepted it. Null when the run took the
-   * Agent's own limits without saying which, or continued an earlier run.
-   */
-  limits: RunLimits | null;
+  /** The name of the tier the run got, when the gateway reports it. */
+  tier: string | null;
 }
 
 export interface ArchestraClientOptions {
@@ -160,10 +139,6 @@ export class ArchestraClient {
   private runTool: string | null = null;
   private advertisedAgentIds: string[] = [];
   private readonly runUrls = new Map<string, string>();
-  /** False once the gateway rejected `limits`: a deployment from before run limits. */
-  private limitsSupported = true;
-  /** False once the gateway rejected `exclude_agent_ids`. */
-  private excludeAgentIdsSupported = true;
   /** False once the gateway rejected `credential_grant_ids`. */
   private credentialGrantsSupported = true;
   /** False once the gateway rejected `ephemeral` on `transfer_credential`. */
@@ -194,25 +169,17 @@ export class ArchestraClient {
     body: {
       message: string;
       attachments: Attachment[];
-      excludeAgentIds?: readonly string[];
       preferredAgentId?: string | null;
       onAgentSelected?: (agentId: string) => void;
       credentialGrantIds?: readonly string[];
-      limits?: RunLimits;
-      /** Fail instead of starting with the Agent's own limits when it refuses the request. */
-      requireLimits?: boolean;
     },
   ): Promise<StartedRun> {
     await this.resolveTools("start run");
     let effectiveAgentId = agentId;
     if (!effectiveAgentId && !this.gatewayAgentSelectionSupported) {
-      effectiveAgentId = this.selectLegacyGatewayAgent(body.preferredAgentId, body.excludeAgentIds, "start run");
+      effectiveAgentId = this.selectLegacyGatewayAgent(body.preferredAgentId);
       if (effectiveAgentId) body.onAgentSelected?.(effectiveAgentId);
     }
-    const excludeAgentIds =
-      !effectiveAgentId && this.excludeAgentIdsSupported && body.excludeAgentIds && body.excludeAgentIds.length > 0
-        ? [...body.excludeAgentIds]
-        : null;
     const credentialGrantIds =
       this.credentialGrantsSupported && body.credentialGrantIds && body.credentialGrantIds.length > 0
         ? [...body.credentialGrantIds]
@@ -224,81 +191,31 @@ export class ArchestraClient {
     };
     const args = {
       ...baseArgs,
-      ...(excludeAgentIds ? { exclude_agent_ids: excludeAgentIds } : {}),
       ...(credentialGrantIds ? { credential_grant_ids: credentialGrantIds } : {}),
     };
-    const limits = this.limitsSupported && body.limits ? runLimitsArgs(body.limits) : null;
-    // A retry with more memory after a memory kill is worth running only at that size: a
-    // deployment that cannot take the request would run the Agent's own size again.
-    if (body.requireLimits && limits === null) {
-      throw new ArchestraApiError(
-        "start run",
-        "response",
-        "the gateway does not take run limits, so the run cannot ask for more memory",
-      );
-    }
-    let applied = limits !== null;
     let data: Record<string, unknown>;
     try {
-      data = await this.call(RUN_TOOLS.start, limits ? { ...args, limits } : args, "start run");
+      data = await this.call(RUN_TOOLS.start, args, "start run");
     } catch (error) {
-      // A deployment from before run limits ignores the argument or, when its schema is strict,
-      // rejects it; the run then takes the Agent's defaults. Zod and the gateway word the
-      // rejection differently, so only the key name is matched.
       const isToolErr = error instanceof ArchestraApiError && error.kind === "tool";
       const rejectedOmittedAgentId =
         !effectiveAgentId && isToolErr && /\bagent_id\b.*expected string/i.test(error.detail);
       if (rejectedOmittedAgentId) {
         this.gatewayAgentSelectionSupported = false;
-        this.excludeAgentIdsSupported = false;
         this.credentialGrantsSupported = false;
-        const legacyAgentId = this.selectLegacyGatewayAgent(body.preferredAgentId, body.excludeAgentIds, "start run");
+        const legacyAgentId = this.selectLegacyGatewayAgent(body.preferredAgentId);
         if (!legacyAgentId) throw error;
         body.onAgentSelected?.(legacyAgentId);
         return this.startRun(legacyAgentId, body);
       }
-      const rejectedExclude =
-        excludeAgentIds !== null && isToolErr && /unrecognized key.*\bexclude_agent_ids\b/i.test(error.detail);
       const rejectedGrants =
         credentialGrantIds !== null && isToolErr && /unrecognized key.*\bcredential_grant_ids\b/i.test(error.detail);
-      const toolError = limits !== null && isToolErr;
-      const rejectedLimits = toolError && /unrecognized key.*\blimits\b/i.test(error.detail);
-      // An Agent whose own limits are below the request, or whose tiers have no size that fits,
-      // refuses them; that Agent's run then takes its own limits. Other Agents still get the
-      // request.
-      const refusedLimits =
-        toolError &&
-        /is above this Agent's|sizes its runs with explicit resources|No tier this Agent's runs may use|There is no tier named|has less than the/i.test(
-          error.detail,
-        );
-      if (!rejectedExclude && !rejectedGrants && !rejectedLimits && !refusedLimits) throw error;
-      if ((rejectedLimits || refusedLimits) && body.requireLimits) throw error;
-      if (rejectedExclude) this.excludeAgentIdsSupported = false;
-      if (rejectedGrants) this.credentialGrantsSupported = false;
-      if (rejectedLimits) this.limitsSupported = false;
-      const retryBase = {
-        ...baseArgs,
-        ...(!rejectedExclude && excludeAgentIds ? { exclude_agent_ids: excludeAgentIds } : {}),
-        ...(!rejectedGrants && credentialGrantIds ? { credential_grant_ids: credentialGrantIds } : {}),
-      };
-      if (rejectedLimits || refusedLimits) {
-        applied = false;
-        data = await this.call(RUN_TOOLS.start, retryBase, "start run");
-      } else {
-        data = await this.call(RUN_TOOLS.start, limits ? { ...retryBase, limits } : retryBase, "start run");
-      }
+      if (!rejectedGrants) throw error;
+      this.credentialGrantsSupported = false;
+      data = await this.call(RUN_TOOLS.start, baseArgs, "start run");
     }
     const result = parse(StartResultSchema, data, "start run");
     this.remember(result.run.run_id, result.run_url);
-    const reported = result.limits
-      ? {
-          // Organizations name their tiers; the saved comment state holds 100 characters of it.
-          ...(result.limits.tier ? { tier: result.limits.tier.slice(0, 100) } : {}),
-          ...(result.limits.idle_timeout_minutes ? { idleTimeoutMinutes: result.limits.idle_timeout_minutes } : {}),
-          ...(result.limits.max_duration_hours ? { maxDurationHours: result.limits.max_duration_hours } : {}),
-          ...(result.limits.max_cost_usd ? { maxCostUsd: result.limits.max_cost_usd } : {}),
-        }
-      : null;
     return {
       runId: result.run.run_id,
       agentId: result.run.agent_id ?? effectiveAgentId ?? null,
@@ -306,7 +223,7 @@ export class ArchestraClient {
       runUrl: result.run_url ?? null,
       previousTurnCreatedAt: null,
       continued: false,
-      limits: reported ?? (applied && body.limits ? body.limits : null),
+      tier: result.limits?.tier ? result.limits.tier.slice(0, 100) : null,
     };
   }
 
@@ -399,18 +316,13 @@ export class ArchestraClient {
     options?: {
       ephemeral?: boolean;
       preferredAgentId?: string | null;
-      excludeAgentIds?: readonly string[];
       onAgentSelected?: (agentId: string) => void;
     },
   ): Promise<string | null> {
     await this.resolveTools("store runtime credential");
     let effectiveAgentId = agentId;
     if (!effectiveAgentId && !this.gatewayAgentSelectionSupported) {
-      effectiveAgentId = this.selectLegacyGatewayAgent(
-        options?.preferredAgentId,
-        options?.excludeAgentIds,
-        "store runtime credential",
-      );
+      effectiveAgentId = this.selectLegacyGatewayAgent(options?.preferredAgentId);
       if (effectiveAgentId) options?.onAgentSelected?.(effectiveAgentId);
     }
     const baseArgs = {
@@ -434,12 +346,7 @@ export class ArchestraClient {
         this.gatewayAgentSelectionSupported = false;
         this.ephemeralCredentialSupported = false;
         this.credentialGrantsSupported = false;
-        this.excludeAgentIdsSupported = false;
-        const legacyAgentId = this.selectLegacyGatewayAgent(
-          options?.preferredAgentId,
-          options?.excludeAgentIds,
-          "store runtime credential",
-        );
+        const legacyAgentId = this.selectLegacyGatewayAgent(options?.preferredAgentId);
         if (!legacyAgentId) throw error;
         options?.onAgentSelected?.(legacyAgentId);
         return this.transferCredential(legacyAgentId, key, value, label, options);
@@ -453,23 +360,13 @@ export class ArchestraClient {
     return parsed.success ? (parsed.data.credential_grant_id ?? null) : null;
   }
 
-  private selectLegacyGatewayAgent(
-    preferredAgentId: string | null | undefined,
-    excludeAgentIds: readonly string[] | undefined,
-    operation: string,
-  ): string | null {
-    const excluded = new Set(excludeAgentIds ?? []);
-    const available = this.advertisedAgentIds.filter((id) => !excluded.has(id));
-    if (preferredAgentId && !excluded.has(preferredAgentId)) {
-      if (this.advertisedAgentIds.length === 0 || available.includes(preferredAgentId)) {
+  private selectLegacyGatewayAgent(preferredAgentId: string | null | undefined): string | null {
+    if (preferredAgentId) {
+      if (this.advertisedAgentIds.length === 0 || this.advertisedAgentIds.includes(preferredAgentId)) {
         return preferredAgentId;
       }
     }
-    if (available.length > 0) return available[0] ?? null;
-    if (excluded.size > 0 && (this.advertisedAgentIds.length > 0 || preferredAgentId)) {
-      throw new ArchestraApiError(operation, "tool", "No remaining fallback subagents are available on this gateway.");
-    }
-    return null;
+    return this.advertisedAgentIds[0] ?? null;
   }
 
   private remember(runId: string, runUrl: string | null | undefined): void {
@@ -525,17 +422,6 @@ export class ArchestraClient {
     );
     return this.toolNames;
   }
-}
-
-function runLimitsArgs(limits: RunLimits): Record<string, unknown> {
-  return {
-    ...(limits.tier ? { tier: limits.tier } : {}),
-    ...(limits.minCpu ? { min_cpu: limits.minCpu } : {}),
-    ...(limits.minMemoryGib ? { min_memory_gib: limits.minMemoryGib } : {}),
-    ...(limits.idleTimeoutMinutes ? { idle_timeout_minutes: limits.idleTimeoutMinutes } : {}),
-    ...(limits.maxDurationHours ? { max_duration_hours: limits.maxDurationHours } : {}),
-    ...(limits.maxCostUsd ? { max_cost_usd: limits.maxCostUsd } : {}),
-  };
 }
 
 function parse<T>(schema: z.ZodType<T>, data: unknown, operation: string): T {

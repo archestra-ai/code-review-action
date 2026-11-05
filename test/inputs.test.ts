@@ -14,14 +14,12 @@ const read = (values: Record<string, string>) =>
   );
 
 describe("readInputs", () => {
-  it("reads the gateway and the actor's token with gateway-managed subagent defaults", () => {
+  it("reads the gateway and the actor's token", () => {
     expect(read({})).toMatchObject({
       gatewayUrl: "https://archestra.example.com/v1/mcp/code-review",
       token: "token",
       tokenSource: "actor",
-      maxFallbacks: 4,
     });
-    expect(read({ "max-fallbacks": "all" }).maxFallbacks).toBe(100);
   });
 
   it.each([

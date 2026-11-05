@@ -5,7 +5,6 @@ import { setupServer } from "msw/node";
 import { parseState } from "../src/github/sticky";
 import { run } from "../src/run";
 import {
-  AGENT_A,
   AGENT_B,
   createHarness,
   FINDING_IN_DIFF,
@@ -23,9 +22,8 @@ const section = (title: string) => out.push("", `## ${title}`, "");
 const block = (lang: string, text: string) => out.push(`\`\`\`\`${lang}`, text, "````", "");
 
 try {
-  // 1. Review: the first runtime fails with a non-retriable reason, the second completes.
+  // 1. Review: the gateway selects a runtime and completes the review.
   section("Mode review (pull_request opened)");
-  harness.archestra.script(AGENT_A, { end: "failed", statusReason: "Budget exceeded for this virtual key" });
   harness.archestra.script(AGENT_B, {
     end: "completed",
     files: { "review.json": reviewJson([FINDING_IN_DIFF, FINDING_OUTSIDE]) },
