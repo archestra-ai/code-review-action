@@ -236,20 +236,37 @@ describe("GitHub Actions sign-in", () => {
   });
 
   function refusedBy(refusal: {
-    reason: "not_linked" | "not_author" | "unavailable";
+    reason: "not_linked" | "forbidden" | "ambiguous_link" | "not_author" | "unavailable";
     message: string;
     login: string | null;
   }) {
     return async () => ({ ok: false as const, refusal });
   }
 
-  it("tells an author who has not connected GitHub why there is no review, without failing the job", async () => {
+  it.each([
+    ["has not connected GitHub", "not_linked", "@alice has not connected GitHub to Archestra."],
+    ["cannot use the gateway", "forbidden", "The Archestra account of GitHub user alice cannot use this MCP gateway."],
+  ] as const)("skips an author who %s without a note or a warning", async (_, reason, message) => {
+    const harness = setup();
+    const ctx = {
+      ...harness.context("pull_request", prEvent(harness.github), { "archestra-auth": "github-actions" }),
+      signIn: refusedBy({ reason, message, login: "alice" }),
+    };
+    const result = await run(ctx);
+    expect(result).toMatchObject({ status: "skipped", failure: null, summary: `No Archestra review: ${message}` });
+    expect(harness.archestra.starts).toHaveLength(0);
+    expect(harness.github.stickyBody()).toBeNull();
+    expect(harness.log.lines).toContain(`info: No Archestra review: ${message}`);
+    expect(harness.log.lines.filter((line) => line.startsWith("warning:"))).toEqual([]);
+  });
+
+  it("tells an author whose GitHub is connected to two accounts why there is no review, without failing the job", async () => {
     const harness = setup();
     const ctx = {
       ...harness.context("pull_request", prEvent(harness.github), { "archestra-auth": "github-actions" }),
       signIn: refusedBy({
-        reason: "not_linked",
-        message: "@alice has not connected GitHub to Archestra.",
+        reason: "ambiguous_link",
+        message: "GitHub user alice is connected to more than one Archestra account.",
         login: "alice",
       }),
     };
@@ -257,7 +274,7 @@ describe("GitHub Actions sign-in", () => {
     expect(result).toMatchObject({ status: "unauthorized", failure: null });
     expect(harness.archestra.starts).toHaveLength(0);
     expect(harness.github.stickyBody()).toContain(
-      "> No review of `aaaaaaa`: @alice has not connected GitHub to Archestra.",
+      "> No review of `aaaaaaa`: GitHub user alice is connected to more than one Archestra account.",
     );
   });
 

@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.12.1 (2026-11-05)
+
+- With `archestra-auth: github-actions`, an author who has not connected GitHub to Archestra (or whose connection expired or was revoked), or whose Archestra account cannot use the review gateway, is now skipped without a note and without a warning: `status` is `skipped`, and only the job log and summary say why. Before, the action tried to post a note in the review comment and ended with `status` `unauthorized`, which a workflow that requires a completed review reported as a failure. Other refusals (GitHub connected to two Archestra accounts, a repository or workflow the gateway does not trust) still end with `unauthorized` and a note.
+
 ## 0.12.0 (2026-11-05)
 
 - Delegate all runtime tier sizing, timeouts, retries, OOM tier escalation, and subagent failover to the Archestra MCP gateway and Agent Runtime configuration on the platform. Removed client-side `retries`, `max-fallbacks`, `timeout-minutes`, `fix-timeout-minutes`, `overall-timeout-minutes`, `min-cpu`, and `min-memory-gib` inputs, `REVIEW_RUN_LIMITS`, and the client-side retry/OOM/fallback loop.
