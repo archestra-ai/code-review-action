@@ -49470,6 +49470,10 @@ function reviewScope(lastSha, sinceSha, headSha) {
 }
 async function refuseAccess(ctx, trigger, refusal) {
   const summary2 = `No Archestra review: ${refusal.message}`;
+  if (refusal.reason === "not_linked" || refusal.reason === "forbidden") {
+    ctx.log.info(summary2);
+    return makeResult(trigger.kind, { status: "skipped", summary: summary2 });
+  }
   ctx.log.warning(summary2);
   if (refusal.reason === "not_author") return makeResult(trigger.kind, { status: "skipped", summary: summary2 });
   const failure2 = refusal.reason === "unavailable" ? failureForError(ctx, summary2) : null;
