@@ -28,6 +28,8 @@ export const POLL_MIN_MS = 5_000;
 export const POLL_MAX_MS = 30_000;
 /** How long a continued run may still show its previous turn. */
 export const CONTINUATION_VISIBLE_MS = 180_000;
+/** Maximum number of busy-wait intervals when waiting for a workspace to finish its previous turn. */
+export const MAX_BUSY_WAITS = 10;
 /** Where the retained workspace is mounted in the runtime container. */
 export const WORKSPACE_ROOT = "/home/node/workspace";
 /** write_workspace_file takes at most 4 MiB for each file. */
@@ -39,22 +41,22 @@ export const MAX_WORKSPACE_FILE_BYTES = 4 * 1024 * 1024;
 export const PENDING_RESULT = { archestra_pending: true } as const;
 
 /**
- * Runs one attempt: start (or continue) a run, poll its state until it is
- * terminal or the time limit is reached, then read the result file.
- * Polls the state only, never the terminal output.
+ * Runs one delegated run: start (or continue) a run on the gateway, poll its
+ * state until it is terminal (the platform's agent runtime enforces timeouts,
+ * retries, OOM tier escalation, and subagent failover), then read the result
+ * file. Polls the state only, never the terminal output.
  */
 export async function executeAttempt<T>(p: {
   client: ArchestraClient;
   agentId: string | null;
   start: (setAgentId: (agentId: string | null) => void) => Promise<StartedRun>;
   readResult: (runId: string) => Promise<ContractResult<T>>;
-  timeoutMs: number;
-  deadline: number;
   clock: Clock;
   log: Logger;
   onLive: (runId: string | null) => void;
   /** Called after each poll that finds the run still working; its errors are ignored. */
   onPoll?: (runId: string) => Promise<void>;
+  isStopping?: () => boolean;
 }): Promise<AttemptOutcome<AttemptValue<T>>> {
   const { client, clock, log } = p;
   const startedAt = clock.now();
@@ -91,27 +93,24 @@ export async function executeAttempt<T>(p: {
   if (started.agentId) resolvedAgentId = started.agentId;
   runId = started.runId;
   continued = started.continued;
-  tier = started.limits?.tier ?? null;
+  tier = started.tier;
   const liveRunId = runId;
   p.onLive(liveRunId);
   log.info(`Run on agent ${resolvedAgentId ?? "gateway"}: ${client.runUrl(liveRunId)}`);
 
-  const stopAt = Math.min(startedAt + p.timeoutMs, p.deadline);
   let interval = POLL_MIN_MS;
   let lastState = "";
   let run: AgentRun | null = null;
   for (;;) {
-    const remaining = stopAt - clock.now();
-    if (remaining <= 0) {
-      await cancelQuietly(client, liveRunId, log);
+    if (p.isStopping?.()) {
       p.onLive(null);
       return fail({
         class: "non_retriable",
-        reason: `no terminal state within ${Math.round(p.timeoutMs / 60_000)} min`,
-        source: "timeout",
+        reason: "the job was canceled",
+        source: "state",
       });
     }
-    await clock.sleep(Math.min(interval, remaining));
+    await clock.sleep(interval);
     interval = Math.min(POLL_MAX_MS, Math.round(interval * 1.5));
     try {
       run = await client.getRun(liveRunId);
@@ -128,6 +127,7 @@ export async function executeAttempt<T>(p: {
       p.onLive(null);
       return fail(classification);
     }
+    if (run.agentId) resolvedAgentId = run.agentId;
     if (started.previousTurnCreatedAt && run.turnCreatedAt === started.previousTurnCreatedAt) {
       // The run still shows the turn before the continuation.
       if (clock.now() - startedAt >= CONTINUATION_VISIBLE_MS) {
@@ -140,7 +140,6 @@ export async function executeAttempt<T>(p: {
       }
       continue;
     }
-    // A continued run reports its tier here, not on the start.
     if (run.tier) tier = run.tier;
     if (run.state !== lastState) {
       log.info(`Run ${liveRunId}: ${run.state}`);
@@ -248,11 +247,10 @@ export function continuationFileNames(turnKey: string, files: readonly Attachmen
  * Continues the retained workspace of `runId` in a new turn. A continuation
  * takes no attachments, so the input files are written into the workspace
  * first and the message lists their paths, the way the platform lists
- * attachments. When the workspace is busy, waits until it is free (bounded
- * by `deadline`). Returns null when the run cannot continue for this
- * token: another person's run, a workspace that is no longer retained, or
- * one retained for less than `minRetainedMs`. The caller then starts a
- * fresh run.
+ * attachments. When the workspace is busy, waits until it is free. Returns
+ * null when the run cannot continue for this token (another person's run, a
+ * workspace that is no longer retained, or a workspace that refuses a new
+ * turn). The caller then starts a fresh run.
  */
 export async function continueRun(p: {
   client: ArchestraClient;
@@ -261,12 +259,6 @@ export async function continueRun(p: {
   files: readonly Attachment[];
   resultFile: string;
   turnKey: string;
-  deadline: number;
-  /**
-   * The time the turn may need. A continued turn stops when its workspace's
-   * retention ends, and a new turn does not extend it.
-   */
-  minRetainedMs: number;
   clock: Clock;
   log: Logger;
   busyWaitMs?: number;
@@ -279,10 +271,12 @@ export async function continueRun(p: {
     p.log.info(`${tooLarge.name} is larger than 4 MiB, so it can go only as an attachment. Starting a fresh run.`);
     return null;
   }
+  let busyWaits = 0;
   const busy = async (why: string) => {
-    if (p.clock.now() + wait >= p.deadline) {
-      throw new ArchestraApiError("continue run", "response", "the workspace stayed busy until the deadline");
+    if (busyWaits >= MAX_BUSY_WAITS) {
+      throw new ArchestraApiError("continue run", "response", "the workspace stayed busy");
     }
+    busyWaits++;
     p.log.info(`${why} Waiting ${Math.round(wait / 1000)} s.`);
     await p.clock.sleep(wait);
   };
@@ -316,12 +310,9 @@ export async function continueRun(p: {
       );
       return null;
     }
-    const needed = Math.min(p.minRetainedMs, p.deadline - p.clock.now());
     const retainedUntil = workspace.retainedUntil ? Date.parse(workspace.retainedUntil) : Number.NaN;
-    if (Number.isFinite(retainedUntil) && retainedUntil - p.clock.now() < needed) {
-      p.log.info(
-        `The previous workspace is kept only until ${workspace.retainedUntil}, less than the ${Math.max(1, Math.ceil(needed / 60_000))} min this turn may need, and a turn there stops at that time. Starting a fresh run.`,
-      );
+    if (Number.isFinite(retainedUntil) && retainedUntil <= p.clock.now()) {
+      p.log.info(`The previous workspace expired at ${workspace.retainedUntil}. Starting a fresh run.`);
       return null;
     }
 
@@ -367,7 +358,7 @@ export async function continueRun(p: {
       runUrl: previous.runUrl,
       previousTurnCreatedAt: status === "continued" ? previous.turnCreatedAt : null,
       continued: true,
-      limits: null,
+      tier: previous.tier,
     };
   }
 }

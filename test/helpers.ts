@@ -44,14 +44,10 @@ export function testInputs(overrides: Record<string, string> = {}, archestra = n
     "fix-token": "ghs_app_token",
     ...overrides,
   };
-  const inputs = readInputs(
+  return readInputs(
     (name) => values[name] ?? "",
     () => "",
   );
-  return {
-    ...inputs,
-    maxFallbacks: Math.min(inputs.maxFallbacks, Math.max(0, archestra.gatewayAgents.length - 1)),
-  };
 }
 
 export interface Harness {

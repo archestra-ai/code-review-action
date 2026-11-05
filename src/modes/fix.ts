@@ -107,7 +107,6 @@ export async function runFix(ctx: ActionContext, trigger: FixTriggerInput): Prom
     message,
     attachments,
     contract: CONTRACTS.fix,
-    timeoutMs: inputs.fixTimeoutMs,
     credentialToken: inputs.fixToken,
     progress: progressReporter(ctx, pr),
   });

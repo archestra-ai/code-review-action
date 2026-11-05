@@ -290,7 +290,7 @@ export const PROGRESS_READ_INTERVAL_MS = 30_000;
  * While a run works, the runtime's progress file (its plan as a checklist) is read every 30 s and
  * shown when it changed. A file of an earlier turn names another commit and is ignored.
  */
-export function progressReporter(ctx: ActionContext, pr: PullRequestInfo, total?: number): ProgressReporter {
+export function progressReporter(ctx: ActionContext, pr: PullRequestInfo): ProgressReporter {
   let lastRead = Number.NEGATIVE_INFINITY;
   let shown = "";
   return {
@@ -314,37 +314,12 @@ export function progressReporter(ctx: ActionContext, pr: PullRequestInfo, total?
         if (state.progress?.workflowRunUrl === ctx.workflowRunUrl) state.progress.checklist = checklist;
       });
     },
-    attempt: (index, agentId) => {
+    attempt: (agentId) => {
       shown = "";
-      const totalSuffix = total !== undefined ? ` of ${total}` : "";
       const idSuffix = agentId ? ` (\`${agentId.slice(0, 8)}\`)` : "";
-      return stepProgress(ctx, pr, `starting a run on agent ${index + 1}${totalSuffix}${idSuffix}`, null, true);
+      return stepProgress(ctx, pr, `starting a run${idSuffix}`, null, true);
     },
     running: (runUrl) => stepProgress(ctx, pr, "waiting for the runtime to finish", runUrl),
-    retry: (delayMs) => {
-      shown = "";
-      return stepProgress(
-        ctx,
-        pr,
-        `the run failed; trying the same agent again in ${Math.round(delayMs / 1000)} s`,
-        null,
-        true,
-      );
-    },
-    largerSize: (limits) => {
-      shown = "";
-      return stepProgress(
-        ctx,
-        pr,
-        `the run ran out of memory; trying the same agent again with at least ${limits.minMemoryGib} GiB of memory`,
-        null,
-        true,
-      );
-    },
-    next: () => {
-      shown = "";
-      return stepProgress(ctx, pr, "the run failed; moving to the next agent", null, true);
-    },
   };
 }
 

@@ -41224,10 +41224,7 @@ var RunSummarySchema = external_exports.object({
   state_changed_at: external_exports.string().nullish()
 });
 var RunLimitsSchema = external_exports.object({
-  tier: external_exports.string().nullish(),
-  idle_timeout_minutes: external_exports.number().nullish(),
-  max_duration_hours: external_exports.number().nullish(),
-  max_cost_usd: external_exports.number().nullish()
+  tier: external_exports.string().nullish()
 });
 var StartResultSchema = external_exports.object({
   run: RunSummarySchema,
@@ -41262,10 +41259,6 @@ var ArchestraClient = class {
   runTool = null;
   advertisedAgentIds = [];
   runUrls = /* @__PURE__ */ new Map();
-  /** False once the gateway rejected `limits`: a deployment from before run limits. */
-  limitsSupported = true;
-  /** False once the gateway rejected `exclude_agent_ids`. */
-  excludeAgentIdsSupported = true;
   /** False once the gateway rejected `credential_grant_ids`. */
   credentialGrantsSupported = true;
   /** False once the gateway rejected `ephemeral` on `transfer_credential`. */
@@ -41292,10 +41285,9 @@ var ArchestraClient = class {
     await this.resolveTools("start run");
     let effectiveAgentId = agentId;
     if (!effectiveAgentId && !this.gatewayAgentSelectionSupported) {
-      effectiveAgentId = this.selectLegacyGatewayAgent(body.preferredAgentId, body.excludeAgentIds, "start run");
+      effectiveAgentId = this.selectLegacyGatewayAgent(body.preferredAgentId);
       if (effectiveAgentId) body.onAgentSelected?.(effectiveAgentId);
     }
-    const excludeAgentIds = !effectiveAgentId && this.excludeAgentIdsSupported && body.excludeAgentIds && body.excludeAgentIds.length > 0 ? [...body.excludeAgentIds] : null;
     const credentialGrantIds = this.credentialGrantsSupported && body.credentialGrantIds && body.credentialGrantIds.length > 0 ? [...body.credentialGrantIds] : null;
     const baseArgs = {
       ...effectiveAgentId ? { agent_id: effectiveAgentId } : {},
@@ -41304,66 +41296,29 @@ var ArchestraClient = class {
     };
     const args = {
       ...baseArgs,
-      ...excludeAgentIds ? { exclude_agent_ids: excludeAgentIds } : {},
       ...credentialGrantIds ? { credential_grant_ids: credentialGrantIds } : {}
     };
-    const limits = this.limitsSupported && body.limits ? runLimitsArgs(body.limits) : null;
-    if (body.requireLimits && limits === null) {
-      throw new ArchestraApiError(
-        "start run",
-        "response",
-        "the gateway does not take run limits, so the run cannot ask for more memory"
-      );
-    }
-    let applied = limits !== null;
     let data;
     try {
-      data = await this.call(RUN_TOOLS.start, limits ? { ...args, limits } : args, "start run");
+      data = await this.call(RUN_TOOLS.start, args, "start run");
     } catch (error63) {
       const isToolErr = error63 instanceof ArchestraApiError && error63.kind === "tool";
       const rejectedOmittedAgentId = !effectiveAgentId && isToolErr && /\bagent_id\b.*expected string/i.test(error63.detail);
       if (rejectedOmittedAgentId) {
         this.gatewayAgentSelectionSupported = false;
-        this.excludeAgentIdsSupported = false;
         this.credentialGrantsSupported = false;
-        const legacyAgentId = this.selectLegacyGatewayAgent(body.preferredAgentId, body.excludeAgentIds, "start run");
+        const legacyAgentId = this.selectLegacyGatewayAgent(body.preferredAgentId);
         if (!legacyAgentId) throw error63;
         body.onAgentSelected?.(legacyAgentId);
         return this.startRun(legacyAgentId, body);
       }
-      const rejectedExclude = excludeAgentIds !== null && isToolErr && /unrecognized key.*\bexclude_agent_ids\b/i.test(error63.detail);
       const rejectedGrants = credentialGrantIds !== null && isToolErr && /unrecognized key.*\bcredential_grant_ids\b/i.test(error63.detail);
-      const toolError = limits !== null && isToolErr;
-      const rejectedLimits = toolError && /unrecognized key.*\blimits\b/i.test(error63.detail);
-      const refusedLimits = toolError && /is above this Agent's|sizes its runs with explicit resources|No tier this Agent's runs may use|There is no tier named|has less than the/i.test(
-        error63.detail
-      );
-      if (!rejectedExclude && !rejectedGrants && !rejectedLimits && !refusedLimits) throw error63;
-      if ((rejectedLimits || refusedLimits) && body.requireLimits) throw error63;
-      if (rejectedExclude) this.excludeAgentIdsSupported = false;
-      if (rejectedGrants) this.credentialGrantsSupported = false;
-      if (rejectedLimits) this.limitsSupported = false;
-      const retryBase = {
-        ...baseArgs,
-        ...!rejectedExclude && excludeAgentIds ? { exclude_agent_ids: excludeAgentIds } : {},
-        ...!rejectedGrants && credentialGrantIds ? { credential_grant_ids: credentialGrantIds } : {}
-      };
-      if (rejectedLimits || refusedLimits) {
-        applied = false;
-        data = await this.call(RUN_TOOLS.start, retryBase, "start run");
-      } else {
-        data = await this.call(RUN_TOOLS.start, limits ? { ...retryBase, limits } : retryBase, "start run");
-      }
+      if (!rejectedGrants) throw error63;
+      this.credentialGrantsSupported = false;
+      data = await this.call(RUN_TOOLS.start, baseArgs, "start run");
     }
     const result = parse3(StartResultSchema, data, "start run");
     this.remember(result.run.run_id, result.run_url);
-    const reported = result.limits ? {
-      // Organizations name their tiers; the saved comment state holds 100 characters of it.
-      ...result.limits.tier ? { tier: result.limits.tier.slice(0, 100) } : {},
-      ...result.limits.idle_timeout_minutes ? { idleTimeoutMinutes: result.limits.idle_timeout_minutes } : {},
-      ...result.limits.max_duration_hours ? { maxDurationHours: result.limits.max_duration_hours } : {},
-      ...result.limits.max_cost_usd ? { maxCostUsd: result.limits.max_cost_usd } : {}
-    } : null;
     return {
       runId: result.run.run_id,
       agentId: result.run.agent_id ?? effectiveAgentId ?? null,
@@ -41371,7 +41326,7 @@ var ArchestraClient = class {
       runUrl: result.run_url ?? null,
       previousTurnCreatedAt: null,
       continued: false,
-      limits: reported ?? (applied && body.limits ? body.limits : null)
+      tier: result.limits?.tier ? result.limits.tier.slice(0, 100) : null
     };
   }
   async getRun(runId) {
@@ -41448,11 +41403,7 @@ var ArchestraClient = class {
     await this.resolveTools("store runtime credential");
     let effectiveAgentId = agentId;
     if (!effectiveAgentId && !this.gatewayAgentSelectionSupported) {
-      effectiveAgentId = this.selectLegacyGatewayAgent(
-        options?.preferredAgentId,
-        options?.excludeAgentIds,
-        "store runtime credential"
-      );
+      effectiveAgentId = this.selectLegacyGatewayAgent(options?.preferredAgentId);
       if (effectiveAgentId) options?.onAgentSelected?.(effectiveAgentId);
     }
     const baseArgs = {
@@ -41475,12 +41426,7 @@ var ArchestraClient = class {
         this.gatewayAgentSelectionSupported = false;
         this.ephemeralCredentialSupported = false;
         this.credentialGrantsSupported = false;
-        this.excludeAgentIdsSupported = false;
-        const legacyAgentId = this.selectLegacyGatewayAgent(
-          options?.preferredAgentId,
-          options?.excludeAgentIds,
-          "store runtime credential"
-        );
+        const legacyAgentId = this.selectLegacyGatewayAgent(options?.preferredAgentId);
         if (!legacyAgentId) throw error63;
         options?.onAgentSelected?.(legacyAgentId);
         return this.transferCredential(legacyAgentId, key, value, label, options);
@@ -41493,19 +41439,13 @@ var ArchestraClient = class {
     const parsed = TransferCredentialResultSchema.safeParse(data);
     return parsed.success ? parsed.data.credential_grant_id ?? null : null;
   }
-  selectLegacyGatewayAgent(preferredAgentId, excludeAgentIds, operation) {
-    const excluded = new Set(excludeAgentIds ?? []);
-    const available = this.advertisedAgentIds.filter((id) => !excluded.has(id));
-    if (preferredAgentId && !excluded.has(preferredAgentId)) {
-      if (this.advertisedAgentIds.length === 0 || available.includes(preferredAgentId)) {
+  selectLegacyGatewayAgent(preferredAgentId) {
+    if (preferredAgentId) {
+      if (this.advertisedAgentIds.length === 0 || this.advertisedAgentIds.includes(preferredAgentId)) {
         return preferredAgentId;
       }
     }
-    if (available.length > 0) return available[0] ?? null;
-    if (excluded.size > 0 && (this.advertisedAgentIds.length > 0 || preferredAgentId)) {
-      throw new ArchestraApiError(operation, "tool", "No remaining fallback subagents are available on this gateway.");
-    }
-    return null;
+    return this.advertisedAgentIds[0] ?? null;
   }
   remember(runId, runUrl) {
     if (runUrl) this.runUrls.set(runId, runUrl);
@@ -41556,16 +41496,6 @@ var ArchestraClient = class {
     return this.toolNames;
   }
 };
-function runLimitsArgs(limits) {
-  return {
-    ...limits.tier ? { tier: limits.tier } : {},
-    ...limits.minCpu ? { min_cpu: limits.minCpu } : {},
-    ...limits.minMemoryGib ? { min_memory_gib: limits.minMemoryGib } : {},
-    ...limits.idleTimeoutMinutes ? { idle_timeout_minutes: limits.idleTimeoutMinutes } : {},
-    ...limits.maxDurationHours ? { max_duration_hours: limits.maxDurationHours } : {},
-    ...limits.maxCostUsd ? { max_cost_usd: limits.maxCostUsd } : {}
-  };
-}
 function parse3(schema, data, operation) {
   const result = schema.safeParse(data);
   if (!result.success) {
@@ -41770,109 +41700,6 @@ async function cancelIfLive(client, runId, log) {
   }
 }
 
-// src/attempts.ts
-var DEFAULT_RETRY_DELAYS_MS = [3e4, 6e4];
-var MAX_MEMORY_ESCALATIONS = 2;
-async function runWithFallback(params) {
-  const delays = params.retryDelaysMs ?? DEFAULT_RETRY_DELAYS_MS;
-  const attempts = [];
-  const excludedAgentIds = [];
-  const runtimeCount = params.agents ? Math.min(params.agents.length, 1 + Math.max(0, params.maxFallbacks)) : 1 + Math.max(0, params.maxFallbacks);
-  for (let runtimeIndex = 0; runtimeIndex < runtimeCount; runtimeIndex++) {
-    const excludedBeforeSlot = excludedAgentIds.length;
-    let currentAgentId = params.agents ? params.agents[runtimeIndex] : null;
-    let limits = params.limits ?? null;
-    let escalations = 0;
-    let killedTier = null;
-    let retry = 0;
-    while (retry <= params.retries) {
-      if (params.now() >= params.deadline) {
-        params.log.warning("Overall deadline reached. No more attempts.");
-        return { ok: false, attempts, fatal: false, deadlineReached: true };
-      }
-      const label = currentAgentId ?? "gateway";
-      params.log.info(
-        `Attempt ${attempts.length + 1}: agent ${label} (runtime ${runtimeIndex + 1}${params.agents ? `/${runtimeCount}` : ""}, retry ${retry}/${params.retries}${escalations > 0 ? `, with at least ${limits?.minMemoryGib} GiB of memory` : ""})`
-      );
-      await params.progress?.attempt(runtimeIndex, currentAgentId);
-      const outcome = await params.attempt(currentAgentId, {
-        runtimeIndex,
-        retry,
-        limits,
-        escalations,
-        excludeAgentIds: [...excludedAgentIds]
-      });
-      if (outcome.record.agentId) {
-        currentAgentId = outcome.record.agentId;
-      }
-      if (!params.agents && excludedAgentIds.length > 0 && !outcome.ok && outcome.classification.source === "api" && /no remaining fallback subagents|agent not found/i.test(outcome.classification.reason)) {
-        return { ok: false, attempts, fatal: false, deadlineReached: false };
-      }
-      attempts.push(outcome.record);
-      if (outcome.ok) {
-        const resolvedAgentId = currentAgentId ?? outcome.record.agentId ?? void 0;
-        return {
-          ok: true,
-          value: outcome.value,
-          ...resolvedAgentId ? { agentId: resolvedAgentId } : {},
-          attempts,
-          fatal: false,
-          deadlineReached: false
-        };
-      }
-      const { classification } = outcome;
-      params.log.warning(
-        `Attempt failed (${classification.class}, from ${classification.source}): ${classification.reason}`
-      );
-      if (classification.class === "fatal") {
-        return { ok: false, attempts, fatal: true, deadlineReached: false };
-      }
-      const sized = outcome.record.tier !== null;
-      const sameTier = killedTier !== null && outcome.record.tier === killedTier;
-      const larger = classification.outOfMemory && params.largerLimits && escalations < MAX_MEMORY_ESCALATIONS && sized && !sameTier ? params.largerLimits(limits, classification.reason) : null;
-      if (larger) {
-        escalations++;
-        killedTier = outcome.record.tier;
-        limits = larger;
-        params.log.info(
-          `The run ran out of memory${outcome.record.tier ? ` on tier ${outcome.record.tier}` : ""}. Trying the same runtime with at least ${larger.minMemoryGib} GiB of memory.`
-        );
-        await params.progress?.largerSize?.(larger);
-        continue;
-      }
-      if (classification.class === "non_retriable") {
-        if (currentAgentId && !excludedAgentIds.includes(currentAgentId)) {
-          excludedAgentIds.push(currentAgentId);
-        }
-        const addedExclusion = excludedAgentIds.length > excludedBeforeSlot;
-        if (runtimeIndex + 1 < runtimeCount && (params.agents || addedExclusion)) {
-          await params.progress?.next();
-        }
-        break;
-      }
-      if (retry < params.retries) {
-        const delay = delays[Math.min(retry, delays.length - 1)] ?? DEFAULT_RETRY_DELAYS_MS[0];
-        params.log.info(`Retrying the same runtime in ${Math.round((delay ?? 0) / 1e3)} s.`);
-        await params.progress?.retry(delay ?? 0);
-        await params.sleep(delay ?? 0);
-      } else {
-        if (currentAgentId && !excludedAgentIds.includes(currentAgentId)) {
-          excludedAgentIds.push(currentAgentId);
-        }
-        const addedExclusion = excludedAgentIds.length > excludedBeforeSlot;
-        if (runtimeIndex + 1 < runtimeCount && (params.agents || addedExclusion)) {
-          await params.progress?.next();
-        }
-      }
-      retry += 1;
-    }
-    if (!params.agents && excludedAgentIds.length === excludedBeforeSlot) {
-      break;
-    }
-  }
-  return { ok: false, attempts, fatal: false, deadlineReached: false };
-}
-
 // src/classify.ts
 var TOOL_ERROR_PATTERNS = [
   {
@@ -41942,8 +41769,7 @@ function classifyRun(run2) {
         return {
           class: run2.failure.retriable ? "retriable" : "non_retriable",
           reason: `${run2.failure.code}: ${reason}`,
-          source: "failure-field",
-          ...run2.failure.code === "pod.oom_killed" ? { outOfMemory: true } : {}
+          source: "failure-field"
         };
       }
       return classifyFailureMessage(reason);
@@ -41976,8 +41802,7 @@ var FAILURE_MESSAGE_PATTERNS = [
   {
     pattern: /OOMKilled|out of memory/i,
     class: "non_retriable",
-    label: "out of memory",
-    outOfMemory: true
+    label: "out of memory"
   },
   {
     pattern: /guardrail|invalid .*policy|policy .*invalid/i,
@@ -42023,8 +41848,7 @@ function classifyFailureMessage(message) {
       return {
         class: row.class,
         reason: `${row.label}: ${message}`,
-        source: "message-pattern",
-        ...row.outOfMemory ? { outOfMemory: true } : {}
+        source: "message-pattern"
       };
     }
   }
@@ -42142,6 +41966,7 @@ var CONTRACTS = {
 var POLL_MIN_MS = 5e3;
 var POLL_MAX_MS = 3e4;
 var CONTINUATION_VISIBLE_MS = 18e4;
+var MAX_BUSY_WAITS = 10;
 var WORKSPACE_ROOT = "/home/node/workspace";
 var MAX_WORKSPACE_FILE_BYTES = 4 * 1024 * 1024;
 var PENDING_RESULT = { archestra_pending: true };
@@ -42180,26 +42005,23 @@ async function executeAttempt(p) {
   if (started.agentId) resolvedAgentId = started.agentId;
   runId = started.runId;
   continued = started.continued;
-  tier = started.limits?.tier ?? null;
+  tier = started.tier;
   const liveRunId = runId;
   p.onLive(liveRunId);
   log.info(`Run on agent ${resolvedAgentId ?? "gateway"}: ${client.runUrl(liveRunId)}`);
-  const stopAt = Math.min(startedAt + p.timeoutMs, p.deadline);
   let interval = POLL_MIN_MS;
   let lastState = "";
   let run2 = null;
   for (; ; ) {
-    const remaining = stopAt - clock.now();
-    if (remaining <= 0) {
-      await cancelQuietly(client, liveRunId, log);
+    if (p.isStopping?.()) {
       p.onLive(null);
       return fail({
         class: "non_retriable",
-        reason: `no terminal state within ${Math.round(p.timeoutMs / 6e4)} min`,
-        source: "timeout"
+        reason: "the job was canceled",
+        source: "state"
       });
     }
-    await clock.sleep(Math.min(interval, remaining));
+    await clock.sleep(interval);
     interval = Math.min(POLL_MAX_MS, Math.round(interval * 1.5));
     try {
       run2 = await client.getRun(liveRunId);
@@ -42216,6 +42038,7 @@ async function executeAttempt(p) {
       p.onLive(null);
       return fail(classification);
     }
+    if (run2.agentId) resolvedAgentId = run2.agentId;
     if (started.previousTurnCreatedAt && run2.turnCreatedAt === started.previousTurnCreatedAt) {
       if (clock.now() - startedAt >= CONTINUATION_VISIBLE_MS) {
         p.onLive(null);
@@ -42317,10 +42140,12 @@ async function continueRun(p) {
     p.log.info(`${tooLarge.name} is larger than 4 MiB, so it can go only as an attachment. Starting a fresh run.`);
     return null;
   }
+  let busyWaits = 0;
   const busy = async (why) => {
-    if (p.clock.now() + wait >= p.deadline) {
-      throw new ArchestraApiError("continue run", "response", "the workspace stayed busy until the deadline");
+    if (busyWaits >= MAX_BUSY_WAITS) {
+      throw new ArchestraApiError("continue run", "response", "the workspace stayed busy");
     }
+    busyWaits++;
     p.log.info(`${why} Waiting ${Math.round(wait / 1e3)} s.`);
     await p.clock.sleep(wait);
   };
@@ -42354,12 +42179,9 @@ async function continueRun(p) {
       );
       return null;
     }
-    const needed = Math.min(p.minRetainedMs, p.deadline - p.clock.now());
     const retainedUntil = workspace.retainedUntil ? Date.parse(workspace.retainedUntil) : Number.NaN;
-    if (Number.isFinite(retainedUntil) && retainedUntil - p.clock.now() < needed) {
-      p.log.info(
-        `The previous workspace is kept only until ${workspace.retainedUntil}, less than the ${Math.max(1, Math.ceil(needed / 6e4))} min this turn may need, and a turn there stops at that time. Starting a fresh run.`
-      );
+    if (Number.isFinite(retainedUntil) && retainedUntil <= p.clock.now()) {
+      p.log.info(`The previous workspace expired at ${workspace.retainedUntil}. Starting a fresh run.`);
       return null;
     }
     const names = continuationFileNames(p.turnKey, p.files);
@@ -42403,7 +42225,7 @@ ${names.map((name) => `- ${WORKSPACE_ROOT}/${name}`).join("\n")}` : p.message;
       runUrl: previous.runUrl,
       previousTurnCreatedAt: status === "continued" ? previous.turnCreatedAt : null,
       continued: true,
-      limits: null
+      tier: previous.tier
     };
   }
 }
@@ -42414,22 +42236,6 @@ async function cancelQuietly(client, runId, log) {
   } catch (error63) {
     log.warning(`Could not cancel run ${runId}: ${errorMessage(error63)}`);
   }
-}
-
-// src/sizes.ts
-function memoryLimitGib(reason) {
-  const match = reason.match(/memory limit(?: of)? (\d+(?:\.\d+)?) ?(GiB|Gi|MiB|Mi)\b/i);
-  if (!match) return null;
-  const amount = Number(match[1]);
-  return /^Mi/i.test(match[2]) ? amount / 1024 : amount;
-}
-var DEFAULT_REQUEST_GIB = 4;
-function largerLimits(previous, reason) {
-  const limitGib = memoryLimitGib(reason);
-  const implied = previous?.minMemoryGib ?? (previous?.minCpu ? previous.minCpu * 2 : DEFAULT_REQUEST_GIB);
-  const minMemoryGib = limitGib !== null ? Math.floor(limitGib / 2) + 1 : implied * 2;
-  const { tier: _tier, ...rest } = previous ?? {};
-  return { ...rest, minMemoryGib: Math.max(minMemoryGib, (previous?.minMemoryGib ?? 0) + 1) };
 }
 
 // src/context.ts
@@ -42450,9 +42256,6 @@ function makeResult(mode, partial2) {
     ...partial2
   };
 }
-function overallDeadline(ctx) {
-  return ctx.startedAt + ctx.inputs.overallTimeoutMs;
-}
 function cloneUrl(ctx) {
   return `${ctx.serverUrl}/${ctx.repo.owner}/${ctx.repo.repo}.git`;
 }
@@ -42464,106 +42267,97 @@ function briefTitle(title) {
   return line.length > 200 ? `${line.slice(0, 199)}\u2026` : line;
 }
 async function launch(ctx, p) {
-  const deadline = overallDeadline(ctx);
-  let continueFrom = p.continueFrom;
-  const preferredFirstAgentId = p.continueFrom?.agentId ?? p.preferredAgentId ?? null;
-  return runWithFallback({
-    agents: p.agents,
-    retries: ctx.inputs.retries,
-    maxFallbacks: ctx.inputs.maxFallbacks,
-    deadline,
-    now: ctx.clock.now,
-    sleep: ctx.clock.sleep,
+  const preferredAgentId = p.continueFrom?.agentId ?? p.preferredAgentId ?? null;
+  const initialAgentId = p.continueFrom?.agentId ?? null;
+  ctx.log.info(`Starting run on agent ${initialAgentId ?? "gateway"}`);
+  await p.progress?.attempt(initialAgentId);
+  const outcome = await executeAttempt({
+    client: ctx.archestra,
+    agentId: initialAgentId,
+    clock: ctx.clock,
     log: ctx.log,
-    progress: p.progress,
-    limits: p.limits ?? null,
-    largerLimits,
-    attempt: (agentId, info2) => {
-      if (info2.runtimeIndex > 0) {
-        continueFrom = null;
-      }
-      const targetAgentId = agentId ?? (info2.runtimeIndex === 0 && continueFrom ? preferredFirstAgentId : null);
-      return executeAttempt({
-        client: ctx.archestra,
-        agentId: targetAgentId,
-        timeoutMs: p.timeoutMs,
-        deadline,
-        clock: ctx.clock,
-        log: ctx.log,
-        onLive: (runId) => {
-          ctx.saveLiveRun(runId);
-          if (runId && p.progress) void p.progress.running(ctx.archestra.runUrl(runId));
-        },
-        readResult: (runId) => readContract(ctx.archestra, runId, p.contract.file, p.contract.schema),
-        onPoll: p.progress?.poll,
-        start: async (setAgentId) => {
-          if (ctx.isStopping()) throw new Error("The job was canceled; no new run starts.");
-          const escalated = info2.escalations > 0;
-          if (continueFrom && targetAgentId && continueFrom.agentId === targetAgentId && !escalated) {
-            const continuationAgentId = continueFrom.agentId;
-            setAgentId(continuationAgentId);
-            const continued = await continueRun({
-              client: ctx.archestra,
-              runId: continueFrom.runId,
-              message: p.message,
-              files: p.attachments,
-              resultFile: p.contract.file,
-              turnKey: `turn-${ctx.clock.now().toString(36)}`,
-              deadline,
-              minRetainedMs: p.timeoutMs,
-              clock: ctx.clock,
-              log: ctx.log,
-              beforeSteer: p.credentialToken ? async () => {
-                await ctx.archestra.transferCredential(
-                  continuationAgentId,
-                  "CODE_REVIEW_GITHUB_TOKEN",
-                  p.credentialToken,
-                  "GitHub token of the code review action"
-                );
-              } : void 0
-            });
-            if (continued) return continued;
-            continueFrom = null;
-          }
-          let freshAgentId = agentId ?? null;
-          setAgentId(freshAgentId);
-          const preferredAgentId = preferredFirstAgentId;
-          const credentialGrantIds = [];
-          if (p.credentialToken) {
-            const grantId = await ctx.archestra.transferCredential(
-              freshAgentId,
+    isStopping: ctx.isStopping,
+    onLive: (runId) => {
+      ctx.saveLiveRun(runId);
+      if (runId && p.progress) void p.progress.running(ctx.archestra.runUrl(runId));
+    },
+    readResult: (runId) => readContract(ctx.archestra, runId, p.contract.file, p.contract.schema),
+    onPoll: p.progress?.poll,
+    start: async (setAgentId) => {
+      if (ctx.isStopping()) throw new Error("The job was canceled; no new run starts.");
+      if (p.continueFrom) {
+        const continuationAgentId = p.continueFrom.agentId;
+        setAgentId(continuationAgentId);
+        const continued = await continueRun({
+          client: ctx.archestra,
+          runId: p.continueFrom.runId,
+          message: p.message,
+          files: p.attachments,
+          resultFile: p.contract.file,
+          turnKey: `turn-${ctx.clock.now().toString(36)}`,
+          clock: ctx.clock,
+          log: ctx.log,
+          beforeSteer: p.credentialToken ? async () => {
+            await ctx.archestra.transferCredential(
+              continuationAgentId,
               "CODE_REVIEW_GITHUB_TOKEN",
               p.credentialToken,
-              "GitHub token of the code review action",
-              {
-                ephemeral: true,
-                preferredAgentId,
-                excludeAgentIds: info2.excludeAgentIds,
-                onAgentSelected: (selectedId) => {
-                  freshAgentId = selectedId;
-                  setAgentId(selectedId);
-                }
-              }
+              "GitHub token of the code review action"
             );
-            if (grantId) credentialGrantIds.push(grantId);
-          }
-          return ctx.archestra.startRun(freshAgentId, {
-            message: p.message,
-            attachments: p.attachments,
-            excludeAgentIds: info2.excludeAgentIds,
+          } : void 0
+        });
+        if (continued) return continued;
+      }
+      let freshAgentId = null;
+      setAgentId(null);
+      const credentialGrantIds = [];
+      if (p.credentialToken) {
+        const grantId = await ctx.archestra.transferCredential(
+          freshAgentId,
+          "CODE_REVIEW_GITHUB_TOKEN",
+          p.credentialToken,
+          "GitHub token of the code review action",
+          {
+            ephemeral: true,
             preferredAgentId,
             onAgentSelected: (selectedId) => {
               freshAgentId = selectedId;
               setAgentId(selectedId);
-            },
-            ...credentialGrantIds.length > 0 ? { credentialGrantIds } : {},
-            ...info2.limits ? { limits: info2.limits } : {},
-            ...escalated ? { requireLimits: true } : {}
-          });
-        }
+            }
+          }
+        );
+        if (grantId) credentialGrantIds.push(grantId);
+      }
+      return ctx.archestra.startRun(freshAgentId, {
+        message: p.message,
+        attachments: p.attachments,
+        preferredAgentId,
+        onAgentSelected: (selectedId) => {
+          freshAgentId = selectedId;
+          setAgentId(selectedId);
+        },
+        ...credentialGrantIds.length > 0 ? { credentialGrantIds } : {}
       });
     }
   });
+  const attempts = [outcome.record];
+  if (outcome.ok) {
+    const resolvedAgentId = outcome.record.agentId ?? void 0;
+    return {
+      ok: true,
+      value: outcome.value,
+      ...resolvedAgentId ? { agentId: resolvedAgentId } : {},
+      attempts,
+      fatal: false
+    };
+  }
+  const { classification } = outcome;
+  ctx.log.warning(`Run failed (${classification.class}, from ${classification.source}): ${classification.reason}`);
+  return {
+    ok: false,
+    attempts,
+    fatal: classification.class === "fatal"
+  };
 }
 
 // src/env.ts
@@ -46839,8 +46633,6 @@ var InputError = class extends Error {
   }
 };
 var MAX_INSTRUCTIONS_BYTES = 64 * 1024;
-var ALL_FALLBACKS = 100;
-var DEFAULT_GATEWAY_MAX_FALLBACKS = 4;
 function readInputs(get, readFile) {
   const value = (name) => get(name).trim();
   const required2 = (name) => {
@@ -46872,8 +46664,6 @@ function readInputs(get, readFile) {
   const actorToken = archestraAuth === "token" ? value("archestra-token") : "";
   const fallbackToken = archestraAuth === "token" ? value("fallback-token") : "";
   const tokenSource = archestraAuth === "github-actions" ? "github-actions" : actorToken ? "actor" : fallbackToken ? "fallback" : null;
-  const maxFallbacksRaw = value("max-fallbacks");
-  const maxFallbacks = maxFallbacksRaw === "" ? DEFAULT_GATEWAY_MAX_FALLBACKS : maxFallbacksRaw === "all" ? ALL_FALLBACKS : integer2("max-fallbacks", maxFallbacksRaw, 0, ALL_FALLBACKS);
   let instructions = value("instructions");
   const instructionsFile = value("instructions-file");
   if (instructionsFile) {
@@ -46896,10 +46686,6 @@ function readInputs(get, readFile) {
     tokenSource,
     archestraAuth,
     archestraConnectTo,
-    retries: integer2("retries", value("retries") || "1", 0, 5),
-    maxFallbacks,
-    timeoutMs: integer2("timeout-minutes", value("timeout-minutes") || "30", 1, 360) * 6e4,
-    overallTimeoutMs: integer2("overall-timeout-minutes", value("overall-timeout-minutes") || "120", 1, 1440) * 6e4,
     instructions,
     githubToken: required2("github-token"),
     post: oneOf("post", value("post") || "review", ["review", "comment", "none"]),
@@ -46911,12 +46697,9 @@ function readInputs(get, readFile) {
     fixCommands: boolean4("fix-commands", value("fix-commands") || "true"),
     fixToken: value("fix-token"),
     cloneToken: value("clone-token"),
-    fixTimeoutMs: integer2("fix-timeout-minutes", value("fix-timeout-minutes") || "45", 1, 360) * 6e4,
     ciRerun: boolean4("ci-rerun", value("ci-rerun") || "false"),
     maxAutoFixRounds,
-    incrementalReview: boolean4("incremental-review", value("incremental-review") || "true"),
-    minCpu: value("min-cpu") ? integer2("min-cpu", value("min-cpu"), 1, 64) : null,
-    minMemoryGib: value("min-memory-gib") ? integer2("min-memory-gib", value("min-memory-gib"), 1, 512) : null
+    incrementalReview: boolean4("incremental-review", value("incremental-review") || "true")
   };
 }
 function integer2(name, raw, min, max) {
@@ -48101,7 +47884,7 @@ function recordJob(ctx, state, job) {
   });
 }
 var PROGRESS_READ_INTERVAL_MS = 3e4;
-function progressReporter(ctx, pr, total) {
+function progressReporter(ctx, pr) {
   let lastRead = Number.NEGATIVE_INFINITY;
   let shown = "";
   return {
@@ -48125,37 +47908,12 @@ function progressReporter(ctx, pr, total) {
         if (state.progress?.workflowRunUrl === ctx.workflowRunUrl) state.progress.checklist = checklist;
       });
     },
-    attempt: (index, agentId) => {
+    attempt: (agentId) => {
       shown = "";
-      const totalSuffix = total !== void 0 ? ` of ${total}` : "";
       const idSuffix = agentId ? ` (\`${agentId.slice(0, 8)}\`)` : "";
-      return stepProgress(ctx, pr, `starting a run on agent ${index + 1}${totalSuffix}${idSuffix}`, null, true);
+      return stepProgress(ctx, pr, `starting a run${idSuffix}`, null, true);
     },
-    running: (runUrl) => stepProgress(ctx, pr, "waiting for the runtime to finish", runUrl),
-    retry: (delayMs) => {
-      shown = "";
-      return stepProgress(
-        ctx,
-        pr,
-        `the run failed; trying the same agent again in ${Math.round(delayMs / 1e3)} s`,
-        null,
-        true
-      );
-    },
-    largerSize: (limits) => {
-      shown = "";
-      return stepProgress(
-        ctx,
-        pr,
-        `the run ran out of memory; trying the same agent again with at least ${limits.minMemoryGib} GiB of memory`,
-        null,
-        true
-      );
-    },
-    next: () => {
-      shown = "";
-      return stepProgress(ctx, pr, "the run failed; moving to the next agent", null, true);
-    }
+    running: (runUrl) => stepProgress(ctx, pr, "waiting for the runtime to finish", runUrl)
   };
 }
 function summarize(title, lines, attempts) {
@@ -48516,7 +48274,6 @@ async function runFix(ctx, trigger) {
     message,
     attachments,
     contract: CONTRACTS.fix,
-    timeoutMs: inputs.fixTimeoutMs,
     credentialToken: inputs.fixToken,
     progress: progressReporter(ctx, pr)
   });
@@ -48854,7 +48611,6 @@ async function runFixCi(ctx, trigger) {
     message,
     attachments,
     contract: CONTRACTS["fix-ci"],
-    timeoutMs: inputs.fixTimeoutMs,
     credentialToken: inputs.fixToken,
     progress: progressReporter(ctx, pr)
   });
@@ -49012,7 +48768,6 @@ async function runFixCiMain(ctx, trigger) {
     message,
     attachments,
     contract: CONTRACTS["fix-ci-main"],
-    timeoutMs: inputs.fixTimeoutMs,
     credentialToken: inputs.fixToken,
     progress: progressReporter(ctx, pr)
   });
@@ -49396,7 +49151,6 @@ async function reviewCommentIds(gh, repo, pr, reviewId) {
 
 // src/modes/review.ts
 var VERDICT_WORDS = { approve: "approved", comment: "commented", request_changes: "changes requested" };
-var REVIEW_RUN_LIMITS = { minCpu: 2, idleTimeoutMinutes: 10, maxDurationHours: 1 };
 async function runReview(ctx, prNumber) {
   const { gh, repo, inputs, log } = ctx;
   const pr = await loadPullRequest(gh, repo, prNumber);
@@ -49505,19 +49259,13 @@ async function reviewInProgress(ctx, p) {
     message,
     attachments,
     contract: CONTRACTS.review,
-    timeoutMs: inputs.timeoutMs,
-    limits: {
-      ...REVIEW_RUN_LIMITS,
-      ...inputs.minCpu ? { minCpu: inputs.minCpu } : {},
-      ...inputs.minMemoryGib ? { minMemoryGib: inputs.minMemoryGib } : {}
-    },
     // A fix leaves a short-lived App token in the actor's CODE_REVIEW_GITHUB_TOKEN; a
     // private repository needs a fresh read-only token for the review.
     credentialToken: inputs.cloneToken || null,
     progress: progressReporter(ctx, pr)
   });
   if (!outcome.ok || !outcome.value) {
-    const reason = outcome.fatal ? fatalReason(outcome.attempts) : outcome.deadlineReached ? "The overall time limit was reached." : "All attempts failed.";
+    const reason = outcome.fatal ? fatalReason(outcome.attempts) : "All attempts failed.";
     await updateSticky(ctx, pr, (state) => {
       finishProgress(ctx, state, {
         did: `the review of \`${shortSha(pr.headSha)}\``,

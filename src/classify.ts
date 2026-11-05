@@ -1,21 +1,19 @@
 import type { AgentRun, ArchestraApiError } from "./archestra/client";
 
 /**
- * - retriable: try the same runtime again (after a delay).
- * - non_retriable: go to the next runtime.
- * - fatal: stop all attempts (all runtimes share the gateway and the token).
+ * - retriable: a transient failure (used while polling a live run or reading its result).
+ * - non_retriable: a permanent run or tool failure.
+ * - fatal: a gateway-level configuration or authentication failure.
  */
 export type FailureClass = "retriable" | "non_retriable" | "fatal";
 
-/** Which signal gave the class. The action logs it for each attempt. */
+/** Which signal gave the class. The action logs it for each run. */
 export type ClassificationSource = "api" | "failure-field" | "message-pattern" | "state" | "timeout" | "contract";
 
 export interface Classification {
   class: FailureClass;
   reason: string;
   source: ClassificationSource;
-  /** True when the run was killed for memory: the same agent can try again at a larger tier. */
-  outOfMemory?: boolean;
 }
 
 /**
@@ -95,7 +93,6 @@ export function classifyRun(run: AgentRun): Classification {
           class: run.failure.retriable ? "retriable" : "non_retriable",
           reason: `${run.failure.code}: ${reason}`,
           source: "failure-field",
-          ...(run.failure.code === "pod.oom_killed" ? { outOfMemory: true } : {}),
         };
       }
       return classifyFailureMessage(reason);
@@ -123,7 +120,6 @@ export const FAILURE_MESSAGE_PATTERNS: ReadonlyArray<{
   pattern: RegExp;
   class: FailureClass;
   label: string;
-  outOfMemory?: boolean;
 }> = [
   {
     pattern: /budget|cost limit|spend limit/i,
@@ -139,7 +135,6 @@ export const FAILURE_MESSAGE_PATTERNS: ReadonlyArray<{
     pattern: /OOMKilled|out of memory/i,
     class: "non_retriable",
     label: "out of memory",
-    outOfMemory: true,
   },
   {
     pattern: /guardrail|invalid .*policy|policy .*invalid/i,
@@ -187,7 +182,6 @@ export function classifyFailureMessage(message: string): Classification {
         class: row.class,
         reason: `${row.label}: ${message}`,
         source: "message-pattern",
-        ...(row.outOfMemory ? { outOfMemory: true } : {}),
       };
     }
   }

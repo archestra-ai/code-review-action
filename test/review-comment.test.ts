@@ -9,7 +9,6 @@ import { run } from "../src/run";
 import { recordStoppedJob, type SavedJob } from "../src/stopped";
 import {
   AGENT_A,
-  AGENT_B,
   createHarness,
   FINDING_IN_DIFF,
   FINDING_OUTSIDE,
@@ -375,7 +374,7 @@ describe("progress checklist", () => {
 });
 
 describe("progress checklist after a failed run", () => {
-  it("drops the failed run's plan when the next agent starts", async () => {
+  it("clears the failed run's plan from the comment when the run ends", async () => {
     const harness = setup();
     harness.archestra.script(AGENT_A, {
       end: "failed",
@@ -383,13 +382,10 @@ describe("progress checklist after a failed run", () => {
       statusReason: "Budget exceeded",
       liveFiles: { "progress.json": { sha: "a".repeat(40), steps: [{ title: "Read the diff", status: "doing" }] } },
     });
-    harness.archestra.script(AGENT_B, { end: "completed", files: { "review.json": reviewJson() } });
     await run(harness.context("pull_request", prEvent(harness.github)));
-    // The plan showed while the first run worked, and went with it.
+    // The plan showed while the run worked, and went when the run ended.
     expect(harness.github.stickyHistory.some((body) => body.includes("- [ ] **Read the diff**"))).toBe(true);
-    const moving = harness.github.stickyHistory.find((body) => body.includes("moving to the next agent"));
-    expect(moving).toBeDefined();
-    expect(moving).not.toContain("Read the diff");
+    expect(harness.github.stickyBody()).not.toContain("Read the diff");
   });
 
   it("resets the progress file before it continues a workspace", async () => {

@@ -28,20 +28,6 @@ inputs:
   fallback-token:
     description: Shared platform token used when the actor has no personal token.
     default: ""
-  retries:
-    description: Number of retries on the same agent after a temporary failure (0 to 5).
-    default: "1"
-  max-fallbacks:
-    description: >-
-      Number of alternative agents to try after a permanent failure. Empty defaults to 4 (up to 5 total subagents);
-      set "all" to try all remaining subagents.
-    default: ""
-  timeout-minutes:
-    description: Timeout for a single review attempt, in minutes.
-    default: "30"
-  overall-timeout-minutes:
-    description: Total timeout across all attempts, in minutes.
-    default: "120"
   instructions:
     description: Additional review instructions passed to the agent.
     default: ""
@@ -84,9 +70,6 @@ inputs:
   clone-token:
     description: Read-only GitHub token for cloning private repositories.
     default: ""
-  fix-timeout-minutes:
-    description: Timeout for a single fix or CI triage attempt, in minutes.
-    default: "45"
   ci-rerun:
     description: Set to true to re-run failed jobs classified as flaky. Requires actions write.
     default: "false"
@@ -96,16 +79,6 @@ inputs:
   incremental-review:
     description: Set to false to start a fresh run for each review instead of continuing the previous workspace.
     default: "true"
-  min-cpu:
-    description: >-
-      CPUs a review asks for: the smallest runtime tier the Agent may use with at least this many.
-      Empty for 2. A run killed for memory is tried again on the same agent with more memory either way.
-    default: ""
-  min-memory-gib:
-    description: >-
-      GiB of memory a review asks for, with the same effect. Set it for a repository whose verifications need more
-      than the smallest tier holds.
-    default: ""
 
 outputs:
   status:

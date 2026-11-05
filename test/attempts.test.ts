@@ -1,267 +1,10 @@
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
-import { ArchestraClient, type RunLimits, type StartedRun } from "../src/archestra/client";
-import { type AttemptOutcome, runWithFallback } from "../src/attempts";
+import { ArchestraClient, type StartedRun } from "../src/archestra/client";
 import { ReviewResultSchema } from "../src/contracts";
 import { continueRun, executeAttempt, readContract } from "../src/run-attempt";
 import { jsonAttachment, textAttachment } from "../src/util";
 import { FakeArchestra } from "./fakes/archestra";
 import { AGENT_A, AGENT_B, AGENT_C, FakeClock, MemoryLogger, mockServer, reviewJson } from "./helpers";
-
-function scripted(results: Array<"ok" | "retriable" | "non_retriable" | "fatal">) {
-  const calls: string[] = [];
-  let i = 0;
-  const attempt = async (agentId: string | null): Promise<AttemptOutcome<string>> => {
-    const resolved = agentId ?? "gateway";
-    calls.push(resolved);
-    const result = results[i++] ?? "non_retriable";
-    const record = {
-      agentId: resolved,
-      runId: null,
-      runUrl: null,
-      continued: false,
-      tier: null,
-      result: result === "ok" ? ("completed" as const) : result,
-      reason: result,
-      source: null,
-      durationMs: 0,
-    };
-    if (result === "ok") return { ok: true, value: resolved, record };
-    return { ok: false, classification: { class: result, reason: result, source: "api" }, record };
-  };
-  return { calls, attempt };
-}
-
-describe("runWithFallback", () => {
-  const base = (clock: FakeClock) => ({
-    agents: ["a", "b", "c"],
-    deadline: clock.now() + 3_600_000,
-    now: clock.now,
-    sleep: clock.sleep,
-    log: new MemoryLogger(),
-  });
-
-  it("retries a retriable failure on the same runtime after 30 s", async () => {
-    const clock = new FakeClock();
-    const { calls, attempt } = scripted(["retriable", "ok"]);
-    const result = await runWithFallback({ ...base(clock), retries: 1, maxFallbacks: 2, attempt });
-    expect(calls).toEqual(["a", "a"]);
-    expect(clock.sleeps).toEqual([30_000]);
-    expect(result).toMatchObject({ ok: true, value: "a", agentId: "a" });
-  });
-
-  it("tries the same runtime with more memory after a memory kill, then the next runtime", async () => {
-    const clock = new FakeClock();
-    const calls: Array<[string, number | null]> = [];
-    // The gateway's answer to each size: the tier it lands on.
-    const tiers = (limits: RunLimits | null) =>
-      limits?.minMemoryGib === undefined ? "S" : limits.minMemoryGib <= 8 ? "M" : "L";
-    const attempt = async (
-      agentId: string | null,
-      info: { limits: RunLimits | null },
-    ): Promise<AttemptOutcome<string>> => {
-      const resolved = agentId ?? "gateway";
-      calls.push([resolved, info.limits?.minMemoryGib ?? null]);
-      const record = {
-        agentId: resolved,
-        runId: null,
-        runUrl: null,
-        continued: false,
-        tier: tiers(info.limits),
-        result: "non_retriable" as const,
-        reason: "pod.oom_killed: The run ran out of memory. The container reached its memory limit of 8 GiB.",
-        source: "failure-field" as const,
-        durationMs: 0,
-      };
-      if (resolved === "b") return { ok: true, value: resolved, record: { ...record, result: "completed" } };
-      return {
-        ok: false,
-        classification: { class: "non_retriable", reason: record.reason, source: "failure-field", outOfMemory: true },
-        record,
-      };
-    };
-    const largerLimits = (previous: RunLimits | null) => ({ minMemoryGib: (previous?.minMemoryGib ?? 4) * 2 });
-    const limits = { minCpu: 2 };
-    const result = await runWithFallback({
-      ...base(clock),
-      retries: 1,
-      maxFallbacks: 2,
-      limits,
-      largerLimits,
-      attempt,
-    });
-    // Twice more memory on the first runtime, at once; the next runtime starts over.
-    expect(calls).toEqual([
-      ["a", null],
-      ["a", 8],
-      ["a", 16],
-      ["b", null],
-    ]);
-    expect(clock.sleeps).toEqual([]);
-    expect(result).toMatchObject({ ok: true, agentId: "b" });
-    expect(result.attempts.map((attempt) => attempt.tier)).toEqual(["S", "M", "L", "S"]);
-
-    // A retry the gateway put on the tier it just killed has nowhere larger to go.
-    calls.length = 0;
-    const stuck = (agentId: string | null, info: { limits: RunLimits | null }) =>
-      attempt(agentId, info).then((outcome) => ({ ...outcome, record: { ...outcome.record, tier: "M" } }));
-    await runWithFallback({ ...base(clock), retries: 1, maxFallbacks: 2, limits, largerLimits, attempt: stuck });
-    expect(calls).toEqual([
-      ["a", null],
-      ["a", 8],
-      ["b", null],
-    ]);
-
-    // A gateway that does not say which tier a run got (it accepted the limits
-    // without applying them) gives nothing to climb from: the next runtime.
-    calls.length = 0;
-    const unsized = (agentId: string | null, info: { limits: RunLimits | null }) =>
-      attempt(agentId, info).then((outcome) => ({ ...outcome, record: { ...outcome.record, tier: null } }));
-    await runWithFallback({ ...base(clock), retries: 1, maxFallbacks: 2, limits, largerLimits, attempt: unsized });
-    expect(calls).toEqual([
-      ["a", null],
-      ["b", null],
-    ]);
-
-    // Without a size policy a memory kill goes to the next runtime, as any other failure.
-    calls.length = 0;
-    await runWithFallback({ ...base(clock), retries: 1, maxFallbacks: 2, limits, attempt });
-    expect(calls).toEqual([
-      ["a", null],
-      ["b", null],
-    ]);
-  });
-
-  it("goes to the next runtime after a non-retriable failure", async () => {
-    const clock = new FakeClock();
-    const { calls, attempt } = scripted(["non_retriable", "ok"]);
-    const result = await runWithFallback({ ...base(clock), retries: 1, maxFallbacks: 2, attempt });
-    expect(calls).toEqual(["a", "b"]);
-    expect(result.agentId).toBe("b");
-  });
-
-  it("goes to the next runtime when the retries are used up", async () => {
-    const clock = new FakeClock();
-    const { calls, attempt } = scripted(["retriable", "retriable", "retriable", "ok"]);
-    await runWithFallback({ ...base(clock), retries: 2, maxFallbacks: 2, attempt });
-    expect(calls).toEqual(["a", "a", "a", "b"]);
-    expect(clock.sleeps).toEqual([30_000, 60_000]);
-  });
-
-  it("stops all attempts on a fatal failure", async () => {
-    const clock = new FakeClock();
-    const { calls, attempt } = scripted(["fatal", "ok"]);
-    const result = await runWithFallback({ ...base(clock), retries: 1, maxFallbacks: 2, attempt });
-    expect(calls).toEqual(["a"]);
-    expect(result).toMatchObject({ ok: false, fatal: true });
-  });
-
-  it("makes at most N x (1 + retries) attempts", async () => {
-    const clock = new FakeClock();
-    const { calls, attempt } = scripted(Array(20).fill("retriable"));
-    const result = await runWithFallback({ ...base(clock), retries: 2, maxFallbacks: 99, attempt });
-    expect(calls).toHaveLength(9);
-    expect(result.attempts).toHaveLength(9);
-    expect(result.ok).toBe(false);
-  });
-
-  it("respects max-fallbacks", async () => {
-    const clock = new FakeClock();
-    const { calls, attempt } = scripted(Array(20).fill("non_retriable"));
-    await runWithFallback({ ...base(clock), retries: 1, maxFallbacks: 1, attempt });
-    expect(calls).toEqual(["a", "b"]);
-  });
-
-  it("stops at the overall deadline", async () => {
-    const clock = new FakeClock();
-    const { calls, attempt } = scripted(Array(20).fill("retriable"));
-    const result = await runWithFallback({
-      ...base(clock),
-      deadline: clock.now() + 45_000,
-      retries: 5,
-      maxFallbacks: 2,
-      attempt,
-    });
-    expect(calls).toEqual(["a", "a"]);
-    expect(result.deadlineReached).toBe(true);
-  });
-
-  it("retries the gateway-selected subagent and excludes failed subagents on fallback when agents are omitted", async () => {
-    const clock = new FakeClock();
-    const seen: Array<{ agentId: string | null; excludeAgentIds: readonly string[] }> = [];
-    const Outcomes: Array<{ picked: string; result: "retriable" | "non_retriable" | "ok" }> = [
-      { picked: AGENT_A, result: "retriable" },
-      { picked: AGENT_A, result: "non_retriable" },
-      { picked: AGENT_B, result: "ok" },
-    ];
-    let step = 0;
-    const result = await runWithFallback({
-      retries: 1,
-      maxFallbacks: 2,
-      deadline: clock.now() + 3_600_000,
-      now: clock.now,
-      sleep: clock.sleep,
-      log: new MemoryLogger(),
-      attempt: async (agentId, info) => {
-        seen.push({ agentId, excludeAgentIds: info.excludeAgentIds });
-        const item = Outcomes[step++]!;
-        const resolved = agentId ?? item.picked;
-        const record = {
-          agentId: resolved,
-          runId: null,
-          runUrl: null,
-          continued: false,
-          tier: null,
-          result: item.result === "ok" ? ("completed" as const) : item.result,
-          reason: item.result,
-          source: null,
-          durationMs: 0,
-        };
-        if (item.result === "ok") return { ok: true, value: resolved, record };
-        return { ok: false, classification: { class: item.result, reason: item.result, source: "api" }, record };
-      },
-    });
-    expect(seen).toEqual([
-      { agentId: null, excludeAgentIds: [] },
-      { agentId: AGENT_A, excludeAgentIds: [] },
-      { agentId: null, excludeAgentIds: [AGENT_A] },
-    ]);
-    expect(result).toMatchObject({ ok: true, agentId: AGENT_B });
-  });
-
-  it("stops fallback slots when a gateway-mode failure occurred before any subagent was selected", async () => {
-    const clock = new FakeClock();
-    let calls = 0;
-    const result = await runWithFallback({
-      retries: 1,
-      maxFallbacks: 4,
-      deadline: clock.now() + 3_600_000,
-      now: clock.now,
-      sleep: clock.sleep,
-      log: new MemoryLogger(),
-      attempt: async () => {
-        calls++;
-        return {
-          ok: false,
-          classification: { class: "retriable", reason: "HTTP 503", source: "api" },
-          record: {
-            agentId: null,
-            runId: null,
-            runUrl: null,
-            continued: false,
-            tier: null,
-            result: "retriable",
-            reason: "HTTP 503",
-            source: "api",
-            durationMs: 0,
-          },
-        };
-      },
-    });
-    expect(calls).toBe(2);
-    expect(result.ok).toBe(false);
-    expect(result.attempts.every((a) => a.agentId === null)).toBe(true);
-  });
-});
 
 describe("executeAttempt against the fake Archestra gateway", () => {
   const server = mockServer();
@@ -277,20 +20,19 @@ describe("executeAttempt against the fake Archestra gateway", () => {
     const clock = new FakeClock();
     const log = new MemoryLogger();
     const live: Array<string | null> = [];
-    const attempt = (agentId: string, start: () => Promise<StartedRun>, timeoutMs = 600_000) =>
+    const attempt = (agentId: string, start: () => Promise<StartedRun>, isStopping?: () => boolean) =>
       executeAttempt({
         client,
         agentId,
         start,
         readResult: (runId) => readContract(client, runId, "review.json", ReviewResultSchema),
-        timeoutMs,
-        deadline: clock.now() + 3_600_000,
         clock,
         log,
         onLive: (runId) => void live.push(runId),
+        isStopping,
       });
-    const run = (agentId: string, timeoutMs = 600_000) =>
-      attempt(agentId, () => client.startRun(agentId, { message: "review", attachments: [] }), timeoutMs);
+    const run = (agentId: string, isStopping?: () => boolean) =>
+      attempt(agentId, () => client.startRun(agentId, { message: "review", attachments: [] }), isStopping);
     const resume = (runId: string) =>
       attempt(AGENT_A, async () => {
         const started = await continueRun({
@@ -300,8 +42,6 @@ describe("executeAttempt against the fake Archestra gateway", () => {
           files: [jsonAttachment("pr.json", { number: 7 })],
           resultFile: "review.json",
           turnKey: "turn-k1",
-          deadline: clock.now() + 3_600_000,
-          minRetainedMs: 600_000,
           clock,
           log,
         });
@@ -373,7 +113,7 @@ describe("executeAttempt against the fake Archestra gateway", () => {
     expect(fake.calls).toEqual([]);
   });
 
-  it("classifies start refusals: tool errors go to the next runtime, 429/503 retry", async () => {
+  it("classifies start refusals: tool errors are non-retriable, 429/503 are retriable", async () => {
     const { fake, run } = setup();
     fake.script(
       AGENT_A,
@@ -412,13 +152,12 @@ describe("executeAttempt against the fake Archestra gateway", () => {
     });
   });
 
-  it("cancels the run and moves on when the attempt times out", async () => {
-    const { fake, run } = setup();
+  it("stops polling when the job is stopping", async () => {
+    const { fake, run, clock } = setup();
     fake.script(AGENT_A, { end: "never" });
-    const outcome = await run(AGENT_A, 120_000);
+    const outcome = await run(AGENT_A, () => clock.sleeps.length >= 2);
     expect(outcome.ok).toBe(false);
-    if (!outcome.ok) expect(outcome.classification).toMatchObject({ class: "non_retriable", source: "timeout" });
-    expect(fake.cancels).toHaveLength(1);
+    if (!outcome.ok) expect(outcome.classification).toMatchObject({ class: "non_retriable", source: "state" });
   });
 
   it("treats a missing or invalid review.json as non-retriable", async () => {
@@ -509,8 +248,6 @@ describe("continueRun", () => {
       files: [],
       resultFile: "fix-result.json",
       turnKey: "turn-k1",
-      deadline: clock.now() + 600_000,
-      minRetainedMs: 600_000,
       clock,
       log,
     });
@@ -532,8 +269,6 @@ describe("continueRun", () => {
       files: [textAttachment("pr.diff", "x".repeat(4 * 1024 * 1024 + 1))],
       resultFile: "review.json",
       turnKey: "turn-k1",
-      deadline: clock.now() + 600_000,
-      minRetainedMs: 600_000,
       clock,
       log: new MemoryLogger(),
     });
@@ -542,43 +277,38 @@ describe("continueRun", () => {
   });
 
   it.each([
-    { minutesLeft: 5, continues: false },
+    { minutesLeft: -5, continues: false },
     { minutesLeft: 15, continues: true },
-  ])(
-    "with $minutesLeft min of retention left and a 10-min turn, continues: $continues",
-    async ({ minutesLeft, continues }) => {
-      const fake = new FakeArchestra();
-      server.use(...fake.handlers());
-      const runId = "99999999-9999-4999-8999-999999999999";
-      fake.seedRun(AGENT_A, runId);
-      fake.retainedUntil.set(runId, Date.now() + minutesLeft * 60_000);
-      fake.script(AGENT_A, { end: "completed", files: {} });
-      const client = new ArchestraClient({ gatewayUrl: fake.gatewayUrl, token: fake.token });
-      const log = new MemoryLogger();
-      const clock = new FakeClock();
-      clock.time = Date.now();
-      const started = await continueRun({
-        client,
-        runId,
-        message: "review again",
-        files: [jsonAttachment("pr.json", { number: 7 })],
-        resultFile: "review.json",
-        turnKey: "turn-k1",
-        deadline: clock.now() + 3_600_000,
-        minRetainedMs: 600_000,
-        clock,
-        log,
-      });
-      if (continues) {
-        expect(started).toMatchObject({ runId, continued: true });
-        return;
-      }
-      expect(started).toBeNull();
-      expect(fake.writes).toEqual([]);
-      expect(fake.starts).toEqual([]);
-      expect(log.lines.join("\n")).toContain("Starting a fresh run");
-    },
-  );
+  ])("with $minutesLeft min of retention left, continues: $continues", async ({ minutesLeft, continues }) => {
+    const fake = new FakeArchestra();
+    server.use(...fake.handlers());
+    const runId = "99999999-9999-4999-8999-999999999999";
+    fake.seedRun(AGENT_A, runId);
+    fake.retainedUntil.set(runId, Date.now() + minutesLeft * 60_000);
+    fake.script(AGENT_A, { end: "completed", files: {} });
+    const client = new ArchestraClient({ gatewayUrl: fake.gatewayUrl, token: fake.token });
+    const log = new MemoryLogger();
+    const clock = new FakeClock();
+    clock.time = Date.now();
+    const started = await continueRun({
+      client,
+      runId,
+      message: "review again",
+      files: [jsonAttachment("pr.json", { number: 7 })],
+      resultFile: "review.json",
+      turnKey: "turn-k1",
+      clock,
+      log,
+    });
+    if (continues) {
+      expect(started).toMatchObject({ runId, continued: true });
+      return;
+    }
+    expect(started).toBeNull();
+    expect(fake.writes).toEqual([]);
+    expect(fake.starts).toEqual([]);
+    expect(log.lines.join("\n")).toContain("Starting a fresh run");
+  });
 
   it("returns null when the gateway refuses the new turn for its retention", async () => {
     const fake = new FakeArchestra();
@@ -599,8 +329,6 @@ describe("continueRun", () => {
       files: [],
       resultFile: "review.json",
       turnKey: "turn-k1",
-      deadline: clock.now() + 3_600_000,
-      minRetainedMs: 600_000,
       clock,
       log,
     });
@@ -622,8 +350,6 @@ describe("continueRun", () => {
       files: [],
       resultFile: "fix-result.json",
       turnKey: "turn-k1",
-      deadline: clock.now() + 600_000,
-      minRetainedMs: 600_000,
       clock,
       log: new MemoryLogger(),
     });

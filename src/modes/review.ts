@@ -67,17 +67,6 @@ import {
 
 const VERDICT_WORDS = { approve: "approved", comment: "commented", request_changes: "changes requested" } as const;
 
-/**
- * A review clones, reads and writes one file; it runs none of the repository's
- * checks, only a small test or script of its own when a finding needs one: the
- * smallest tier with two CPUs, whatever the organization calls it, stopped ten
- * minutes after it goes idle, and gone with its files after an hour even when
- * the deletion after the review does not happen. The `min-cpu` and
- * `min-memory-gib` inputs raise the size for a repository whose verifications
- * need more; a run killed for memory is tried again with more memory either way.
- */
-const REVIEW_RUN_LIMITS = { minCpu: 2, idleTimeoutMinutes: 10, maxDurationHours: 1 } as const;
-
 export async function runReview(ctx: ActionContext, prNumber: number): Promise<ActionResult> {
   const { gh, repo, inputs, log } = ctx;
   const pr = await loadPullRequest(gh, repo, prNumber);
@@ -218,12 +207,6 @@ async function reviewInProgress(
     message,
     attachments,
     contract: CONTRACTS.review,
-    timeoutMs: inputs.timeoutMs,
-    limits: {
-      ...REVIEW_RUN_LIMITS,
-      ...(inputs.minCpu ? { minCpu: inputs.minCpu } : {}),
-      ...(inputs.minMemoryGib ? { minMemoryGib: inputs.minMemoryGib } : {}),
-    },
     // A fix leaves a short-lived App token in the actor's CODE_REVIEW_GITHUB_TOKEN; a
     // private repository needs a fresh read-only token for the review.
     credentialToken: inputs.cloneToken || null,
@@ -231,11 +214,7 @@ async function reviewInProgress(
   });
 
   if (!outcome.ok || !outcome.value) {
-    const reason = outcome.fatal
-      ? fatalReason(outcome.attempts)
-      : outcome.deadlineReached
-        ? "The overall time limit was reached."
-        : "All attempts failed.";
+    const reason = outcome.fatal ? fatalReason(outcome.attempts) : "All attempts failed.";
     await updateSticky(ctx, pr, (state) => {
       finishProgress(ctx, state, {
         did: `the review of \`${shortSha(pr.headSha)}\``,

@@ -20,10 +20,6 @@ export interface Inputs {
   archestraAuth: "token" | "github-actions";
   /** A local `host:port` the gateway is dialed at (a tunnel), with its hostname as the TLS server name; null: its own address. */
   archestraConnectTo: ConnectTo | null;
-  retries: number;
-  maxFallbacks: number;
-  timeoutMs: number;
-  overallTimeoutMs: number;
   instructions: string;
   githubToken: string;
   post: PostMode;
@@ -37,14 +33,9 @@ export interface Inputs {
   fixToken: string;
   /** A read-only GitHub token that review mode stores as CODE_REVIEW_GITHUB_TOKEN; "" for none. */
   cloneToken: string;
-  fixTimeoutMs: number;
   ciRerun: boolean;
   maxAutoFixRounds: number;
   incrementalReview: boolean;
-  /** CPUs a review asks for: the smallest tier the Agent may use with at least this many. Null: the default of 2. */
-  minCpu: number | null;
-  /** GiB of memory a review asks for, with the same effect. Null: none. */
-  minMemoryGib: number | null;
 }
 
 export class InputError extends Error {
@@ -55,8 +46,6 @@ export class InputError extends Error {
 }
 
 const MAX_INSTRUCTIONS_BYTES = 64 * 1024;
-const ALL_FALLBACKS = 100;
-const DEFAULT_GATEWAY_MAX_FALLBACKS = 4;
 
 /**
  * Reads and validates the action inputs. `get` returns "" for an input that
@@ -98,14 +87,6 @@ export function readInputs(get: (name: string) => string, readFile: (path: strin
   const tokenSource =
     archestraAuth === "github-actions" ? "github-actions" : actorToken ? "actor" : fallbackToken ? "fallback" : null;
 
-  const maxFallbacksRaw = value("max-fallbacks");
-  const maxFallbacks =
-    maxFallbacksRaw === ""
-      ? DEFAULT_GATEWAY_MAX_FALLBACKS
-      : maxFallbacksRaw === "all"
-        ? ALL_FALLBACKS
-        : integer("max-fallbacks", maxFallbacksRaw, 0, ALL_FALLBACKS);
-
   let instructions = value("instructions");
   const instructionsFile = value("instructions-file");
   if (instructionsFile) {
@@ -130,10 +111,6 @@ export function readInputs(get: (name: string) => string, readFile: (path: strin
     tokenSource,
     archestraAuth,
     archestraConnectTo,
-    retries: integer("retries", value("retries") || "1", 0, 5),
-    maxFallbacks,
-    timeoutMs: integer("timeout-minutes", value("timeout-minutes") || "30", 1, 360) * 60_000,
-    overallTimeoutMs: integer("overall-timeout-minutes", value("overall-timeout-minutes") || "120", 1, 1440) * 60_000,
     instructions,
     githubToken: required("github-token"),
     post: oneOf("post", value("post") || "review", ["review", "comment", "none"]),
@@ -145,12 +122,9 @@ export function readInputs(get: (name: string) => string, readFile: (path: strin
     fixCommands: boolean("fix-commands", value("fix-commands") || "true"),
     fixToken: value("fix-token"),
     cloneToken: value("clone-token"),
-    fixTimeoutMs: integer("fix-timeout-minutes", value("fix-timeout-minutes") || "45", 1, 360) * 60_000,
     ciRerun: boolean("ci-rerun", value("ci-rerun") || "false"),
     maxAutoFixRounds,
     incrementalReview: boolean("incremental-review", value("incremental-review") || "true"),
-    minCpu: value("min-cpu") ? integer("min-cpu", value("min-cpu"), 1, 64) : null,
-    minMemoryGib: value("min-memory-gib") ? integer("min-memory-gib", value("min-memory-gib"), 1, 512) : null,
   };
 }
 

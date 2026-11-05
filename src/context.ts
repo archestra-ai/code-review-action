@@ -1,11 +1,10 @@
 import type { z } from "zod";
-import type { ArchestraClient, RunLimits } from "./archestra/client";
+import type { ArchestraClient } from "./archestra/client";
 import type { AccessRefusal } from "./archestra/github-actions-auth";
-import { type AttemptRecord, type FallbackResult, type ProgressReporter, runWithFallback } from "./attempts";
+import type { AttemptRecord, LaunchResult, ProgressReporter } from "./attempts";
 import type { Octokit } from "./github/octokit";
 import type { Inputs } from "./inputs";
 import { type AttemptValue, type Clock, continueRun, executeAttempt, readContract } from "./run-attempt";
-import { largerLimits } from "./sizes";
 import type { SavedJob } from "./stopped";
 import type { Attachment, Logger, RepoRef } from "./util";
 
@@ -98,10 +97,6 @@ export function makeResult(mode: string, partial: Partial<ActionResult> & { stat
   };
 }
 
-export function overallDeadline(ctx: ActionContext): number {
-  return ctx.startedAt + ctx.inputs.overallTimeoutMs;
-}
-
 export function cloneUrl(ctx: ActionContext): string {
   return `${ctx.serverUrl}/${ctx.repo.owner}/${ctx.repo.repo}.git`;
 }
@@ -117,133 +112,120 @@ export function briefTitle(title: string): string {
 }
 
 /**
- * Starts the work on the runtimes with the retry and fallback policy. When
- * `continueFrom` names an earlier run, the first attempt continues its
- * retained workspace; a workspace that this token cannot continue gives a
- * fresh run on the same agent. When `credentialToken` is set, it is stored as
- * the actor's CODE_REVIEW_GITHUB_TOKEN credential before each attempt; it
- * reaches the next turn.
+ * Starts the work on the Archestra MCP gateway. Subagent selection, load
+ * balancing, retries, OOM tier escalation, and subagent failover are governed
+ * by the gateway and agent runtime configurations on the platform. When
+ * `continueFrom` names an earlier run, continues its retained workspace if
+ * available; otherwise starts a fresh run. When `credentialToken` is set,
+ * transfers a one-time ephemeral credential grant (or persistent credential on
+ * a continuation) for `CODE_REVIEW_GITHUB_TOKEN`.
  */
 export async function launch<T>(
   ctx: ActionContext,
   p: {
-    agents?: string[];
     continueFrom: { agentId: string; runId: string } | null;
     preferredAgentId?: string | null;
     message: string;
     attachments: Attachment[];
     contract: { file: string; schema: z.ZodType<T> };
-    timeoutMs: number;
     credentialToken: string | null;
-    /** Limits for a fresh run; a continuation keeps the limits of its first turn. */
-    limits?: RunLimits;
     /** Updates the progress comment at each step; optional. */
     progress?: ProgressReporter;
   },
-): Promise<FallbackResult<AttemptValue<T>>> {
-  const deadline = overallDeadline(ctx);
-  let continueFrom = p.continueFrom;
-  const preferredFirstAgentId = p.continueFrom?.agentId ?? p.preferredAgentId ?? null;
-  return runWithFallback<AttemptValue<T>>({
-    agents: p.agents,
-    retries: ctx.inputs.retries,
-    maxFallbacks: ctx.inputs.maxFallbacks,
-    deadline,
-    now: ctx.clock.now,
-    sleep: ctx.clock.sleep,
+): Promise<LaunchResult<AttemptValue<T>>> {
+  const preferredAgentId = p.continueFrom?.agentId ?? p.preferredAgentId ?? null;
+  const initialAgentId = p.continueFrom?.agentId ?? null;
+  ctx.log.info(`Starting run on agent ${initialAgentId ?? "gateway"}`);
+  await p.progress?.attempt(initialAgentId);
+
+  const outcome = await executeAttempt<T>({
+    client: ctx.archestra,
+    agentId: initialAgentId,
+    clock: ctx.clock,
     log: ctx.log,
-    progress: p.progress,
-    limits: p.limits ?? null,
-    largerLimits,
-    attempt: (agentId, info) => {
-      if (info.runtimeIndex > 0) {
-        continueFrom = null;
+    isStopping: ctx.isStopping,
+    onLive: (runId) => {
+      ctx.saveLiveRun(runId);
+      if (runId && p.progress) void p.progress.running(ctx.archestra.runUrl(runId));
+    },
+    readResult: (runId) => readContract(ctx.archestra, runId, p.contract.file, p.contract.schema),
+    onPoll: p.progress?.poll,
+    start: async (setAgentId) => {
+      if (ctx.isStopping()) throw new Error("The job was canceled; no new run starts.");
+      if (p.continueFrom) {
+        const continuationAgentId = p.continueFrom.agentId;
+        setAgentId(continuationAgentId);
+        const continued = await continueRun({
+          client: ctx.archestra,
+          runId: p.continueFrom.runId,
+          message: p.message,
+          files: p.attachments,
+          resultFile: p.contract.file,
+          turnKey: `turn-${ctx.clock.now().toString(36)}`,
+          clock: ctx.clock,
+          log: ctx.log,
+          beforeSteer: p.credentialToken
+            ? async () => {
+                await ctx.archestra.transferCredential(
+                  continuationAgentId,
+                  "CODE_REVIEW_GITHUB_TOKEN",
+                  p.credentialToken as string,
+                  "GitHub token of the code review action",
+                );
+              }
+            : undefined,
+        });
+        if (continued) return continued;
       }
-      const targetAgentId = agentId ?? (info.runtimeIndex === 0 && continueFrom ? preferredFirstAgentId : null);
-      return executeAttempt<T>({
-        client: ctx.archestra,
-        agentId: targetAgentId,
-        timeoutMs: p.timeoutMs,
-        deadline,
-        clock: ctx.clock,
-        log: ctx.log,
-        onLive: (runId) => {
-          ctx.saveLiveRun(runId);
-          if (runId && p.progress) void p.progress.running(ctx.archestra.runUrl(runId));
-        },
-        readResult: (runId) => readContract(ctx.archestra, runId, p.contract.file, p.contract.schema),
-        onPoll: p.progress?.poll,
-        start: async (setAgentId) => {
-          if (ctx.isStopping()) throw new Error("The job was canceled; no new run starts.");
-          // After a memory kill the same runtime is tried with more memory. That
-          // size is the point of the attempt, so it starts a fresh run (a continued
-          // workspace keeps its first turn's size) and an Agent that refuses it ends it.
-          const escalated = info.escalations > 0;
-          if (continueFrom && targetAgentId && continueFrom.agentId === targetAgentId && !escalated) {
-            const continuationAgentId = continueFrom.agentId;
-            setAgentId(continuationAgentId);
-            const continued = await continueRun({
-              client: ctx.archestra,
-              runId: continueFrom.runId,
-              message: p.message,
-              files: p.attachments,
-              resultFile: p.contract.file,
-              turnKey: `turn-${ctx.clock.now().toString(36)}`,
-              deadline,
-              minRetainedMs: p.timeoutMs,
-              clock: ctx.clock,
-              log: ctx.log,
-              beforeSteer: p.credentialToken
-                ? async () => {
-                    await ctx.archestra.transferCredential(
-                      continuationAgentId,
-                      "CODE_REVIEW_GITHUB_TOKEN",
-                      p.credentialToken as string,
-                      "GitHub token of the code review action",
-                    );
-                  }
-                : undefined,
-            });
-            if (continued) return continued;
-            continueFrom = null;
-          }
-          let freshAgentId = agentId ?? null;
-          setAgentId(freshAgentId);
-          const preferredAgentId = preferredFirstAgentId;
-          const credentialGrantIds: string[] = [];
-          if (p.credentialToken) {
-            const grantId = await ctx.archestra.transferCredential(
-              freshAgentId,
-              "CODE_REVIEW_GITHUB_TOKEN",
-              p.credentialToken,
-              "GitHub token of the code review action",
-              {
-                ephemeral: true,
-                preferredAgentId,
-                excludeAgentIds: info.excludeAgentIds,
-                onAgentSelected: (selectedId) => {
-                  freshAgentId = selectedId;
-                  setAgentId(selectedId);
-                },
-              },
-            );
-            if (grantId) credentialGrantIds.push(grantId);
-          }
-          return ctx.archestra.startRun(freshAgentId, {
-            message: p.message,
-            attachments: p.attachments,
-            excludeAgentIds: info.excludeAgentIds,
+      let freshAgentId: string | null = null;
+      setAgentId(null);
+      const credentialGrantIds: string[] = [];
+      if (p.credentialToken) {
+        const grantId = await ctx.archestra.transferCredential(
+          freshAgentId,
+          "CODE_REVIEW_GITHUB_TOKEN",
+          p.credentialToken,
+          "GitHub token of the code review action",
+          {
+            ephemeral: true,
             preferredAgentId,
             onAgentSelected: (selectedId) => {
               freshAgentId = selectedId;
               setAgentId(selectedId);
             },
-            ...(credentialGrantIds.length > 0 ? { credentialGrantIds } : {}),
-            ...(info.limits ? { limits: info.limits } : {}),
-            ...(escalated ? { requireLimits: true } : {}),
-          });
+          },
+        );
+        if (grantId) credentialGrantIds.push(grantId);
+      }
+      return ctx.archestra.startRun(freshAgentId, {
+        message: p.message,
+        attachments: p.attachments,
+        preferredAgentId,
+        onAgentSelected: (selectedId) => {
+          freshAgentId = selectedId;
+          setAgentId(selectedId);
         },
+        ...(credentialGrantIds.length > 0 ? { credentialGrantIds } : {}),
       });
     },
   });
+
+  const attempts = [outcome.record];
+  if (outcome.ok) {
+    const resolvedAgentId = outcome.record.agentId ?? undefined;
+    return {
+      ok: true,
+      value: outcome.value,
+      ...(resolvedAgentId ? { agentId: resolvedAgentId } : {}),
+      attempts,
+      fatal: false,
+    };
+  }
+  const { classification } = outcome;
+  ctx.log.warning(`Run failed (${classification.class}, from ${classification.source}): ${classification.reason}`);
+  return {
+    ok: false,
+    attempts,
+    fatal: classification.class === "fatal",
+  };
 }
